@@ -19,10 +19,8 @@ public final class NetworkBootstrap implements AutoCloseable {
     private final NioEventLoopGroup workerGroup;
 
     public NetworkBootstrap(int bossThreads, int workerThreads) {
-        this.bossGroup = new NioEventLoopGroup(bossThreads,
-                new DefaultThreadFactory("netty-boss"));
-        this.workerGroup = new NioEventLoopGroup(workerThreads,
-                new DefaultThreadFactory("netty-worker"));
+        this.bossGroup = new NioEventLoopGroup(bossThreads, new DefaultThreadFactory("netty-boss"));
+        this.workerGroup = new NioEventLoopGroup(workerThreads, new DefaultThreadFactory("netty-worker"));
 
         LOG.info("NetworkBootstrap created with boss={}, worker={} threads",
                 bossThreads, workerThreads);

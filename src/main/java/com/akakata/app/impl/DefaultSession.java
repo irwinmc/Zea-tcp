@@ -269,7 +269,7 @@ public class DefaultSession implements Session {
                 id = String.valueOf(ID_GENERATOR_SERVICE.generateFor(DefaultSession.class));
             }
             if (eventDispatcher == null) {
-                eventDispatcher = EventDispatchers.newJetlangEventDispatcher(null, null);
+                eventDispatcher = EventDispatchers.newAgronaEventDispatcher();
             }
             if (sessionAttributes == null) {
                 sessionAttributes = new HashMap<>(4);

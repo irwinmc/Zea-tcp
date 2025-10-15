@@ -4,8 +4,6 @@ import com.akakata.app.Game;
 import com.akakata.app.PlayerSession;
 import com.akakata.app.Session;
 import com.akakata.app.SessionFactory;
-import com.akakata.concurrent.LaneStrategy;
-import com.akakata.concurrent.LaneStrategy.LaneStrategies;
 import com.akakata.event.Event;
 import com.akakata.event.EventHandler;
 import com.akakata.event.NetworkEvent;
@@ -17,7 +15,6 @@ import org.slf4j.LoggerFactory;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Set;
-import java.util.concurrent.ExecutorService;
 
 /**
  * @author Kelvin
@@ -40,7 +37,7 @@ public abstract class AbstractGame extends DefaultSession implements Game {
         this.sessionFactory = gameSessionBuilder.sessionFactory;
 
         if (gameSessionBuilder.eventDispatcher == null) {
-            this.eventDispatcher = EventDispatchers.newJetlangEventDispatcher(this, gameSessionBuilder.laneStrategy);
+            this.eventDispatcher = EventDispatchers.newAgronaEventDispatcher();
         }
     }
 
@@ -145,7 +142,6 @@ public abstract class AbstractGame extends DefaultSession implements Game {
 
         protected Set<PlayerSession> sessions;
         protected String gameName;
-        protected LaneStrategy<String, ExecutorService, Game> laneStrategy;
         protected SessionFactory sessionFactory;
 
         @Override
@@ -158,9 +154,6 @@ public abstract class AbstractGame extends DefaultSession implements Game {
             }
             if (sessions == null) {
                 sessions = new HashSet<>();
-            }
-            if (laneStrategy == null) {
-                laneStrategy = LaneStrategies.GROUP_BY_GAME;
             }
             if (sessionFactory == null) {
                 sessionFactory = Sessions.INSTANCE;
@@ -175,11 +168,6 @@ public abstract class AbstractGame extends DefaultSession implements Game {
 
         public GameSessionBuilder gameName(String gameName) {
             this.gameName = gameName;
-            return this;
-        }
-
-        public GameSessionBuilder laneStrategy(LaneStrategy<String, ExecutorService, Game> laneStrategy) {
-            this.laneStrategy = laneStrategy;
             return this;
         }
 

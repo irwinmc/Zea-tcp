@@ -1,19 +1,18 @@
 package com.akakata.context;
 
-import org.springframework.beans.BeansException;
-import org.springframework.context.ApplicationContext;
-import org.springframework.context.ApplicationContextAware;
-
 /**
+ * Application context providing centralized bean access.
+ * Now delegates to ServerContext instead of Spring IoC.
+ *
  * @author Kelvin
  */
-public class AppContext implements ApplicationContextAware {
+public class AppContext {
 
     /**
      * App context
      */
     public static final String APP_CONTEXT = "appContext";
-    public static final String APP_SESSION = "appSession";
+    public static final String APP_SESSION = "game";
 
     /**
      * Servers
@@ -27,9 +26,9 @@ public class AppContext implements ApplicationContextAware {
     /**
      * Services with default implementations
      */
-    public static final String SESSION_REGISTRY_SERVICE = "sessionRegistryService";
+    public static final String SESSION_REGISTRY_SERVICE = "sessionManager";
     public static final String GAME_ADMIN_SERVICE = "gameAdminService";
-    public static final String TASK_MANAGER_SERVICE = "taskManagerService";
+    public static final String TASK_MANAGER_SERVICE = "taskManager";
 
     /**
      * Netty default handlers
@@ -55,32 +54,37 @@ public class AppContext implements ApplicationContextAware {
     public static final String CACHE_STORE = "cacheStore";
 
     /**
-     * The spring application context.
+     * The application context (now uses ServerContext instead of Spring).
      */
-    private static ApplicationContext applicationContext;
+    private static ServerContext serverContext;
+
+    /**
+     * Set the server context instance.
+     * Should be called once at application startup.
+     *
+     * @param context the server context
+     */
+    public static void setServerContext(ServerContext context) {
+        serverContext = context;
+    }
 
     /**
      * Get bean. This method is used to retrieve a bean by its name.
      *
      * @param beanName bean name
-     * @return Bean object
+     * @return Bean object or null if not found
      */
     public static Object getBean(String beanName) {
-        if (beanName == null) {
+        if (beanName == null || serverContext == null) {
             return null;
         }
-        return applicationContext.getBean(beanName);
-    }
-
-    @Override
-    public void setApplicationContext(ApplicationContext applicationContext) throws BeansException {
-        AppContext.applicationContext = applicationContext;
+        return serverContext.getBean(beanName);
     }
 
     /**
      * Called from the main method once the application is initialized.
      */
     public void initialized() {
-
+        // Compatibility method for legacy code
     }
 }

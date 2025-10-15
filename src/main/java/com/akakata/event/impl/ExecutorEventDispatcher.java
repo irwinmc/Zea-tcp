@@ -1,13 +1,13 @@
 package com.akakata.event.impl;
 
 import com.akakata.app.Session;
-import com.akakata.concurrent.NamedThreadFactory;
 import com.akakata.event.*;
 
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * @author Kelvin
@@ -17,7 +17,12 @@ public class ExecutorEventDispatcher implements EventDispatcher {
     private static final ExecutorService EXECUTOR;
 
     static {
-        EXECUTOR = new ScheduledThreadPoolExecutor(1, new NamedThreadFactory("event-pool"));
+        AtomicInteger counter = new AtomicInteger(1);
+        EXECUTOR = new ScheduledThreadPoolExecutor(1, r -> {
+            Thread t = new Thread(r, "event-pool[" + counter.getAndIncrement() + "]");
+            t.setDaemon(false);
+            return t;
+        });
         Runtime.getRuntime().addShutdownHook(new Thread() {
             @Override
             public void run() {

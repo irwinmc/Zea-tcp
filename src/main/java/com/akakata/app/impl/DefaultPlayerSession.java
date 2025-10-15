@@ -3,7 +3,6 @@ package com.akakata.app.impl;
 import com.akakata.app.Game;
 import com.akakata.app.Player;
 import com.akakata.app.PlayerSession;
-import com.akakata.concurrent.LaneStrategy.LaneStrategies;
 import com.akakata.event.Event;
 import com.akakata.event.impl.EventDispatchers;
 import com.akakata.protocols.Protocol;
@@ -98,7 +97,7 @@ public class DefaultPlayerSession extends DefaultSession implements PlayerSessio
         @Override
         protected void validateAndSetValues() {
             if (eventDispatcher == null) {
-                eventDispatcher = EventDispatchers.newJetlangEventDispatcher(game, LaneStrategies.GROUP_BY_GAME);
+                eventDispatcher = EventDispatchers.newAgronaEventDispatcher();
             }
             super.validateAndSetValues();
         }

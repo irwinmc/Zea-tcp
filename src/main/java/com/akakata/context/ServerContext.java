@@ -1,5 +1,7 @@
 package com.akakata.context;
 
+import com.akakata.event.impl.EventDispatcherMetrics;
+import com.akakata.event.impl.EventDispatchers;
 import com.akakata.server.Server;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,6 +23,7 @@ public final class ServerContext implements AutoCloseable {
     private final NetworkBootstrap networkBootstrap;
     private final BeanRegistry beanRegistry;
     private final BeanFactory beanFactory;
+    private EventDispatcherMetrics dispatcherMetrics;
     private volatile boolean initialized = false;
 
     public ServerContext() throws IOException {
@@ -53,6 +56,7 @@ public final class ServerContext implements AutoCloseable {
 
         LOG.info("Initializing ServerContext...");
         beanFactory.createBeans();
+        startDispatcherMetrics();
         initialized = true;
         LOG.info("ServerContext initialization complete with {} beans", beanRegistry.size());
     }
@@ -88,6 +92,13 @@ public final class ServerContext implements AutoCloseable {
         // Close network resources
         networkBootstrap.close();
 
+        // Shutdown shared event dispatcher
+        EventDispatchers.shutdownSharedDispatcher();
+
+        if (dispatcherMetrics != null) {
+            dispatcherMetrics.stop();
+        }
+
         // Clear beans
         beanRegistry.clear();
 
@@ -98,6 +109,12 @@ public final class ServerContext implements AutoCloseable {
         stopServer(AppContext.TCP_SERVER, "TCP");
         stopServer(AppContext.HTTP_SERVER, "HTTP");
         stopServer(AppContext.WEB_SOCKET_SERVER, "WebSocket");
+    }
+
+    private void startDispatcherMetrics() {
+        long intervalSeconds = configManager.getInt("metrics.event.interval.seconds", 30);
+        dispatcherMetrics = new EventDispatcherMetrics();
+        dispatcherMetrics.start(intervalSeconds);
     }
 
     private void stopServer(String beanName, String serverType) {

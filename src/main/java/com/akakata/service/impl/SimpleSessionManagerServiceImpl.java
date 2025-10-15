@@ -4,6 +4,7 @@ import com.akakata.app.Session;
 import com.akakata.security.Credentials;
 import com.akakata.security.SimpleCredentials;
 import com.akakata.service.SessionManagerService;
+import com.akakata.util.NettyUtils;
 import io.netty.buffer.ByteBuf;
 
 import java.util.Map;
@@ -24,7 +25,18 @@ public class SimpleSessionManagerServiceImpl implements SessionManagerService<Cr
 
     @Override
     public Credentials verify(ByteBuf byteBuf) {
-        return new SimpleCredentials();
+        if (byteBuf == null || byteBuf.readableBytes() == 0) {
+            return null;
+        }
+        byteBuf.markReaderIndex();
+        String token = NettyUtils.readString(byteBuf);
+        byteBuf.resetReaderIndex();
+        if (token == null || token.isBlank()) {
+            return null;
+        }
+        SimpleCredentials credentials = new SimpleCredentials();
+        credentials.setAttribute("token", token);
+        return credentials;
     }
 
     @Override

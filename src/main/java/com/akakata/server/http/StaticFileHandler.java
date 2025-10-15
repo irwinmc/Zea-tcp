@@ -1,19 +1,29 @@
 package com.akakata.server.http;
 
-import io.netty.channel.*;
+import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelFutureListener;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelProgressiveFuture;
+import io.netty.channel.ChannelProgressiveFutureListener;
+import io.netty.channel.DefaultFileRegion;
 import io.netty.handler.codec.http.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.activation.MimetypesFileTypeMap;
-import java.io.File;
-import java.io.FileNotFoundException;
+import java.io.IOException;
 import java.io.RandomAccessFile;
-import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.text.SimpleDateFormat;
-import java.util.*;
-import java.util.regex.Pattern;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.GregorianCalendar;
+import java.util.Locale;
+import java.util.TimeZone;
 
 import static io.netty.handler.codec.http.HttpHeaderNames.CONNECTION;
 import static io.netty.handler.codec.http.HttpHeaderNames.IF_MODIFIED_SINCE;
@@ -31,17 +41,8 @@ public class StaticFileHandler {
     public static final int HTTP_CACHE_SECONDS = 60;
     public static final String HTML_FILE_DIR = "html";
     private static final Logger LOG = LoggerFactory.getLogger(StaticFileHandler.class);
-    private static final MimetypesFileTypeMap MIMETYPES_FILE_TYPE_MAP;
-    private static final Pattern INSECURE_URI = Pattern.compile(".*[<>&\"].*");
-
-    static {
-        MIMETYPES_FILE_TYPE_MAP = new MimetypesFileTypeMap();
-        MIMETYPES_FILE_TYPE_MAP.addMimeTypes("application/xml xml");
-        MIMETYPES_FILE_TYPE_MAP.addMimeTypes("text/html html");
-        MIMETYPES_FILE_TYPE_MAP.addMimeTypes("text/css css");
-        MIMETYPES_FILE_TYPE_MAP.addMimeTypes("application/javascript js");
-        MIMETYPES_FILE_TYPE_MAP.addMimeTypes("application/json json");
-    }
+    private static final Path HTML_BASE_PATH =
+            Paths.get(System.getProperty("user.dir")).resolve(HTML_FILE_DIR).normalize();
 
     public void handleStaticFile(ChannelHandlerContext ctx, FullHttpRequest request) throws Exception {
         if (!request.decoderResult().isSuccess()) {
@@ -55,18 +56,24 @@ public class StaticFileHandler {
         }
 
         final String uri = request.uri();
-        final String path = sanitizeUri(uri);
+        final Path path = sanitizeUri(uri);
         if (path == null) {
             sendError(ctx, FORBIDDEN);
             return;
         }
 
-        File file = new File(path);
-        if (file.isHidden() || !file.exists()) {
+        if (Files.notExists(path) || !Files.isRegularFile(path)) {
             sendError(ctx, NOT_FOUND);
             return;
         }
-        if (!file.isFile()) {
+
+        try {
+            if (Files.isHidden(path)) {
+                sendError(ctx, FORBIDDEN);
+                return;
+            }
+        } catch (IOException e) {
+            LOG.warn("Unable to determine hidden attribute for {}", path, e);
             sendError(ctx, FORBIDDEN);
             return;
         }
@@ -79,7 +86,7 @@ public class StaticFileHandler {
 
             // Only compare up to the second because the datetime format we send to the client does not have milliseconds
             long ifModifiedSinceDateSeconds = ifModifiedSinceDate.getTime() / 1000;
-            long fileLastModifiedSeconds = file.lastModified() / 1000;
+            long fileLastModifiedSeconds = Files.getLastModifiedTime(path).toMillis() / 1000;
             if (ifModifiedSinceDateSeconds == fileLastModifiedSeconds) {
                 sendNotModified(ctx);
                 return;
@@ -88,17 +95,17 @@ public class StaticFileHandler {
 
         RandomAccessFile raf;
         try {
-            raf = new RandomAccessFile(file, "r");
-        } catch (FileNotFoundException fnfe) {
-            sendError(ctx, HttpResponseStatus.NOT_FOUND);
+            raf = new RandomAccessFile(path.toFile(), "r");
+        } catch (IOException e) {
+            sendError(ctx, NOT_FOUND);
             return;
         }
 
         long fileLength = raf.length();
         HttpResponse response = new DefaultHttpResponse(HTTP_1_1, OK);
         HttpUtil.setContentLength(response, fileLength);
-        setContentTypeHeader(response, file);
-        setDateAndCacheHeader(response, file);
+        setContentTypeHeader(response, path);
+        setDateAndCacheHeader(response, path);
         if (HttpUtil.isKeepAlive(request)) {
             response.headers().set(CONNECTION, HttpHeaderValues.KEEP_ALIVE);
         }
@@ -124,6 +131,14 @@ public class StaticFileHandler {
             }
         });
 
+        sendFileFuture.addListener(future -> {
+            try {
+                raf.close();
+            } catch (IOException e) {
+                LOG.warn("Failed to close file resource {}", path, e);
+            }
+        });
+
         // Write the end marker
         ChannelFuture lastContentFuture = ctx.writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT);
 
@@ -134,32 +149,27 @@ public class StaticFileHandler {
         }
     }
 
-    private String sanitizeUri(String uri) {
+    private Path sanitizeUri(String uri) {
         // Decode the path.
+        String decoded = URLDecoder.decode(uri, StandardCharsets.UTF_8);
+        if (decoded.isEmpty() || decoded.charAt(0) != '/') {
+            return null;
+        }
+
+        if (decoded.equals("/")) {
+            return null;
+        }
+
         try {
-            uri = URLDecoder.decode(uri, "UTF-8");
-        } catch (UnsupportedEncodingException e) {
-            throw new Error(e);
-        }
-
-        if (uri.isEmpty() || uri.charAt(0) == '/') {
+            Path resolved = HTML_BASE_PATH.resolve(decoded.substring(1)).normalize();
+            if (!resolved.startsWith(HTML_BASE_PATH)) {
+                return null;
+            }
+            return resolved;
+        } catch (InvalidPathException ex) {
+            LOG.warn("Invalid static resource path: {}", decoded, ex);
             return null;
         }
-
-        // Convert file separators.
-        uri = uri.replace('/', File.separatorChar);
-
-        // Simplistic dumb security check.
-        // You will have to do something serious in the production environment.
-        if (uri.contains(File.separator + '.') ||
-                uri.contains('.' + File.separator) ||
-                uri.charAt(0) == '.' || uri.charAt(uri.length() - 1) == '.' ||
-                INSECURE_URI.matcher(uri).matches()) {
-            return null;
-        }
-
-        // Convert to absolute path.
-        return System.getProperty("user.dir") + File.separator + HTML_FILE_DIR + File.separator + uri;
     }
 
     private void sendError(ChannelHandlerContext ctx, HttpResponseStatus status) {
@@ -202,7 +212,7 @@ public class StaticFileHandler {
      * @param response
      * @param fileToCache
      */
-    private void setDateAndCacheHeader(HttpResponse response, File fileToCache) {
+    private void setDateAndCacheHeader(HttpResponse response, Path fileToCache) throws IOException {
         SimpleDateFormat dateFormatter = new SimpleDateFormat(HTTP_DATE_FORMAT, Locale.US);
         dateFormatter.setTimeZone(TimeZone.getTimeZone(HTTP_DATE_GMT_TIMEZONE));
 
@@ -214,7 +224,8 @@ public class StaticFileHandler {
         time.add(Calendar.SECOND, HTTP_CACHE_SECONDS);
         response.headers().set(HttpHeaderNames.EXPIRES, dateFormatter.format(time.getTime()));
         response.headers().set(HttpHeaderNames.CACHE_CONTROL, "private, max-age=" + HTTP_CACHE_SECONDS);
-        response.headers().set(HttpHeaderNames.LAST_MODIFIED, dateFormatter.format(new Date(fileToCache.lastModified())));
+        response.headers().set(HttpHeaderNames.LAST_MODIFIED,
+                dateFormatter.format(new Date(Files.getLastModifiedTime(fileToCache).toMillis())));
     }
 
     /**
@@ -224,7 +235,16 @@ public class StaticFileHandler {
      * @param res
      * @param file
      */
-    private void setContentTypeHeader(HttpResponse res, File file) {
-        res.headers().set(HttpHeaderNames.CONTENT_TYPE, MIMETYPES_FILE_TYPE_MAP.getContentType(file.getPath()));
+    private void setContentTypeHeader(HttpResponse res, Path file) {
+        String contentType = null;
+        try {
+            contentType = Files.probeContentType(file);
+        } catch (IOException e) {
+            LOG.debug("Unable to detect content type for {}", file, e);
+        }
+        if (contentType == null) {
+            contentType = "application/octet-stream";
+        }
+        res.headers().set(HttpHeaderNames.CONTENT_TYPE, contentType);
     }
 }

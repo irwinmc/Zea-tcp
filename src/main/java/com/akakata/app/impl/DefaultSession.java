@@ -180,7 +180,7 @@ public class DefaultSession implements Session {
     @Override
     public synchronized void close() {
         isShuttingDown = true;
-        eventDispatcher.close();
+        EventDispatchers.release(eventDispatcher, this);
         if (sender != null) {
             sender.close();
             sender = null;
@@ -269,7 +269,7 @@ public class DefaultSession implements Session {
                 id = String.valueOf(ID_GENERATOR_SERVICE.generateFor(DefaultSession.class));
             }
             if (eventDispatcher == null) {
-                eventDispatcher = EventDispatchers.newAgronaEventDispatcher();
+                eventDispatcher = EventDispatchers.sharedDispatcher();
             }
             if (sessionAttributes == null) {
                 sessionAttributes = new HashMap<>(4);

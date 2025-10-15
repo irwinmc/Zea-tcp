@@ -45,7 +45,7 @@ public class SimpleCredentials implements Credentials {
 
     @Override
     public void removeAttribute(String key) {
-        attributes.get(key);
+        attributes.remove(key);
     }
 
     @Override

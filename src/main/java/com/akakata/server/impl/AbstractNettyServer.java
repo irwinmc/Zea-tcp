@@ -51,14 +51,9 @@ public abstract class AbstractNettyServer implements NettyServer {
             future.await();
         } catch (InterruptedException e) {
             LOG.error("Exception occurred while waiting for channels to close: {}", e);
+            Thread.currentThread().interrupt();
         } finally {
-            // TODO move this part to spring.
-            if (nettyConfig.getBossGroup() != null) {
-                nettyConfig.getBossGroup().shutdownGracefully();
-            }
-            if (nettyConfig.getWorkerGroup() != null) {
-                nettyConfig.getWorkerGroup().shutdownGracefully();
-            }
+            // EventLoopGroup 生命周期由 ServerContext / NetworkBootstrap 统一管理，此处不再关闭。
         }
     }
 

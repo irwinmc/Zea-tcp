@@ -1,7 +1,6 @@
 package com.akakata.server.initializer;
 
 import com.akakata.handlers.LoginHandler;
-import com.akakata.handlers.codec.EventDecoder;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelPipeline;
@@ -15,7 +14,7 @@ import io.netty.handler.codec.LengthFieldPrepender;
 public class LoginChannelInitializer extends ChannelInitializer<SocketChannel> {
 
     private int frameSize = 1024;
-    private EventDecoder eventDecoder;
+    private ChannelHandler eventDecoder;
     private LoginHandler loginHandler;
     private LengthFieldPrepender lengthFieldPrepender;
 
@@ -42,11 +41,11 @@ public class LoginChannelInitializer extends ChannelInitializer<SocketChannel> {
         this.frameSize = frameSize;
     }
 
-    public EventDecoder getEventDecoder() {
+    public ChannelHandler getEventDecoder() {
         return eventDecoder;
     }
 
-    public void setEventDecoder(EventDecoder eventDecoder) {
+    public void setEventDecoder(ChannelHandler eventDecoder) {
         this.eventDecoder = eventDecoder;
     }
 

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<messageSchema xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+               xsi:noNamespaceSchemaLocation="sbe.xsd"
+               package="com.akakata.sbe"
+               id="1"
+               version="1">
+
+    <types>
+        <type name="varDataEncoding" primitiveType="uint8"/>
+    </types>
+
+    <message name="LoginRequest" id="0" blockLength="0">
+        <field name="payload" id="1">
+            <data type="varDataEncoding"/>
+        </field>
+    </message>
+
+    <message name="LoginSuccess" id="20" blockLength="0">
+        <field name="payload" id="1">
+            <data type="varDataEncoding"/>
+        </field>
+    </message>
+
+    <message name="LoginFailure" id="21" blockLength="0">
+        <field name="payload" id="1">
+            <data type="varDataEncoding"/>
+        </field>
+    </message>
+
+    <message name="NetworkMessage" id="52" blockLength="0">
+        <field name="payload" id="1">
+            <data type="varDataEncoding"/>
+        </field>
+    </message>
+</messageSchema>

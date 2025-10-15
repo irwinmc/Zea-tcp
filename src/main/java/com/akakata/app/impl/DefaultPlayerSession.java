@@ -97,7 +97,7 @@ public class DefaultPlayerSession extends DefaultSession implements PlayerSessio
         @Override
         protected void validateAndSetValues() {
             if (eventDispatcher == null) {
-                eventDispatcher = EventDispatchers.newAgronaEventDispatcher();
+                eventDispatcher = EventDispatchers.sharedDispatcher();
             }
             super.validateAndSetValues();
         }

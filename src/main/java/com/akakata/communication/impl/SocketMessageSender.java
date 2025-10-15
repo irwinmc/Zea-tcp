@@ -3,8 +3,16 @@ package com.akakata.communication.impl;
 import com.akakata.communication.MessageSender;
 import com.akakata.event.Event;
 import com.akakata.event.Events;
+import com.akakata.handlers.codec.EventEncoder;
+import com.akakata.handlers.codec.JsonEncoder;
+import com.akakata.handlers.codec.MessageBufferEventEncoder;
+import com.akakata.handlers.codec.SbeEventEncoder;
+import com.akakata.handlers.codec.WebSocketEventEncoder;
+import com.akakata.util.NettyUtils;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFutureListener;
+import io.netty.channel.ChannelPipeline;
+import io.netty.handler.codec.MessageToMessageEncoder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -34,13 +42,20 @@ public class SocketMessageSender implements MessageSender {
     @Override
     public void close() {
         LOG.debug("Going to close tcp connection in class: {}", this.getClass().getName());
-        Event event = Events.event(null, Events.DISCONNECT);
-        if (channel.isActive()) {
-            channel.writeAndFlush(event).addListener(ChannelFutureListener.CLOSE);
-        } else {
+        if (!channel.isOpen()) {
             channel.close();
-            LOG.trace("Unable to write the Event {} with type {} to socket", event, event.getType());
+            return;
         }
+
+        Event event = Events.event(null, Events.DISCONNECT);
+        if (channel.isActive() && supportsEventOutbound(channel.pipeline())) {
+            channel.writeAndFlush(event).addListener(ChannelFutureListener.CLOSE);
+            return;
+        }
+
+        // Fallback：在缺乏事件编码器的管道（如登录阶段）中，只写入最小长度的断开指令
+        channel.writeAndFlush(NettyUtils.createBufferForOpcode(event.getType()))
+                .addListener(ChannelFutureListener.CLOSE);
     }
 
     @Override
@@ -53,5 +68,32 @@ public class SocketMessageSender implements MessageSender {
         }
         String sender = "Netty " + channelId;
         return sender;
+    }
+
+    private boolean supportsEventOutbound(ChannelPipeline pipeline) {
+        if (pipeline == null) {
+            return false;
+        }
+        return pipeline.get(JsonEncoder.class) != null
+                || pipeline.get(WebSocketEventEncoder.class) != null
+                || pipeline.get(MessageBufferEventEncoder.class) != null
+                || pipeline.get(SbeEventEncoder.class) != null
+                || pipeline.get(EventEncoder.class) != null
+                || hasGenericEventEncoder(pipeline);
+    }
+
+    private boolean hasGenericEventEncoder(ChannelPipeline pipeline) {
+        for (String name : pipeline.names()) {
+            if (pipeline.get(name) instanceof MessageToMessageEncoder<?> encoder) {
+                if (encoder instanceof JsonEncoder
+                        || encoder instanceof WebSocketEventEncoder
+                        || encoder instanceof MessageBufferEventEncoder
+                        || encoder instanceof SbeEventEncoder
+                        || encoder instanceof EventEncoder) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 }

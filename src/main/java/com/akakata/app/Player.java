@@ -1,6 +1,9 @@
 package com.akakata.app;
 
 /**
+ * Player data entity - represents player information.
+ * This is a pure data object without session references to avoid circular dependencies.
+ *
  * @author Kelvin
  */
 public interface Player {
@@ -10,38 +13,26 @@ public interface Player {
      *
      * @return 玩家ID
      */
-    Object getId();
+    String getId();
 
     /**
      * 设置玩家ID
      *
      * @param id 玩家ID
      */
-    void setId(Object id);
+    void setId(String id);
 
     /**
-     * 获取玩家会话
+     * 获取玩家昵称
      *
-     * @return 玩家会话
+     * @return 玩家昵称
      */
-    PlayerSession getPlayerSession();
+    String getNickname();
 
     /**
-     * 设置玩家会话
+     * 设置玩家昵称
      *
-     * @param playerSession 玩家会话
+     * @param nickname 玩家昵称
      */
-    void setPlayerSession(PlayerSession playerSession);
-
-    /**
-     * 是否在线
-     *
-     * @return 如果在线返回true，离线返回false
-     */
-    boolean isOnline();
-
-    /**
-     * 登出
-     */
-    void logout();
+    void setNickname(String nickname);
 }

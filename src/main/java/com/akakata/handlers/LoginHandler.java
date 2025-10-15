@@ -8,7 +8,7 @@ import com.akakata.event.Event;
 import com.akakata.event.Events;
 import com.akakata.protocols.Protocol;
 import com.akakata.security.Credentials;
-import com.akakata.security.crypto.DESCipher;
+import com.akakata.security.crypto.AesGcmCipher;
 import com.akakata.server.impl.AbstractNettyServer;
 import com.akakata.service.SessionManagerService;
 import com.akakata.util.NettyUtils;
@@ -162,7 +162,7 @@ public class LoginHandler extends SimpleChannelInboundHandler<Event> {
      * Helper method
      */
     protected ByteBuf getLoginSuccessBuffer(Credentials credentials) {
-        String token = DESCipher.encrypt(credentials.getRandomKey());
+        String token = AesGcmCipher.encrypt(credentials.getRandomKey());
         return Unpooled.wrappedBuffer(NettyUtils.createBufferForOpcode(Events.LOG_IN_SUCCESS), NettyUtils.writeString(token));
     }
 

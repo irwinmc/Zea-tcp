@@ -16,6 +16,7 @@
         <org.agrona.version>2.3.0</org.agrona.version>
         <org.slf4j.version>2.0.17</org.slf4j.version>
         <org.apache.logging.log4j.version>2.25.1</org.apache.logging.log4j.version>
+        <com.google.guice.version>7.0.0</com.google.guice.version>
     </properties>
 
     <dependencies>
@@ -44,12 +45,6 @@
             <version>2.18.3</version>
         </dependency>
 
-        <dependency>
-            <groupId>javax.activation</groupId>
-            <artifactId>activation</artifactId>
-            <version>1.1.1</version>
-        </dependency>
-
         <!-- Log4j -->
         <dependency>
             <groupId>org.slf4j</groupId>
@@ -73,6 +68,12 @@
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-slf4j-impl</artifactId>
             <version>${org.apache.logging.log4j.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>com.google.inject</groupId>
+            <artifactId>guice</artifactId>
+            <version>${com.google.guice.version}</version>
         </dependency>
     </dependencies>
 </project>

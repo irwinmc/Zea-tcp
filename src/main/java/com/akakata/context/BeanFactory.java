@@ -5,6 +5,7 @@ import com.akakata.app.impl.DefaultGame;
 import com.akakata.handlers.*;
 import com.akakata.handlers.codec.*;
 import com.akakata.protocols.impl.JsonProtocol;
+import com.akakata.protocols.impl.SbeProtocol;
 import com.akakata.protocols.impl.WebSocketProtocol;
 import com.akakata.server.NettyConfig;
 import com.akakata.server.impl.NettyTCPServer;
@@ -17,6 +18,7 @@ import com.akakata.server.http.RpcHandler;
 import com.akakata.service.impl.SimpleSessionManagerServiceImpl;
 import com.akakata.service.impl.SimpleTaskManagerServiceImpl;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.handler.codec.LengthFieldPrepender;
@@ -59,23 +61,30 @@ public final class BeanFactory {
         LengthFieldPrepender lengthFieldPrepender = new LengthFieldPrepender(2, false);
         registry.register(AppContext.LENGTH_FIELD_PREPENDER, lengthFieldPrepender);
 
-        EventDecoder eventDecoder = new EventDecoder();
+        SbeEventDecoder sbeEventDecoder = new SbeEventDecoder();
+        SbeEventEncoder sbeEventEncoder = new SbeEventEncoder();
         JsonDecoder jsonDecoder = new JsonDecoder();
         JsonEncoder jsonEncoder = new JsonEncoder();
         WebSocketEventDecoder webSocketEventDecoder = new WebSocketEventDecoder();
         WebSocketEventEncoder webSocketEventEncoder = new WebSocketEventEncoder();
 
         // 3. Protocols
+        SbeProtocol sbeProtocol = createSbeProtocol(sbeEventDecoder, sbeEventEncoder, lengthFieldPrepender);
         JsonProtocol jsonProtocol = createJsonProtocol(jsonDecoder, jsonEncoder, lengthFieldPrepender);
         WebSocketProtocol webSocketProtocol = createWebSocketProtocol(webSocketEventDecoder, webSocketEventEncoder);
 
         // 4. Handlers
-        LoginHandler loginHandler = createLoginHandler(jsonProtocol);
+        com.akakata.protocols.Protocol selectedProtocol = selectTcpProtocol(sbeProtocol, jsonProtocol);
+        ChannelHandler selectedDecoder = "JSON".equalsIgnoreCase(config.getString("protocol.type", "SBE"))
+                ? new EventDecoder()
+                : sbeEventDecoder;
+
+        LoginHandler loginHandler = createLoginHandler(selectedProtocol);
         WebSocketLoginHandler webSocketLoginHandler = createWebSocketLoginHandler(webSocketProtocol);
         HttpRequestHandler httpRequestHandler = createHttpRequestHandler();
 
         // 5. Channel Initializers
-        LoginChannelInitializer loginChannelInit = createLoginChannelInitializer(eventDecoder, loginHandler, lengthFieldPrepender);
+        LoginChannelInitializer loginChannelInit = createLoginChannelInitializer(selectedDecoder, loginHandler, lengthFieldPrepender);
         HttpServerChannelInitializer httpChannelInit = createHttpChannelInitializer(httpRequestHandler);
         WebSocketServerChannelInitializer wsChannelInit = createWebSocketChannelInitializer(webSocketLoginHandler);
 
@@ -93,6 +102,14 @@ public final class BeanFactory {
         registry.register(AppContext.TASK_MANAGER_SERVICE, new SimpleTaskManagerServiceImpl(2));
     }
 
+    private SbeProtocol createSbeProtocol(SbeEventDecoder decoder, SbeEventEncoder encoder, LengthFieldPrepender prepender) {
+        SbeProtocol protocol = new SbeProtocol();
+        protocol.setSbeEventDecoder(decoder);
+        protocol.setSbeEventEncoder(encoder);
+        protocol.setLengthFieldPrepender(prepender);
+        return protocol;
+    }
+
     private JsonProtocol createJsonProtocol(JsonDecoder decoder, JsonEncoder encoder, LengthFieldPrepender prepender) {
         JsonProtocol protocol = new JsonProtocol();
         protocol.setJsonDecoder(decoder);
@@ -108,7 +125,7 @@ public final class BeanFactory {
         return protocol;
     }
 
-    private LoginHandler createLoginHandler(JsonProtocol protocol) {
+    private LoginHandler createLoginHandler(com.akakata.protocols.Protocol protocol) {
         LoginHandler handler = new LoginHandler();
         handler.setProtocol(protocol);
         handler.setGame(registry.getBean(AppContext.APP_SESSION, Game.class));
@@ -135,7 +152,17 @@ public final class BeanFactory {
         return handler;
     }
 
-    private LoginChannelInitializer createLoginChannelInitializer(EventDecoder decoder, LoginHandler handler,
+    private com.akakata.protocols.Protocol selectTcpProtocol(SbeProtocol sbeProtocol, JsonProtocol jsonProtocol) {
+        String protocolType = config.getString("protocol.type", "SBE");
+        if ("JSON".equalsIgnoreCase(protocolType)) {
+            LOG.info("TCP login protocol configured as JSON");
+            return jsonProtocol;
+        }
+        LOG.info("TCP login protocol configured as SBE");
+        return sbeProtocol;
+    }
+
+    private LoginChannelInitializer createLoginChannelInitializer(ChannelHandler decoder, LoginHandler handler,
                                                                    LengthFieldPrepender prepender) {
         LoginChannelInitializer initializer = new LoginChannelInitializer();
         initializer.setEventDecoder(decoder);

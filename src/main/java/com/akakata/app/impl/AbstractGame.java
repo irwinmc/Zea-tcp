@@ -37,7 +37,7 @@ public abstract class AbstractGame extends DefaultSession implements Game {
         this.sessionFactory = gameSessionBuilder.sessionFactory;
 
         if (gameSessionBuilder.eventDispatcher == null) {
-            this.eventDispatcher = EventDispatchers.newAgronaEventDispatcher();
+            this.eventDispatcher = EventDispatchers.sharedDispatcher();
         }
     }
 
@@ -86,7 +86,7 @@ public abstract class AbstractGame extends DefaultSession implements Game {
     @Override
     public synchronized boolean disconnectSession(PlayerSession playerSession) {
         final boolean removeHandlers = eventDispatcher.removeHandlersForSession(playerSession);
-        playerSession.getEventDispatcher().clear(); // remove network handlers of the session.
+        EventDispatchers.release(playerSession.getEventDispatcher(), playerSession);
         return removeHandlers && sessions.remove(playerSession);
     }
 

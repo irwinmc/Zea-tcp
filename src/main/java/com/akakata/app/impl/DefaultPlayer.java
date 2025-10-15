@@ -1,9 +1,11 @@
 package com.akakata.app.impl;
 
 import com.akakata.app.Player;
-import com.akakata.app.PlayerSession;
 
 /**
+ * Default implementation of Player - pure data object.
+ * No session references to avoid circular dependencies.
+ *
  * @author Kelvin
  */
 public class DefaultPlayer implements Player {
@@ -11,58 +13,57 @@ public class DefaultPlayer implements Player {
     /**
      * 唯一ID
      */
-    protected Object id;
+    protected String id;
 
     /**
-     * 会话，玩家会话唯一
+     * 玩家昵称
      */
-    protected PlayerSession playerSession;
+    protected String nickname;
 
     /**
      * 空构造函数
      */
     public DefaultPlayer() {
-
     }
 
     /**
      * 带ID的构造函数
      *
-     * @param id 全局唯一ID，可以是任何形式
+     * @param id 玩家ID
      */
-    public DefaultPlayer(Object id) {
-        super();
+    public DefaultPlayer(String id) {
         this.id = id;
     }
 
-    @Override
-    public boolean isOnline() {
-        return playerSession != null && playerSession.isConnected();
+    /**
+     * 带ID和昵称的构造函数
+     *
+     * @param id       玩家ID
+     * @param nickname 玩家昵称
+     */
+    public DefaultPlayer(String id, String nickname) {
+        this.id = id;
+        this.nickname = nickname;
     }
 
     @Override
-    public synchronized void logout() {
-        playerSession.close();
-    }
-
-    @Override
-    public Object getId() {
+    public String getId() {
         return id;
     }
 
     @Override
-    public void setId(Object id) {
+    public void setId(String id) {
         this.id = id;
     }
 
     @Override
-    public PlayerSession getPlayerSession() {
-        return playerSession;
+    public String getNickname() {
+        return nickname;
     }
 
     @Override
-    public void setPlayerSession(PlayerSession playerSession) {
-        this.playerSession = playerSession;
+    public void setNickname(String nickname) {
+        this.nickname = nickname;
     }
 
     @Override
@@ -86,17 +87,13 @@ public class DefaultPlayer implements Player {
         }
         DefaultPlayer other = (DefaultPlayer) obj;
         if (id == null) {
-            if (other.id != null) {
-                return false;
-            }
-        } else if (!id.equals(other.id)) {
-            return false;
+            return other.id == null;
         }
-        return true;
+        return id.equals(other.id);
     }
 
     @Override
     public String toString() {
-        return "Player [id=" + id + "]";
+        return "Player[id=" + id + ", nickname=" + nickname + "]";
     }
 }

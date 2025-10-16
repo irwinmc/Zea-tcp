@@ -32,6 +32,12 @@ public class DefaultPlayerSession extends DefaultSession implements PlayerSessio
         this.player = playerSessionBuilder.player;
         this.game = playerSessionBuilder.game;
         this.protocol = playerSessionBuilder.protocol;
+
+        // 如果 eventDispatcher 还是 sharedDispatcher，则替换为专属 shard
+        // 这样每个 PlayerSession 直接持有它的 shard 引用，避免每次 fireEvent 都要路由
+        if (this.eventDispatcher == EventDispatchers.sharedDispatcher()) {
+            this.eventDispatcher = EventDispatchers.getShardForSession(this);
+        }
     }
 
     @Override

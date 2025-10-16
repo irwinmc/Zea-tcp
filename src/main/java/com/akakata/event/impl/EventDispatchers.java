@@ -37,6 +37,19 @@ public final class EventDispatchers {
     }
 
     /**
+     * 获取属于某个 session 的专属分片
+     * <p>
+     * 从 shared ShardedEventDispatcher 中获取该 session 对应的 shard。
+     * 这样 session 可以直接持有它的 shard 引用，避免每次 fireEvent 都要路由。
+     *
+     * @param session 会话
+     * @return 该 session 对应的 EventDispatcher 分片
+     */
+    public static EventDispatcher getShardForSession(Session session) {
+        return SHARED_DISPATCHER.getShardForSession(session);
+    }
+
+    /**
      * 如业务确需独立线程，可主动创建专用调度器。
      */
     public static EventDispatcher newDedicatedDispatcher() {

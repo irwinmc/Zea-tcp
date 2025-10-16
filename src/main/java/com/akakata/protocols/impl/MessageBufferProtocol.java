@@ -12,24 +12,103 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
+ * Custom binary protocol using MessageBuffer abstraction for flexible message encoding.
+ * <p>
+ * This protocol provides a balance between performance and flexibility, using a custom
+ * {@code MessageBuffer} abstraction that wraps Netty's ByteBuf. It's suitable for scenarios
+ * where you need more control over message structure than JSON provides, but don't need
+ * the extreme performance of SBE.
+ * </p>
+ * <p>
+ * <b>Protocol Characteristics:</b>
+ * <ul>
+ *   <li>Encoding: Custom binary (MessageBuffer-based)</li>
+ *   <li>Framing: 2-byte length prefix</li>
+ *   <li>Performance: Faster than JSON, slower than SBE</li>
+ *   <li>Flexibility: High (dynamic message structure)</li>
+ *   <li>Schema: Runtime-defined (no compile-time validation)</li>
+ * </ul>
+ * </p>
+ * <p>
+ * <b>Message Format:</b>
+ * <pre>
+ * +--------+--------------------+
+ * | Length | MessageBuffer Body |
+ * | 2 bytes| Variable length    |
+ * +--------+--------------------+
+ *
+ * MessageBuffer typically contains:
+ * - Event type (int)
+ * - Event timestamp (long)
+ * - Custom fields (primitives, strings, byte arrays)
+ * </pre>
+ * </p>
+ * <p>
+ * <b>Pipeline Configuration:</b>
+ * <pre>
+ * Inbound:  lengthDecoder → messageBufferEventDecoder → eventHandler
+ * Outbound: eventHandler → messageBufferEventEncoder → lengthFieldPrepender
+ * </pre>
+ * </p>
+ * <p>
+ * <b>Use Cases:</b>
+ * <ul>
+ *   <li>Custom game protocols with dynamic message structure</li>
+ *   <li>Legacy protocol compatibility</li>
+ *   <li>Prototyping before committing to SBE schema</li>
+ * </ul>
+ * </p>
+ * <p>
+ * <b>Note:</b> This implementation uses setter injection (legacy pattern).
+ * Consider refactoring to constructor injection for consistency with other protocols.
+ * </p>
+ *
  * @author Kelvin
+ * @see MessageBufferEventDecoder
+ * @see MessageBufferEventEncoder
+ * @see com.akakata.communication.MessageBuffer
  */
 public class MessageBufferProtocol extends AbstractNettyProtocol {
 
     private static final Logger LOG = LoggerFactory.getLogger(MessageBufferProtocol.class);
 
-    /**
-     * Utility handler provided by netty to add the length of the outgoing
-     * message to the message as a header.
-     */
     private MessageBufferEventDecoder messageBufferEventDecoder;
     private MessageBufferEventEncoder messageBufferEventEncoder;
+    /**
+     * Netty handler that prepends the 2-byte length header to outgoing messages.
+     * The length field contains the size of the message body (excluding the length field itself).
+     */
     private LengthFieldPrepender lengthFieldPrepender;
 
+    /**
+     * Constructs a new MessageBuffer protocol with default configuration.
+     * <p>
+     * Dependencies must be set via setter methods after construction.
+     * </p>
+     */
     public MessageBufferProtocol() {
         super("MESSAGE_BUFFER_PROTOCOL");
     }
 
+    /**
+     * Configures the channel pipeline with MessageBuffer protocol handlers.
+     * <p>
+     * Adds handlers in the following order:
+     * <ol>
+     *   <li><b>lengthDecoder</b> - Extracts frames based on 2-byte length prefix (inbound)</li>
+     *   <li><b>messageBufferEventDecoder</b> - Decodes binary to Event objects (inbound)</li>
+     *   <li><b>eventHandler</b> - Processes decoded events (bidirectional)</li>
+     *   <li><b>lengthFieldPrepender</b> - Adds 2-byte length prefix (outbound)</li>
+     *   <li><b>messageBufferEventEncoder</b> - Encodes Event objects to binary (outbound)</li>
+     * </ol>
+     * </p>
+     * <p>
+     * <b>Note:</b> Outbound handlers execute in reverse order of addition, so
+     * messageBufferEventEncoder runs before lengthFieldPrepender.
+     * </p>
+     *
+     * @param playerSession the session to configure with MessageBuffer protocol
+     */
     @Override
     public void applyProtocol(PlayerSession playerSession) {
         LOG.debug("Going to apply protocol on session: {}.", playerSession);

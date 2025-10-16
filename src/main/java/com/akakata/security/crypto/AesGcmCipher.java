@@ -8,7 +8,8 @@ import java.security.SecureRandom;
 import java.util.Base64;
 
 /**
- * 使用 AES/GCM/NoPadding 对称加密辅助类
+ *
+ * @author Kelvin
  */
 public final class AesGcmCipher {
 

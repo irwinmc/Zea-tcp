@@ -75,18 +75,4 @@ public interface Game {
      * 关闭游戏，断开所有连接到该游戏的玩家会话
      */
     void close();
-
-    /**
-     * 获取工厂
-     *
-     * @return 会话工厂
-     */
-    SessionFactory getFactory();
-
-    /**
-     * 设置工厂
-     *
-     * @param factory 会话工厂
-     */
-    void setFactory(SessionFactory factory);
 }

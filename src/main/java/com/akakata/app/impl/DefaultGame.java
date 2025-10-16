@@ -9,11 +9,7 @@ import com.akakata.event.impl.DefaultSessionEventHandler;
 public class DefaultGame extends AbstractGame {
 
     public DefaultGame() {
-        super(new AbstractGame.GameSessionBuilder().gameName("ZEAL_GAME"));
-    }
-
-    public DefaultGame(GameSessionBuilder gameSessionBuilder) {
-        super(gameSessionBuilder);
+        super("ZEA_GAME");
     }
 
     @Override

@@ -20,6 +20,8 @@ import io.netty.handler.codec.http.websocketx.WebSocketFrame;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.inject.Inject;
+
 /**
  * Web socket 协议拥有消息边界
  * 因此不需要处理粘包和半包的问题
@@ -31,20 +33,18 @@ public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocket
 
     private static final Logger LOG = LoggerFactory.getLogger(WebSocketLoginHandler.class);
 
-    /**
-     * Protocol
-     */
-    protected Protocol protocol;
+    private final Protocol protocol;
+    private final Game game;
+    private final SessionManagerService<Credentials> sessionManagerService;
 
-    /**
-     * Game instance
-     */
-    protected Game game;
-
-    /**
-     * Session manage service
-     */
-    protected SessionManagerService<Credentials> sessionManagerService;
+    @Inject
+    public WebSocketLoginHandler(Protocol protocol,
+                                 Game game,
+                                 SessionManagerService<Credentials> sessionManagerService) {
+        this.protocol = protocol;
+        this.game = game;
+        this.sessionManagerService = sessionManagerService;
+    }
 
     @Override
     public void channelRead0(ChannelHandlerContext ctx, WebSocketFrame frame) throws Exception {
@@ -189,32 +189,5 @@ public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocket
         } else {
             return new BinaryWebSocketFrame(opcode);
         }
-    }
-
-    /**
-     * Spring configuration
-     */
-    public Protocol getProtocol() {
-        return protocol;
-    }
-
-    public void setProtocol(Protocol protocol) {
-        this.protocol = protocol;
-    }
-
-    public Game getGame() {
-        return game;
-    }
-
-    public void setGame(Game game) {
-        this.game = game;
-    }
-
-    public SessionManagerService<Credentials> getSessionManagerService() {
-        return sessionManagerService;
-    }
-
-    public void setSessionManagerService(SessionManagerService<Credentials> sessionManagerService) {
-        this.sessionManagerService = sessionManagerService;
     }
 }

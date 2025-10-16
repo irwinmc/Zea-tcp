@@ -19,6 +19,8 @@ import io.netty.channel.ChannelHandler.Sharable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.inject.Inject;
+import javax.inject.Named;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -30,25 +32,23 @@ public class LoginHandler extends SimpleChannelInboundHandler<Event> {
     private static final Logger LOG = LoggerFactory.getLogger(LoginHandler.class);
 
     /**
-     * Used for book keeping purpose. It will count all open channels.
+     * Used for bookkeeping purpose. It will count all open channels.
      * Currently closed channels will not lead to a decrement.
      */
     private static final AtomicInteger CHANNEL_COUNTER = new AtomicInteger(0);
 
-    /**
-     * Protocol
-     */
-    protected Protocol protocol;
+    private final Protocol protocol;
+    private final Game game;
+    private final SessionManagerService<Credentials> sessionManagerService;
 
-    /**
-     * Game instance
-     */
-    protected Game game;
-
-    /**
-     * Session manage service
-     */
-    protected SessionManagerService<Credentials> sessionManagerService;
+    @Inject
+    public LoginHandler(@Named("tcpProtocol") Protocol protocol,
+                       Game game,
+                       SessionManagerService<Credentials> sessionManagerService) {
+        this.protocol = protocol;
+        this.game = game;
+        this.sessionManagerService = sessionManagerService;
+    }
 
     @Override
     public void channelRead0(ChannelHandlerContext ctx, Event event) throws Exception {
@@ -171,32 +171,5 @@ public class LoginHandler extends SimpleChannelInboundHandler<Event> {
     protected void closeChannelWithLoginFailure(Channel channel) {
         ChannelFuture future = channel.writeAndFlush(NettyUtils.createBufferForOpcode(Events.LOG_IN_FAILURE));
         future.addListener(ChannelFutureListener.CLOSE);
-    }
-
-    /**
-     * Spring configuration
-     */
-    public Protocol getProtocol() {
-        return protocol;
-    }
-
-    public void setProtocol(Protocol protocol) {
-        this.protocol = protocol;
-    }
-
-    public Game getGame() {
-        return game;
-    }
-
-    public void setGame(Game game) {
-        this.game = game;
-    }
-
-    public SessionManagerService<Credentials> getSessionManagerService() {
-        return sessionManagerService;
-    }
-
-    public void setSessionManagerService(SessionManagerService<Credentials> sessionManagerService) {
-        this.sessionManagerService = sessionManagerService;
     }
 }

@@ -11,6 +11,8 @@ import io.netty.handler.codec.LengthFieldPrepender;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.inject.Inject;
+
 /**
  * @author Kelvin
  */
@@ -18,12 +20,18 @@ public class JsonProtocol extends AbstractNettyProtocol {
 
     private static final Logger LOG = LoggerFactory.getLogger(JsonProtocol.class);
 
-    private JsonDecoder jsonDecoder;
-    private JsonEncoder jsonEncoder;
-    private LengthFieldPrepender lengthFieldPrepender;
+    private final JsonDecoder jsonDecoder;
+    private final JsonEncoder jsonEncoder;
+    private final LengthFieldPrepender lengthFieldPrepender;
 
-    public JsonProtocol() {
+    @Inject
+    public JsonProtocol(JsonDecoder jsonDecoder,
+                       JsonEncoder jsonEncoder,
+                       LengthFieldPrepender lengthFieldPrepender) {
         super("JSON_PROTOCOL");
+        this.jsonDecoder = jsonDecoder;
+        this.jsonEncoder = jsonEncoder;
+        this.lengthFieldPrepender = lengthFieldPrepender;
     }
 
     @Override
@@ -41,29 +49,5 @@ public class JsonProtocol extends AbstractNettyProtocol {
         // NOTE the last encoder in the pipeline is the first encoder to be called.
         pipeline.addLast("lengthFieldPrepender", lengthFieldPrepender);
         pipeline.addLast("jsonEncoder", jsonEncoder);
-    }
-
-    public JsonDecoder getJsonDecoder() {
-        return jsonDecoder;
-    }
-
-    public void setJsonDecoder(JsonDecoder jsonDecoder) {
-        this.jsonDecoder = jsonDecoder;
-    }
-
-    public JsonEncoder getJsonEncoder() {
-        return jsonEncoder;
-    }
-
-    public void setJsonEncoder(JsonEncoder jsonEncoder) {
-        this.jsonEncoder = jsonEncoder;
-    }
-
-    public LengthFieldPrepender getLengthFieldPrepender() {
-        return lengthFieldPrepender;
-    }
-
-    public void setLengthFieldPrepender(LengthFieldPrepender lengthFieldPrepender) {
-        this.lengthFieldPrepender = lengthFieldPrepender;
     }
 }

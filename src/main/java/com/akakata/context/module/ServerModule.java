@@ -10,6 +10,10 @@ import com.akakata.protocols.Protocol;
 import com.akakata.server.NettyConfig;
 import com.akakata.server.Server;
 import com.akakata.server.ServerManager;
+import com.akakata.server.http.ApiHandler;
+import com.akakata.server.http.IndexPageHandler;
+import com.akakata.server.http.RpcHandler;
+import com.akakata.server.http.StaticFileHandler;
 import com.akakata.server.impl.NettyTCPServer;
 import com.akakata.server.impl.ServerManagerImpl;
 import com.akakata.server.initializer.HttpServerChannelInitializer;
@@ -30,53 +34,90 @@ import javax.inject.Singleton;
 import java.util.HashMap;
 import java.util.Map;
 
+/**
+ * Dagger module for server-related dependencies.
+ * Provides Server instances, HTTP handlers, and channel initializers.
+ *
+ * @author Kelvin
+ */
 @Module
 public abstract class ServerModule {
 
     private ServerModule() {
     }
 
+    // ============================================================
+    // ServerManager Binding
+    // ============================================================
+
     @Binds
     @Singleton
     abstract ServerManager bindServerManager(ServerManagerImpl impl);
 
+    // ============================================================
+    // HTTP Handlers
+    // ============================================================
+
     @Provides
     @Singleton
-    static HttpRequestHandler provideHttpRequestHandler() {
-        HttpRequestHandler handler = new HttpRequestHandler();
-        handler.setIndexPageHandler(new com.akakata.server.http.IndexPageHandler());
-        handler.setApiHandler(new com.akakata.server.http.ApiHandler());
-        handler.setRpcHandler(new com.akakata.server.http.RpcHandler());
-        return handler;
+    static StaticFileHandler provideStaticFileHandler() {
+        return new StaticFileHandler();
     }
+
+    @Provides
+    @Singleton
+    static IndexPageHandler provideIndexPageHandler() {
+        return new IndexPageHandler();
+    }
+
+    @Provides
+    @Singleton
+    static ApiHandler provideApiHandler() {
+        return new ApiHandler();
+    }
+
+    @Provides
+    @Singleton
+    static RpcHandler provideRpcHandler() {
+        return new RpcHandler();
+    }
+
+    @Provides
+    @Singleton
+    static HttpRequestHandler provideHttpRequestHandler(StaticFileHandler staticFileHandler,
+                                                         IndexPageHandler indexPageHandler,
+                                                         ApiHandler apiHandler,
+                                                         RpcHandler rpcHandler) {
+        return new HttpRequestHandler(staticFileHandler, indexPageHandler, apiHandler, rpcHandler);
+    }
+
+    // ============================================================
+    // Channel Initializers
+    // ============================================================
 
     @Provides
     @Singleton
     static LoginChannelInitializer provideLoginChannelInitializer(@Named("tcpDecoder") ChannelHandler decoder,
                                                                   LoginHandler loginHandler,
                                                                   LengthFieldPrepender prepender) {
-        LoginChannelInitializer initializer = new LoginChannelInitializer();
-        initializer.setEventDecoder(decoder);
-        initializer.setLoginHandler(loginHandler);
-        initializer.setLengthFieldPrepender(prepender);
-        return initializer;
+        return new LoginChannelInitializer(decoder, loginHandler, prepender);
     }
 
     @Provides
     @Singleton
     static HttpServerChannelInitializer provideHttpServerChannelInitializer(HttpRequestHandler handler) {
-        HttpServerChannelInitializer initializer = new HttpServerChannelInitializer();
-        initializer.setHttpRequestHandler(handler);
-        return initializer;
+        return new HttpServerChannelInitializer(handler);
     }
 
     @Provides
     @Singleton
     static WebSocketServerChannelInitializer provideWebSocketServerChannelInitializer(WebSocketLoginHandler handler) {
-        WebSocketServerChannelInitializer initializer = new WebSocketServerChannelInitializer();
-        initializer.setWebSocketLoginHandler(handler);
-        return initializer;
+        return new WebSocketServerChannelInitializer(handler);
     }
+
+    // ============================================================
+    // Server Providers
+    // ============================================================
 
     @Provides
     @Singleton
@@ -104,6 +145,10 @@ public abstract class ServerModule {
                                          WebSocketServerChannelInitializer initializer) {
         return createServer(configurationManager, networkBootstrap, "web.socket.port", 8300, initializer);
     }
+
+    // ============================================================
+    // Helper Methods
+    // ============================================================
 
     private static Server createServer(ConfigurationManager configurationManager,
                                         NetworkBootstrap networkBootstrap,

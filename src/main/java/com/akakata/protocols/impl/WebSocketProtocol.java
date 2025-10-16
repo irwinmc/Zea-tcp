@@ -11,6 +11,8 @@ import io.netty.channel.ChannelPipeline;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.inject.Inject;
+
 /**
  * @author Kelvin
  */
@@ -18,11 +20,15 @@ public class WebSocketProtocol extends AbstractNettyProtocol {
 
     private static final Logger LOG = LoggerFactory.getLogger(WebSocketProtocol.class);
 
-    private WebSocketEventDecoder webSocketEventDecoder;
-    private WebSocketEventEncoder webSocketEventEncoder;
+    private final WebSocketEventDecoder webSocketEventDecoder;
+    private final WebSocketEventEncoder webSocketEventEncoder;
 
-    public WebSocketProtocol() {
+    @Inject
+    public WebSocketProtocol(WebSocketEventDecoder webSocketEventDecoder,
+                            WebSocketEventEncoder webSocketEventEncoder) {
         super("WEB_SOCKET_PROTOCOL");
+        this.webSocketEventDecoder = webSocketEventDecoder;
+        this.webSocketEventEncoder = webSocketEventEncoder;
     }
 
     @Override
@@ -38,21 +44,5 @@ public class WebSocketProtocol extends AbstractNettyProtocol {
         pipeline.addLast("webSocketEventDecoder", webSocketEventDecoder);
         pipeline.addLast("eventHandler", new DefaultToServerHandler(playerSession));
         pipeline.addLast("webSocketEventEncoder", webSocketEventEncoder);
-    }
-
-    public WebSocketEventDecoder getWebSocketEventDecoder() {
-        return webSocketEventDecoder;
-    }
-
-    public void setWebSocketEventDecoder(WebSocketEventDecoder webSocketEventDecoder) {
-        this.webSocketEventDecoder = webSocketEventDecoder;
-    }
-
-    public WebSocketEventEncoder getWebSocketEventEncoder() {
-        return webSocketEventEncoder;
-    }
-
-    public void setWebSocketEventEncoder(WebSocketEventEncoder webSocketEventEncoder) {
-        this.webSocketEventEncoder = webSocketEventEncoder;
     }
 }

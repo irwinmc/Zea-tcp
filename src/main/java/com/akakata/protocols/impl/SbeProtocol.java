@@ -11,6 +11,8 @@ import io.netty.handler.codec.LengthFieldPrepender;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.inject.Inject;
+
 /**
  * TCP 默认协议：SBE 二进制封包。
  */
@@ -18,12 +20,18 @@ public class SbeProtocol extends AbstractNettyProtocol {
 
     private static final Logger LOG = LoggerFactory.getLogger(SbeProtocol.class);
 
-    private SbeEventDecoder sbeEventDecoder;
-    private SbeEventEncoder sbeEventEncoder;
-    private LengthFieldPrepender lengthFieldPrepender;
+    private final SbeEventDecoder sbeEventDecoder;
+    private final SbeEventEncoder sbeEventEncoder;
+    private final LengthFieldPrepender lengthFieldPrepender;
 
-    public SbeProtocol() {
+    @Inject
+    public SbeProtocol(SbeEventDecoder sbeEventDecoder,
+                      SbeEventEncoder sbeEventEncoder,
+                      LengthFieldPrepender lengthFieldPrepender) {
         super("SBE_PROTOCOL");
+        this.sbeEventDecoder = sbeEventDecoder;
+        this.sbeEventEncoder = sbeEventEncoder;
+        this.lengthFieldPrepender = lengthFieldPrepender;
     }
 
     @Override
@@ -36,29 +44,5 @@ public class SbeProtocol extends AbstractNettyProtocol {
         pipeline.addLast("eventHandler", new DefaultToServerHandler(playerSession));
         pipeline.addLast("lengthFieldPrepender", lengthFieldPrepender);
         pipeline.addLast("sbeEncoder", sbeEventEncoder);
-    }
-
-    public SbeEventDecoder getSbeEventDecoder() {
-        return sbeEventDecoder;
-    }
-
-    public void setSbeEventDecoder(SbeEventDecoder sbeEventDecoder) {
-        this.sbeEventDecoder = sbeEventDecoder;
-    }
-
-    public SbeEventEncoder getSbeEventEncoder() {
-        return sbeEventEncoder;
-    }
-
-    public void setSbeEventEncoder(SbeEventEncoder sbeEventEncoder) {
-        this.sbeEventEncoder = sbeEventEncoder;
-    }
-
-    public LengthFieldPrepender getLengthFieldPrepender() {
-        return lengthFieldPrepender;
-    }
-
-    public void setLengthFieldPrepender(LengthFieldPrepender lengthFieldPrepender) {
-        this.lengthFieldPrepender = lengthFieldPrepender;
     }
 }

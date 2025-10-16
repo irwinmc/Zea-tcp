@@ -11,6 +11,8 @@ import io.netty.handler.codec.http.FullHttpRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.inject.Inject;
+
 /**
  * @author Kelvin
  */
@@ -34,17 +36,21 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
      */
     private static final String rpcPath = "/r";
 
-    /**
-     * Used to handle static file access requests.
-     */
-    private final StaticFileHandler staticFileHandler = new StaticFileHandler();
+    private final StaticFileHandler staticFileHandler;
+    private final IndexPageHandler indexPageHandler;
+    private final ApiHandler apiHandler;
+    private final RpcHandler rpcHandler;
 
-    /**
-     * Handle the server api path request and status
-     */
-    private IndexPageHandler indexPageHandler;
-    private ApiHandler apiHandler;
-    private RpcHandler rpcHandler;
+    @Inject
+    public HttpRequestHandler(StaticFileHandler staticFileHandler,
+                             IndexPageHandler indexPageHandler,
+                             ApiHandler apiHandler,
+                             RpcHandler rpcHandler) {
+        this.staticFileHandler = staticFileHandler;
+        this.indexPageHandler = indexPageHandler;
+        this.apiHandler = apiHandler;
+        this.rpcHandler = rpcHandler;
+    }
 
     @Override
     public void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) throws Exception {
@@ -86,29 +92,5 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
         } else {
             return uri.substring(0, idx);
         }
-    }
-
-    public IndexPageHandler getIndexPageHandler() {
-        return indexPageHandler;
-    }
-
-    public void setIndexPageHandler(IndexPageHandler indexPageHandler) {
-        this.indexPageHandler = indexPageHandler;
-    }
-
-    public ApiHandler getApiHandler() {
-        return apiHandler;
-    }
-
-    public void setApiHandler(ApiHandler apiHandler) {
-        this.apiHandler = apiHandler;
-    }
-
-    public RpcHandler getRpcHandler() {
-        return rpcHandler;
-    }
-
-    public void setRpcHandler(RpcHandler rpcHandler) {
-        this.rpcHandler = rpcHandler;
     }
 }

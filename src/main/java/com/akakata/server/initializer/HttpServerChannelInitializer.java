@@ -8,12 +8,19 @@ import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.HttpServerCodec;
 import io.netty.handler.stream.ChunkedWriteHandler;
 
+import javax.inject.Inject;
+
 /**
  * @author Kyia
  */
 public class HttpServerChannelInitializer extends ChannelInitializer<SocketChannel> {
 
-    private HttpRequestHandler httpRequestHandler;
+    private final HttpRequestHandler httpRequestHandler;
+
+    @Inject
+    public HttpServerChannelInitializer(HttpRequestHandler httpRequestHandler) {
+        this.httpRequestHandler = httpRequestHandler;
+    }
 
     @Override
     public void initChannel(SocketChannel ch) throws Exception {
@@ -24,13 +31,5 @@ public class HttpServerChannelInitializer extends ChannelInitializer<SocketChann
         pipeline.addLast(new HttpObjectAggregator(65536));
         pipeline.addLast(new ChunkedWriteHandler());
         pipeline.addLast(httpRequestHandler);
-    }
-
-    public HttpRequestHandler getHttpRequestHandler() {
-        return httpRequestHandler;
-    }
-
-    public void setHttpRequestHandler(HttpRequestHandler httpRequestHandler) {
-        this.httpRequestHandler = httpRequestHandler;
     }
 }

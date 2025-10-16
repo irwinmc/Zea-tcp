@@ -27,6 +27,12 @@ import org.slf4j.LoggerFactory;
 import javax.inject.Named;
 import javax.inject.Singleton;
 
+/**
+ * Dagger module for protocol-related dependencies.
+ * Provides codecs, protocols, and login handlers.
+ *
+ * @author Kelvin
+ */
 @Module
 public final class ProtocolModule {
 
@@ -34,6 +40,10 @@ public final class ProtocolModule {
 
     private ProtocolModule() {
     }
+
+    // ============================================================
+    // Netty Codecs & Frame Handlers
+    // ============================================================
 
     @Provides
     @Singleton
@@ -83,16 +93,16 @@ public final class ProtocolModule {
         return new EventDecoder();
     }
 
+    // ============================================================
+    // Protocol Implementations
+    // ============================================================
+
     @Provides
     @Singleton
     static SbeProtocol provideSbeProtocol(SbeEventDecoder decoder,
                                           SbeEventEncoder encoder,
                                           LengthFieldPrepender prepender) {
-        SbeProtocol protocol = new SbeProtocol();
-        protocol.setSbeEventDecoder(decoder);
-        protocol.setSbeEventEncoder(encoder);
-        protocol.setLengthFieldPrepender(prepender);
-        return protocol;
+        return new SbeProtocol(decoder, encoder, prepender);
     }
 
     @Provides
@@ -100,22 +110,19 @@ public final class ProtocolModule {
     static JsonProtocol provideJsonProtocol(JsonDecoder decoder,
                                             JsonEncoder encoder,
                                             LengthFieldPrepender prepender) {
-        JsonProtocol protocol = new JsonProtocol();
-        protocol.setJsonDecoder(decoder);
-        protocol.setJsonEncoder(encoder);
-        protocol.setLengthFieldPrepender(prepender);
-        return protocol;
+        return new JsonProtocol(decoder, encoder, prepender);
     }
 
     @Provides
     @Singleton
     static WebSocketProtocol provideWebSocketProtocol(WebSocketEventDecoder decoder,
                                                       WebSocketEventEncoder encoder) {
-        WebSocketProtocol protocol = new WebSocketProtocol();
-        protocol.setWebSocketEventDecoder(decoder);
-        protocol.setWebSocketEventEncoder(encoder);
-        return protocol;
+        return new WebSocketProtocol(decoder, encoder);
     }
+
+    // ============================================================
+    // Protocol Selectors (Based on Configuration)
+    // ============================================================
 
     @Provides
     @Singleton
@@ -145,16 +152,16 @@ public final class ProtocolModule {
         return sbeDecoder;
     }
 
+    // ============================================================
+    // Login Handlers
+    // ============================================================
+
     @Provides
     @Singleton
     static LoginHandler provideLoginHandler(@Named("tcpProtocol") Protocol protocol,
                                             Game game,
                                             SessionManagerService<Credentials> sessionManagerService) {
-        LoginHandler handler = new LoginHandler();
-        handler.setProtocol(protocol);
-        handler.setGame(game);
-        handler.setSessionManagerService(sessionManagerService);
-        return handler;
+        return new LoginHandler(protocol, game, sessionManagerService);
     }
 
     @Provides
@@ -162,10 +169,6 @@ public final class ProtocolModule {
     static WebSocketLoginHandler provideWebSocketLoginHandler(WebSocketProtocol protocol,
                                                               Game game,
                                                               SessionManagerService<Credentials> sessionManagerService) {
-        WebSocketLoginHandler handler = new WebSocketLoginHandler();
-        handler.setProtocol(protocol);
-        handler.setGame(game);
-        handler.setSessionManagerService(sessionManagerService);
-        return handler;
+        return new WebSocketLoginHandler(protocol, game, sessionManagerService);
     }
 }

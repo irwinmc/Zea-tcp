@@ -5,14 +5,13 @@ import com.akakata.context.module.GameServerComponent;
 import com.akakata.event.impl.EventDispatcherMetrics;
 import com.akakata.event.impl.EventDispatchers;
 import com.akakata.server.Server;
-import com.akakata.service.TaskManagerService;
-import com.akakata.service.impl.SimpleTaskManagerServiceImpl;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Lightweight application context coordinator.
@@ -27,11 +26,9 @@ public final class ServerContext implements AutoCloseable {
 
     private final ConfigurationManager configManager;
     private final NetworkBootstrap networkBootstrap;
-    private GameServerComponent component;
     private EventDispatcherMetrics dispatcherMetrics;
-    private TaskManagerService taskManagerService;
     private volatile boolean initialized = false;
-    private final Map<String, Server> servers = new ConcurrentHashMap<>();
+    private volatile Map<String, Server> servers = new HashMap<>();
 
     public ServerContext() throws IOException {
         this(DEFAULT_CONFIG_PATH);
@@ -59,15 +56,16 @@ public final class ServerContext implements AutoCloseable {
         }
 
         LOG.info("Initializing ServerContext...");
-        component = DaggerGameServerComponent.builder()
+        GameServerComponent component = DaggerGameServerComponent.builder()
                 .configurationManager(configManager)
                 .networkBootstrap(networkBootstrap)
                 .build();
 
-        servers.put(AppContext.TCP_SERVER, component.tcpServer());
-        servers.put(AppContext.HTTP_SERVER, component.httpServer());
-        servers.put(AppContext.WEB_SOCKET_SERVER, component.webSocketServer());
-        taskManagerService = component.taskManagerService();
+        Map<String, Server> tempServers = new HashMap<>();
+        tempServers.put(AppContext.TCP_SERVER, component.tcpServer());
+        tempServers.put(AppContext.HTTP_SERVER, component.httpServer());
+        tempServers.put(AppContext.WEB_SOCKET_SERVER, component.webSocketServer());
+        servers = Collections.unmodifiableMap(tempServers);
 
         startDispatcherMetrics();
         initialized = true;
@@ -119,8 +117,6 @@ public final class ServerContext implements AutoCloseable {
             dispatcherMetrics.stop();
         }
 
-        shutdownTaskManager();
-
         LOG.info("ServerContext shutdown complete");
     }
 
@@ -134,12 +130,6 @@ public final class ServerContext implements AutoCloseable {
         long intervalSeconds = configManager.getInt("metrics.event.interval.seconds", 30);
         dispatcherMetrics = new EventDispatcherMetrics();
         dispatcherMetrics.start(intervalSeconds);
-    }
-
-    private void shutdownTaskManager() {
-        if (taskManagerService instanceof SimpleTaskManagerServiceImpl simpleExecutor) {
-            simpleExecutor.shutdown();
-        }
     }
 
     private void stopServer(String beanName, String serverType) {

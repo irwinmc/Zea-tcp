@@ -10,6 +10,8 @@ import io.netty.handler.codec.http.HttpServerCodec;
 import io.netty.handler.codec.http.websocketx.WebSocketServerProtocolHandler;
 import io.netty.handler.codec.http.websocketx.extensions.compression.WebSocketServerCompressionHandler;
 
+import javax.inject.Inject;
+
 /**
  * @author Kyia
  */
@@ -17,7 +19,12 @@ public class WebSocketServerChannelInitializer extends ChannelInitializer<Socket
 
     private static final String WEBSOCKET_PATH = "/";
 
-    private WebSocketLoginHandler webSocketLoginHandler;
+    private final WebSocketLoginHandler webSocketLoginHandler;
+
+    @Inject
+    public WebSocketServerChannelInitializer(WebSocketLoginHandler webSocketLoginHandler) {
+        this.webSocketLoginHandler = webSocketLoginHandler;
+    }
 
     @Override
     public void initChannel(SocketChannel ch) throws Exception {
@@ -28,13 +35,5 @@ public class WebSocketServerChannelInitializer extends ChannelInitializer<Socket
         pipeline.addLast(new WebSocketServerCompressionHandler());
         pipeline.addLast(new WebSocketServerProtocolHandler(WEBSOCKET_PATH, null, true));
         pipeline.addLast(AppContext.WEB_SOCKET_LOGIN_HANDLER, webSocketLoginHandler);
-    }
-
-    public WebSocketLoginHandler getWebSocketLoginHandler() {
-        return webSocketLoginHandler;
-    }
-
-    public void setWebSocketLoginHandler(WebSocketLoginHandler webSocketLoginHandler) {
-        this.webSocketLoginHandler = webSocketLoginHandler;
     }
 }

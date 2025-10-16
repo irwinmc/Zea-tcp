@@ -18,7 +18,6 @@ public class AppContext {
      * Servers
      */
     public static final String SERVER_MANAGER = "serverManager";
-    public static final String FLASH_POLICY_SERVER = "flashPolicyServer";
     public static final String TCP_SERVER = "tcpServer";
     public static final String HTTP_SERVER = "httpServer";
     public static final String WEB_SOCKET_SERVER = "webSocketServer";
@@ -28,7 +27,6 @@ public class AppContext {
      */
     public static final String SESSION_REGISTRY_SERVICE = "sessionManager";
     public static final String GAME_ADMIN_SERVICE = "gameAdminService";
-    public static final String TASK_MANAGER_SERVICE = "taskManager";
 
     /**
      * Netty default handlers

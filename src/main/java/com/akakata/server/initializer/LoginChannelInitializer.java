@@ -8,15 +8,35 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.codec.LengthFieldPrepender;
 
+import javax.inject.Inject;
+import javax.inject.Named;
+
 /**
  * @author Kyia
  */
 public class LoginChannelInitializer extends ChannelInitializer<SocketChannel> {
 
-    private int frameSize = 1024;
-    private ChannelHandler eventDecoder;
-    private LoginHandler loginHandler;
-    private LengthFieldPrepender lengthFieldPrepender;
+    private final int frameSize;
+    private final ChannelHandler eventDecoder;
+    private final LoginHandler loginHandler;
+    private final LengthFieldPrepender lengthFieldPrepender;
+
+    @Inject
+    public LoginChannelInitializer(@Named("tcpDecoder") ChannelHandler eventDecoder,
+                                   LoginHandler loginHandler,
+                                   LengthFieldPrepender lengthFieldPrepender) {
+        this(1024, eventDecoder, loginHandler, lengthFieldPrepender);
+    }
+
+    public LoginChannelInitializer(int frameSize,
+                                   ChannelHandler eventDecoder,
+                                   LoginHandler loginHandler,
+                                   LengthFieldPrepender lengthFieldPrepender) {
+        this.frameSize = frameSize;
+        this.eventDecoder = eventDecoder;
+        this.loginHandler = loginHandler;
+        this.lengthFieldPrepender = lengthFieldPrepender;
+    }
 
     @Override
     public void initChannel(SocketChannel ch) throws Exception {
@@ -29,39 +49,7 @@ public class LoginChannelInitializer extends ChannelInitializer<SocketChannel> {
         pipeline.addLast(lengthFieldPrepender);
     }
 
-    public ChannelHandler createLengthBasedFrameDecoder() {
+    private ChannelHandler createLengthBasedFrameDecoder() {
         return new LengthFieldBasedFrameDecoder(frameSize, 0, 2, 0, 2);
-    }
-
-    public int getFrameSize() {
-        return frameSize;
-    }
-
-    public void setFrameSize(int frameSize) {
-        this.frameSize = frameSize;
-    }
-
-    public ChannelHandler getEventDecoder() {
-        return eventDecoder;
-    }
-
-    public void setEventDecoder(ChannelHandler eventDecoder) {
-        this.eventDecoder = eventDecoder;
-    }
-
-    public LoginHandler getLoginHandler() {
-        return loginHandler;
-    }
-
-    public void setLoginHandler(LoginHandler loginHandler) {
-        this.loginHandler = loginHandler;
-    }
-
-    public LengthFieldPrepender getLengthFieldPrepender() {
-        return lengthFieldPrepender;
-    }
-
-    public void setLengthFieldPrepender(LengthFieldPrepender lengthFieldPrepender) {
-        this.lengthFieldPrepender = lengthFieldPrepender;
     }
 }

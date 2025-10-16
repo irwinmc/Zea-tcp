@@ -3,7 +3,6 @@ package com.akakata.context.module;
 import com.akakata.context.ConfigurationManager;
 import com.akakata.context.NetworkBootstrap;
 import com.akakata.server.Server;
-import com.akakata.service.TaskManagerService;
 import dagger.BindsInstance;
 import dagger.Component;
 import javax.inject.Named;
@@ -29,8 +28,6 @@ public interface GameServerComponent {
 
     @Named(WEB_SOCKET_SERVER)
     Server webSocketServer();
-
-    TaskManagerService taskManagerService();
 
     @Component.Builder
     interface Builder {

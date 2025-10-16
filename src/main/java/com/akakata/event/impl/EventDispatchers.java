@@ -8,7 +8,7 @@ import org.slf4j.LoggerFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * 事件调度器工厂，集中维护共享的 Agrona 事件总线，避免为每个会话创建线程。
+ * 事件调度器工厂，集中维护共享的 Agrona 事件总线
  *
  * @author Kelvin
  */

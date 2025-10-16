@@ -22,22 +22,22 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
     /**
      * Root path
      */
-    private static String rootPath = "/";
+    private static final String rootPath = "/";
 
     /**
      * Open HTTP API(interface)
      */
-    private static String apiPath = "/api";
+    private static final String apiPath = "/api";
 
     /**
      * Private RPC
      */
-    private static String rpcPath = "/r";
+    private static final String rpcPath = "/r";
 
     /**
      * Used to handle static file access requests.
      */
-    private StaticFileHandler staticFileHandler = new StaticFileHandler();
+    private final StaticFileHandler staticFileHandler = new StaticFileHandler();
 
     /**
      * Handle the server api path request and status
@@ -50,6 +50,7 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
     public void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) throws Exception {
         // Get base URI, below this gateway, the request can be handled as API request
         String baseUri = getBaseUri(request.uri());
+
         // Index page
         if (baseUri.equals(rootPath)) {
             // Hold the index page

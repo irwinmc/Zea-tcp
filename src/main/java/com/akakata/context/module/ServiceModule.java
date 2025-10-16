@@ -8,37 +8,39 @@ import com.akakata.service.SessionManagerService;
 import com.akakata.service.TaskManagerService;
 import com.akakata.service.impl.SimpleSessionManagerServiceImpl;
 import com.akakata.service.impl.SimpleTaskManagerServiceImpl;
-import com.google.inject.*;
+import dagger.Module;
+import dagger.Provides;
 
-/**
- * Provides game/session/task related services.
- */
-public class ServiceModule extends AbstractModule {
+import javax.inject.Singleton;
 
-    private final ConfigurationManager configurationManager;
+@Module
+public final class ServiceModule {
 
-    public ServiceModule(ConfigurationManager configurationManager) {
-        this.configurationManager = configurationManager;
-    }
-
-    @Override
-    protected void configure() {
-        bind(new TypeLiteral<SessionManagerService<Credentials>>() {})
-                .to(SimpleSessionManagerServiceImpl.class)
-                .in(Scopes.SINGLETON);
-        bind(Game.class).to(DefaultGame.class).in(Scopes.SINGLETON);
+    private ServiceModule() {
     }
 
     @Provides
     @Singleton
-    SimpleTaskManagerServiceImpl provideTaskManagerServiceImpl() {
+    static SessionManagerService<Credentials> provideSessionManagerService() {
+        return new SimpleSessionManagerServiceImpl();
+    }
+
+    @Provides
+    @Singleton
+    static Game provideGame() {
+        return new DefaultGame();
+    }
+
+    @Provides
+    @Singleton
+    static SimpleTaskManagerServiceImpl provideTaskManagerServiceImpl(ConfigurationManager configurationManager) {
         int poolSize = configurationManager.getInt("taskManager.poolSize", 2);
         return new SimpleTaskManagerServiceImpl(poolSize);
     }
 
     @Provides
     @Singleton
-    TaskManagerService provideTaskManagerService(SimpleTaskManagerServiceImpl impl) {
+    static TaskManagerService provideTaskManagerService(SimpleTaskManagerServiceImpl impl) {
         return impl;
     }
 }

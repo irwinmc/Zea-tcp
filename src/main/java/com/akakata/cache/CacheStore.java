@@ -13,7 +13,7 @@ public interface CacheStore {
     void init();
 
     /**
-     * Dispose when it shutdown
+     * Dispose when it shut down
      */
     void dispose();
 

@@ -16,7 +16,7 @@
         <org.agrona.version>2.3.0</org.agrona.version>
         <org.slf4j.version>2.0.17</org.slf4j.version>
         <org.apache.logging.log4j.version>2.25.1</org.apache.logging.log4j.version>
-        <com.google.guice.version>7.0.0</com.google.guice.version>
+        <dagger.version>2.51.1</dagger.version>
     </properties>
 
     <dependencies>
@@ -71,9 +71,9 @@
         </dependency>
 
         <dependency>
-            <groupId>com.google.inject</groupId>
-            <artifactId>guice</artifactId>
-            <version>${com.google.guice.version}</version>
+            <groupId>com.google.dagger</groupId>
+            <artifactId>dagger</artifactId>
+            <version>${dagger.version}</version>
         </dependency>
         <dependency>
             <groupId>javax.inject</groupId>
@@ -81,4 +81,25 @@
             <version>1</version>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+                <configuration>
+                    <source>${maven.compiler.source}</source>
+                    <target>${maven.compiler.target}</target>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>com.google.dagger</groupId>
+                            <artifactId>dagger-compiler</artifactId>
+                            <version>${dagger.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>

@@ -22,18 +22,22 @@ public class DefaultSession implements Session {
      * Session id
      */
     protected final Object id;
+
     /**
      * session parameters
      */
     protected final Map<String, Object> sessionAttributes;
+
     /**
      * Session created time
      */
     protected final long creationTime;
+
     /**
      * Event dispatcher
      */
     protected EventDispatcher eventDispatcher;
+
     /**
      * Session last read write time
      */
@@ -70,6 +74,7 @@ public class DefaultSession implements Session {
         // done in the builder.build() method, but done here since this class is
         // meant to be overriden and this could be easier.
         sessionBuilder.validateAndSetValues();
+
         this.id = sessionBuilder.id;
         this.eventDispatcher = sessionBuilder.eventDispatcher;
         this.sessionAttributes = sessionBuilder.sessionAttributes;

@@ -13,7 +13,7 @@ public interface Cache<T> {
     void init();
 
     /**
-     * Dispose when it shutdown
+     * Dispose when it shut down
      */
     void dispose();
 

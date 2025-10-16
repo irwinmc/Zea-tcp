@@ -34,7 +34,7 @@ public abstract class AbstractCacheStore implements CacheStore {
     }
 
     /**
-     * Dispose when it shutdown
+     * Dispose when it shut down
      */
     @Override
     public void dispose() {

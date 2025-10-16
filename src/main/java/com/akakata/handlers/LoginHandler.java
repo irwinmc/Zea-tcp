@@ -28,19 +28,23 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class LoginHandler extends SimpleChannelInboundHandler<Event> {
 
     private static final Logger LOG = LoggerFactory.getLogger(LoginHandler.class);
+
     /**
      * Used for book keeping purpose. It will count all open channels.
      * Currently closed channels will not lead to a decrement.
      */
     private static final AtomicInteger CHANNEL_COUNTER = new AtomicInteger(0);
+
     /**
      * Protocol
      */
     protected Protocol protocol;
+
     /**
      * Game instance
      */
     protected Game game;
+
     /**
      * Session manage service
      */
@@ -61,9 +65,7 @@ public class LoginHandler extends SimpleChannelInboundHandler<Event> {
                 Credentials credentials = sessionManagerService.verify(object);
                 handleLogin(channel, credentials);
             } else {
-                LOG.error("Invalid event {} sent from remote address {}. Going to close channel {}.",
-                        new Object[]{event.getType(), channel.remoteAddress(), channel});
-
+                LOG.error("Invalid event {} sent from remote address {}. Going to close channel {}.", event.getType(), channel.remoteAddress(), channel);
                 closeChannelWithLoginFailure(channel);
             }
         } finally {

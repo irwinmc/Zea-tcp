@@ -6,61 +6,55 @@ import com.akakata.context.NetworkBootstrap;
 import com.akakata.handlers.HttpRequestHandler;
 import com.akakata.handlers.LoginHandler;
 import com.akakata.handlers.WebSocketLoginHandler;
+import com.akakata.protocols.Protocol;
 import com.akakata.server.NettyConfig;
 import com.akakata.server.Server;
 import com.akakata.server.ServerManager;
-import com.akakata.server.http.ApiHandler;
-import com.akakata.server.http.IndexPageHandler;
-import com.akakata.server.http.RpcHandler;
 import com.akakata.server.impl.NettyTCPServer;
 import com.akakata.server.impl.ServerManagerImpl;
 import com.akakata.server.initializer.HttpServerChannelInitializer;
 import com.akakata.server.initializer.LoginChannelInitializer;
 import com.akakata.server.initializer.WebSocketServerChannelInitializer;
-import com.google.inject.AbstractModule;
-import com.google.inject.Provides;
-import com.google.inject.Singleton;
-import com.google.inject.name.Named;
+import dagger.Binds;
+import dagger.Module;
+import dagger.Provides;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.handler.codec.LengthFieldPrepender;
 
+import javax.inject.Named;
+import javax.inject.Singleton;
+
 import java.util.HashMap;
 import java.util.Map;
 
-/**
- * Builds Netty server instances and related channel initializers.
- */
-public class ServerModule extends AbstractModule {
+@Module
+public abstract class ServerModule {
 
-    private final ConfigurationManager configurationManager;
-
-    public ServerModule(ConfigurationManager configurationManager) {
-        this.configurationManager = configurationManager;
+    private ServerModule() {
     }
 
-    @Override
-    protected void configure() {
-        bind(ServerManager.class).to(ServerManagerImpl.class).in(Singleton.class);
-    }
+    @Binds
+    @Singleton
+    abstract ServerManager bindServerManager(ServerManagerImpl impl);
 
     @Provides
     @Singleton
-    HttpRequestHandler provideHttpRequestHandler() {
+    static HttpRequestHandler provideHttpRequestHandler() {
         HttpRequestHandler handler = new HttpRequestHandler();
-        handler.setIndexPageHandler(new IndexPageHandler());
-        handler.setApiHandler(new ApiHandler());
-        handler.setRpcHandler(new RpcHandler());
+        handler.setIndexPageHandler(new com.akakata.server.http.IndexPageHandler());
+        handler.setApiHandler(new com.akakata.server.http.ApiHandler());
+        handler.setRpcHandler(new com.akakata.server.http.RpcHandler());
         return handler;
     }
 
     @Provides
     @Singleton
-    LoginChannelInitializer provideLoginChannelInitializer(@Named("tcpDecoder") ChannelHandler decoder,
-                                                           LoginHandler loginHandler,
-                                                           LengthFieldPrepender prepender) {
+    static LoginChannelInitializer provideLoginChannelInitializer(@Named("tcpDecoder") ChannelHandler decoder,
+                                                                  LoginHandler loginHandler,
+                                                                  LengthFieldPrepender prepender) {
         LoginChannelInitializer initializer = new LoginChannelInitializer();
         initializer.setEventDecoder(decoder);
         initializer.setLoginHandler(loginHandler);
@@ -70,7 +64,7 @@ public class ServerModule extends AbstractModule {
 
     @Provides
     @Singleton
-    HttpServerChannelInitializer provideHttpServerChannelInitializer(HttpRequestHandler handler) {
+    static HttpServerChannelInitializer provideHttpServerChannelInitializer(HttpRequestHandler handler) {
         HttpServerChannelInitializer initializer = new HttpServerChannelInitializer();
         initializer.setHttpRequestHandler(handler);
         return initializer;
@@ -78,7 +72,7 @@ public class ServerModule extends AbstractModule {
 
     @Provides
     @Singleton
-    WebSocketServerChannelInitializer provideWebSocketServerChannelInitializer(WebSocketLoginHandler handler) {
+    static WebSocketServerChannelInitializer provideWebSocketServerChannelInitializer(WebSocketLoginHandler handler) {
         WebSocketServerChannelInitializer initializer = new WebSocketServerChannelInitializer();
         initializer.setWebSocketLoginHandler(handler);
         return initializer;
@@ -87,33 +81,37 @@ public class ServerModule extends AbstractModule {
     @Provides
     @Singleton
     @Named(AppContext.TCP_SERVER)
-    Server provideTcpServer(LoginChannelInitializer initializer,
-                            NetworkBootstrap networkBootstrap) {
-        return createServer("tcp.port", 8090, initializer, networkBootstrap);
+    static Server provideTcpServer(ConfigurationManager configurationManager,
+                                   NetworkBootstrap networkBootstrap,
+                                   LoginChannelInitializer initializer) {
+        return createServer(configurationManager, networkBootstrap, "tcp.port", 8090, initializer);
     }
 
     @Provides
     @Singleton
     @Named(AppContext.HTTP_SERVER)
-    Server provideHttpServer(HttpServerChannelInitializer initializer,
-                             NetworkBootstrap networkBootstrap) {
-        return createServer("http.port", 8081, initializer, networkBootstrap);
+    static Server provideHttpServer(ConfigurationManager configurationManager,
+                                    NetworkBootstrap networkBootstrap,
+                                    HttpServerChannelInitializer initializer) {
+        return createServer(configurationManager, networkBootstrap, "http.port", 8081, initializer);
     }
 
     @Provides
     @Singleton
     @Named(AppContext.WEB_SOCKET_SERVER)
-    Server provideWebSocketServer(WebSocketServerChannelInitializer initializer,
-                                  NetworkBootstrap networkBootstrap) {
-        return createServer("web.socket.port", 8300, initializer, networkBootstrap);
+    static Server provideWebSocketServer(ConfigurationManager configurationManager,
+                                         NetworkBootstrap networkBootstrap,
+                                         WebSocketServerChannelInitializer initializer) {
+        return createServer(configurationManager, networkBootstrap, "web.socket.port", 8300, initializer);
     }
 
-    private Server createServer(String key,
-                                int defaultPort,
-                                ChannelInitializer<? extends Channel> initializer,
-                                NetworkBootstrap networkBootstrap) {
+    private static Server createServer(ConfigurationManager configurationManager,
+                                        NetworkBootstrap networkBootstrap,
+                                        String portKey,
+                                        int defaultPort,
+                                        ChannelInitializer<? extends Channel> initializer) {
         NettyConfig config = new NettyConfig();
-        config.setPortNumber(configurationManager.getInt(key, defaultPort));
+        config.setPortNumber(configurationManager.getInt(portKey, defaultPort));
         config.setBossGroup(networkBootstrap.getBossGroup());
         config.setWorkerGroup(networkBootstrap.getWorkerGroup());
 
@@ -122,10 +120,10 @@ public class ServerModule extends AbstractModule {
         options.put(ChannelOption.SO_REUSEADDR, configurationManager.getBoolean("so.reuseaddr", true));
         config.setChannelOptions(options);
 
-        Map<ChannelOption<?>, Object> childOps = new HashMap<>();
-        childOps.put(ChannelOption.SO_KEEPALIVE, configurationManager.getBoolean("so.keepalive", true));
-        childOps.put(ChannelOption.TCP_NODELAY, configurationManager.getBoolean("tcp.nodelay", true));
-        config.setChannelChildOptions(childOps);
+        Map<ChannelOption<?>, Object> childOptions = new HashMap<>();
+        childOptions.put(ChannelOption.SO_KEEPALIVE, configurationManager.getBoolean("so.keepalive", true));
+        childOptions.put(ChannelOption.TCP_NODELAY, configurationManager.getBoolean("tcp.nodelay", true));
+        config.setChannelChildOptions(childOptions);
 
         return new NettyTCPServer(config, initializer);
     }

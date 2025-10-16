@@ -1,42 +1,53 @@
 package com.akakata.server.http;
 
-import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
-import io.netty.handler.codec.http.DefaultFullHttpResponse;
 import io.netty.handler.codec.http.FullHttpRequest;
-import io.netty.handler.codec.http.FullHttpResponse;
-import io.netty.handler.codec.http.HttpResponseStatus;
-import io.netty.util.CharsetUtil;
 
-import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_TYPE;
 import static io.netty.handler.codec.http.HttpResponseStatus.FORBIDDEN;
-import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
 
 /**
+ * Handler for processing Remote Procedure Call (RPC) requests over HTTP.
+ * <p>
+ * This handler is designed to handle RPC-style API calls. It automatically includes
+ * CORS (Cross-Origin Resource Sharing) headers in error responses to support
+ * cross-domain requests from web browsers.
+ * </p>
+ * <p>
+ * By default, all requests receive a FORBIDDEN (403) response with CORS headers enabled.
+ * Override {@link #handleRpcRequest} to implement actual RPC logic.
+ * </p>
+ * <p>
+ * <b>Usage Example:</b>
+ * <pre>
+ * public class MyRpcHandler extends RpcHandler {
+ *     &#64;Override
+ *     public void handleRpcRequest(ChannelHandlerContext ctx, FullHttpRequest request) {
+ *         // Parse RPC request
+ *         String method = extractMethod(request);
+ *         Object result = invokeMethod(method);
+ *
+ *         // Send RPC response with CORS
+ *         ByteBuf response = Unpooled.copiedBuffer(toJson(result), CharsetUtil.UTF_8);
+ *         sendHttpResponse(ctx, response);
+ *     }
+ * }
+ * </pre>
+ * </p>
+ *
  * @author Kelvin
  */
-public class RpcHandler {
+public class RpcHandler extends AbstractHttpHandler {
 
     /**
-     * Need to override
+     * Handles RPC requests. Override this method to implement RPC logic.
+     * <p>
+     * Default implementation returns HTTP 403 FORBIDDEN with CORS headers enabled.
+     * </p>
      *
-     * @param ctx
-     * @param request
+     * @param ctx     the channel handler context
+     * @param request the full HTTP request containing RPC call data
      */
     public void handleRpcRequest(ChannelHandlerContext ctx, FullHttpRequest request) {
-        sendError(ctx, FORBIDDEN);
-    }
-
-    protected void sendError(ChannelHandlerContext ctx, HttpResponseStatus status) {
-        String data = "Failure: " + status.toString() + "\r\n";
-
-        // Create http response
-        FullHttpResponse response = new DefaultFullHttpResponse(HTTP_1_1, status);
-        response.headers().set(CONTENT_TYPE, "text/plain; charset=UTF-8");
-        response.headers().set("Access-Control-Allow-Origin", "*");
-        response.content().writeBytes(data.getBytes(CharsetUtil.UTF_8));
-
-        // Close the connection as soon as the error message is sent
-        ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
+        sendError(ctx, FORBIDDEN, true);
     }
 }

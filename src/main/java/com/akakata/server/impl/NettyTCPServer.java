@@ -5,13 +5,11 @@ import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
-import io.netty.channel.FixedRecvByteBufAllocator;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Map;
-import java.util.Set;
 
 /**
  * @author Kelvin
@@ -26,30 +24,19 @@ public class NettyTCPServer extends AbstractNettyServer {
         super(nettyConfig, channelInitializer);
     }
 
-    @SuppressWarnings("unchecked")
     @Override
     public void startServer() throws Exception {
         try {
             serverBootstrap = new ServerBootstrap();
 
             Map<ChannelOption<?>, Object> channelOptions = nettyConfig.getChannelOptions();
-            if (null != channelOptions) {
-                {
-                    Set<ChannelOption<?>> keySet = channelOptions.keySet();
-                    for (@SuppressWarnings("rawtypes") ChannelOption option : keySet) {
-                        serverBootstrap.option(option, channelOptions.get(option));
-                    }
-                }
+            if (channelOptions != null) {
+                applyChannelOptions(channelOptions);
             }
 
             Map<ChannelOption<?>, Object> channelChildOptions = nettyConfig.getChannelChildOptions();
-            if (null != channelChildOptions) {
-                {
-                    Set<ChannelOption<?>> keySet = channelChildOptions.keySet();
-                    for (@SuppressWarnings("rawtypes") ChannelOption option : keySet) {
-                        serverBootstrap.childOption(option, channelChildOptions.get(option));
-                    }
-                }
+            if (channelChildOptions != null) {
+                applyChannelChildOptions(channelChildOptions);
             }
 
             serverBootstrap.group(getBossGroup(), getWorkerGroup())
@@ -61,10 +48,20 @@ public class NettyTCPServer extends AbstractNettyServer {
 
             ALL_CHANNELS.add(serverChannel);
         } catch (Exception e) {
-            LOG.error("TCP Server start error {}, going to shut down", e);
+            LOG.error("TCP Server start error {}, going to shut down", e.getMessage(), e);
             super.stopServer();
             throw e;
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void applyChannelOptions(Map<ChannelOption<?>, Object> options) {
+        options.forEach((option, value) -> serverBootstrap.option((ChannelOption) option, value));
+    }
+
+    @SuppressWarnings("unchecked")
+    private void applyChannelChildOptions(Map<ChannelOption<?>, Object> options) {
+        options.forEach((option, value) -> serverBootstrap.childOption((ChannelOption) option, value));
     }
 
     @Override

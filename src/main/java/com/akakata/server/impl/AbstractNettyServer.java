@@ -50,7 +50,7 @@ public abstract class AbstractNettyServer implements NettyServer {
         try {
             future.await();
         } catch (InterruptedException e) {
-            LOG.error("Exception occurred while waiting for channels to close: {}", e);
+            LOG.error("Exception occurred while waiting for channels to close: {}", e.getMessage(), e);
             Thread.currentThread().interrupt();
         } finally {
             // EventLoopGroup 生命周期由 ServerContext / NetworkBootstrap 统一管理，此处不再关闭。
@@ -83,15 +83,5 @@ public abstract class AbstractNettyServer implements NettyServer {
     @Override
     public String toString() {
         return "NettyServer [socketAddress=" + nettyConfig.getSocketAddress() + ", portNumber=" + nettyConfig.getPortNumber() + "]";
-    }
-
-    @Override
-    public int hashCode() {
-        return super.hashCode();
-    }
-
-    @Override
-    public boolean equals(Object obj) {
-        return super.equals(obj);
     }
 }

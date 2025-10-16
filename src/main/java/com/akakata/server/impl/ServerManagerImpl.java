@@ -6,10 +6,10 @@ import com.akakata.server.ServerManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.HashSet;
-import java.util.Set;
 import javax.inject.Inject;
 import javax.inject.Named;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * @author Kelvin
@@ -34,6 +34,11 @@ public class ServerManagerImpl implements ServerManager {
 
     @Override
     public void startServers(int flashPort, int tcpPort, int httpPort, int webSocketPort) throws Exception {
+        if (!servers.isEmpty()) {
+            LOG.warn("Servers already started, skipping duplicate start");
+            return;
+        }
+
         if (tcpPort > 0) {
             tcpServer.startServer(tcpPort);
             servers.add(tcpServer);
@@ -52,6 +57,11 @@ public class ServerManagerImpl implements ServerManager {
 
     @Override
     public void startServers() throws Exception {
+        if (!servers.isEmpty()) {
+            LOG.warn("Servers already started, skipping duplicate start");
+            return;
+        }
+
         tcpServer.startServer();
         servers.add(tcpServer);
 

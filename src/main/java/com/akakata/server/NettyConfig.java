@@ -16,11 +16,11 @@ public class NettyConfig {
     protected ChannelInitializer<? extends Channel> channelInitializer;
     private Map<ChannelOption<?>, Object> channelOptions;
     private Map<ChannelOption<?>, Object> channelChildOptions;
-    private NioEventLoopGroup bossGroup;
-    private NioEventLoopGroup workerGroup;
+    private volatile NioEventLoopGroup bossGroup;
+    private volatile NioEventLoopGroup workerGroup;
     private int bossThreadCount;
     private int workerThreadCount;
-    private InetSocketAddress socketAddress;
+    private volatile InetSocketAddress socketAddress;
     private int portNumber = 18090;
 
     public Map<ChannelOption<?>, Object> getChannelOptions() {
@@ -39,12 +39,14 @@ public class NettyConfig {
         this.channelChildOptions = channelChildOptions;
     }
 
-    public synchronized NioEventLoopGroup getBossGroup() {
+    public NioEventLoopGroup getBossGroup() {
         if (bossGroup == null) {
-            if (bossThreadCount <= 0) {
-                bossGroup = new NioEventLoopGroup();
-            } else {
-                bossGroup = new NioEventLoopGroup(bossThreadCount);
+            synchronized (this) {
+                if (bossGroup == null) {
+                    bossGroup = (bossThreadCount <= 0)
+                            ? new NioEventLoopGroup()
+                            : new NioEventLoopGroup(bossThreadCount);
+                }
             }
         }
         return bossGroup;
@@ -54,12 +56,14 @@ public class NettyConfig {
         this.bossGroup = bossGroup;
     }
 
-    public synchronized NioEventLoopGroup getWorkerGroup() {
+    public NioEventLoopGroup getWorkerGroup() {
         if (workerGroup == null) {
-            if (workerThreadCount <= 0) {
-                workerGroup = new NioEventLoopGroup();
-            } else {
-                workerGroup = new NioEventLoopGroup(workerThreadCount);
+            synchronized (this) {
+                if (workerGroup == null) {
+                    workerGroup = (workerThreadCount <= 0)
+                            ? new NioEventLoopGroup()
+                            : new NioEventLoopGroup(workerThreadCount);
+                }
             }
         }
         return workerGroup;
@@ -85,9 +89,13 @@ public class NettyConfig {
         this.workerThreadCount = workerThreadCount;
     }
 
-    public synchronized InetSocketAddress getSocketAddress() {
+    public InetSocketAddress getSocketAddress() {
         if (socketAddress == null) {
-            socketAddress = new InetSocketAddress(portNumber);
+            synchronized (this) {
+                if (socketAddress == null) {
+                    socketAddress = new InetSocketAddress(portNumber);
+                }
+            }
         }
         return socketAddress;
     }

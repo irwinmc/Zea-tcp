@@ -253,7 +253,7 @@ public abstract class AbstractGame implements Game {
             return;
         }
 
-        // 直接遍历所有 PlayerSession 发送，不通过 EventDispatcher
+        // 遍历所有 PlayerSession
         for (PlayerSession session : sessions) {
             if (session.isConnected()) {
                 session.onEvent(networkEvent);

@@ -38,12 +38,6 @@ public class DefaultSessionEventHandler implements SessionEventHandler {
         // LOG.debug("Do the method lookup!");
         int eventType = event.getType();
         switch (eventType) {
-            case Events.CONNECT:
-                onConnect((ConnectEvent) event);
-                break;
-            case Events.CONNECT_FAILURE:
-                onConnectFailure(event);
-                break;
             case Events.LOG_IN_SUCCESS:
                 onLoginSuccess(event);
                 break;
@@ -91,20 +85,6 @@ public class DefaultSessionEventHandler implements SessionEventHandler {
         } else {
             LOG.warn("Going to discard event: {} since sender is null in session: {}", event, session);
         }
-    }
-
-    protected void onConnect(ConnectEvent event) {
-        if (event.getSender() != null) {
-            session.setSender(event.getSender());
-            // Now send the start event to session
-            // session.onEvent(Events.event(null, Events.START));
-        } else {
-            LOG.warn("Discarding {} as connection is not fully established for this {}", event, session);
-        }
-    }
-
-    protected void onConnectFailure(Event event) {
-        LOG.debug("On connect failed");
     }
 
     protected void onLoginSuccess(Event event) {

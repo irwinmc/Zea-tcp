@@ -10,21 +10,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
-import java.util.concurrent.*;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 
 /**
- * 高性能事件调度器（Java 21 现代化版本）
+ * 高性能事件调度器
  * <p>
  * 使用 Agrona 无锁队列实现异步事件分发，提供高吞吐、低延迟的事件处理能力。
- * <p>
- * <b>相比旧版本的改进：</b>
- * <ul>
- *   <li><b>虚拟线程并发处理</b>：Handler 使用虚拟线程并发执行，不再串行阻塞</li>
- *   <li><b>CountDownLatch 同步</b>：使用 CountDownLatch 等待所有虚拟线程完成</li>
- *   <li><b>可配置并发模式</b>：支持串行（SERIAL）和并发（CONCURRENT）两种模式</li>
- *   <li><b>错误隔离</b>：一个 Handler 异常不影响其他 Handler</li>
- *   <li><b>性能提升</b>：理论吞吐量从 ~2M events/sec 提升到 10x+（取决于 Handler 数量）</li>
- * </ul>
  * <p>
  * <b>架构设计：</b>
  * <ul>
@@ -32,7 +24,6 @@ import java.util.concurrent.*;
  *   <li>处理线程：单独的 {@link AgentRunner} 线程，批量处理事件（256/batch）</li>
  *   <li>空闲策略：{@link BackoffIdleStrategy}，自适应 CPU 占用</li>
  *   <li>Handler 管理：按事件类型分组 + ANY 类型特殊处理</li>
- *   <li>并发执行：使用虚拟线程 + {@link CountDownLatch} 并发调用 Handler</li>
  * </ul>
  * <p>
  * <b>使用场景：</b>
@@ -42,53 +33,15 @@ import java.util.concurrent.*;
  *   <li>需要高性能异步事件处理的场景</li>
  * </ul>
  * <p>
- * <b>性能特点（CONCURRENT 模式）：</b>
+ * <b>性能特点：</b>
  * <ul>
- *   <li>吞吐量：~10M+ events/sec（多 Handler 场景）</li>
- *   <li>延迟：~100-500μs（取决于 Handler 数量和执行时间）</li>
+ *   <li>吞吐量：~2M events/sec</li>
+ *   <li>延迟：~200μs (平均)</li>
  *   <li>队列容量：32K events</li>
  *   <li>批处理：256 events/batch</li>
- *   <li>并发度：无限制（虚拟线程，平台线程不受影响）</li>
  * </ul>
- * <p>
- * <b>性能对比：</b>
- * <table border="1">
- *   <tr>
- *     <th>模式</th>
- *     <th>执行方式</th>
- *     <th>适用场景</th>
- *     <th>吞吐量</th>
- *   </tr>
- *   <tr>
- *     <td>SERIAL</td>
- *     <td>串行执行（旧版本）</td>
- *     <td>Handler 快速、需要严格顺序</td>
- *     <td>~2M events/sec</td>
- *   </tr>
- *   <tr>
- *     <td>CONCURRENT</td>
- *     <td>虚拟线程并发</td>
- *     <td>Handler 耗时、可并发</td>
- *     <td>~10M+ events/sec</td>
- *   </tr>
- * </table>
- * <p>
- * <b>使用示例：</b>
- * <pre>{@code
- * // 1. 创建并发模式的调度器
- * var dispatcher = new AgronaEventDispatcher(ExecutionMode.CONCURRENT);
- * dispatcher.initialize();
- *
- * // 2. 注册 Handler
- * dispatcher.addHandler(handler1);
- * dispatcher.addHandler(handler2);
- *
- * // 3. 触发事件（handler1 和 handler2 会并发执行）
- * dispatcher.fireEvent(event);
- * }</pre>
  *
  * @author Kelvin
- * @since 0.7.8
  */
 public class AgronaEventDispatcher implements EventDispatcher, Agent {
 
@@ -103,34 +56,6 @@ public class AgronaEventDispatcher implements EventDispatcher, Agent {
      * 每批处理的事件数量
      */
     private static final int BATCH_SIZE = 256;
-
-    /**
-     * StructuredTaskScope 超时时间（防止 Handler 卡死）
-     */
-    private static final long HANDLER_TIMEOUT_MS = 5000;
-
-    // ==================== 枚举：执行模式 ====================
-
-    /**
-     * Handler 执行模式
-     */
-    public enum ExecutionMode {
-        /**
-         * 串行执行（旧版本行为）
-         * <p>
-         * Handler 按顺序执行，一个 Handler 阻塞会影响后续 Handler。
-         * 适用于需要严格顺序或 Handler 执行极快的场景。
-         */
-        SERIAL,
-
-        /**
-         * 并发执行（Java 21 虚拟线程）
-         * <p>
-         * 每个 Handler 在独立的虚拟线程中执行，互不阻塞。
-         * 适用于 Handler 可并发、有 I/O 或耗时操作的场景。
-         */
-        CONCURRENT
-    }
 
     // ==================== 字段 ====================
 
@@ -157,11 +82,6 @@ public class AgronaEventDispatcher implements EventDispatcher, Agent {
     private final BackoffIdleStrategy idleStrategy;
 
     /**
-     * 执行模式（串行 / 并发）
-     */
-    private final ExecutionMode executionMode;
-
-    /**
      * Agent 运行器（独立线程）
      */
     private AgentRunner agentRunner;
@@ -174,23 +94,11 @@ public class AgronaEventDispatcher implements EventDispatcher, Agent {
     // ==================== 构造函数 ====================
 
     /**
-     * 构造事件调度器（默认并发模式）
+     * 构造事件调度器
      * <p>
      * 注意：构造后需要调用 {@link #initialize()} 才能开始工作
      */
     public AgronaEventDispatcher() {
-        this(ExecutionMode.CONCURRENT);
-    }
-
-    /**
-     * 构造事件调度器（指定执行模式）
-     * <p>
-     * 注意：构造后需要调用 {@link #initialize()} 才能开始工作
-     *
-     * @param executionMode 执行模式（SERIAL 或 CONCURRENT）
-     */
-    public AgronaEventDispatcher(ExecutionMode executionMode) {
-        this.executionMode = executionMode;
         this.eventQueue = new ManyToOneConcurrentArrayQueue<>(QUEUE_CAPACITY);
         this.handlersByEventType = new HashMap<>();
         this.anyHandlers = new CopyOnWriteArrayList<>();
@@ -226,8 +134,8 @@ public class AgronaEventDispatcher implements EventDispatcher, Agent {
         agentThread.setDaemon(false);
         agentThread.start();
 
-        LOG.info("AgronaEventDispatcher started with mode={}, queueCapacity={}, batchSize={}",
-                executionMode, QUEUE_CAPACITY, BATCH_SIZE);
+        LOG.info("AgronaEventDispatcher started with queue capacity {} and batch size {}",
+                QUEUE_CAPACITY, BATCH_SIZE);
     }
 
     /**
@@ -288,7 +196,7 @@ public class AgronaEventDispatcher implements EventDispatcher, Agent {
      */
     @Override
     public String roleName() {
-        return "event-dispatcher-" + executionMode.name().toLowerCase();
+        return "event-dispatcher";
     }
 
     // ==================== EventDispatcher 接口实现 ====================
@@ -411,7 +319,7 @@ public class AgronaEventDispatcher implements EventDispatcher, Agent {
         for (EventHandler handler : removeList) {
             removeHandler(handler);
         }
-        return !removeList.isEmpty();
+        return removeList.size() > 0;
     }
 
     /**
@@ -429,120 +337,41 @@ public class AgronaEventDispatcher implements EventDispatcher, Agent {
         eventQueue.clear();
     }
 
-    // ==================== 内部方法：事件分发（核心优化点）====================
+    // ==================== 内部方法 ====================
 
     /**
-     * 分发事件到 handler（根据执行模式选择策略）
+     * 分发事件到 handler
      * <p>
      * 分发顺序：
      * <ol>
      *   <li>所有 ANY 类型的 handler（无论事件类型）</li>
      *   <li>该事件类型对应的 handler</li>
      * </ol>
-     * <p>
-     * <b>执行模式：</b>
-     * <ul>
-     *   <li>SERIAL：串行执行（旧版本行为）</li>
-     *   <li>CONCURRENT：使用虚拟线程并发执行（Java 21）</li>
-     * </ul>
      *
      * @param event 事件
      */
     private void dispatchEvent(Event event) {
-        // 收集所有需要处理此事件的 handler
-
-        // 1. 添加所有 ANY handler
-        List<EventHandler> handlersToInvoke = new ArrayList<>(anyHandlers);
-
-        // 2. 添加特定类型的 handler
-        List<EventHandler> typeHandlers = handlersByEventType.get(event.getType());
-        if (typeHandlers != null) {
-            handlersToInvoke.addAll(typeHandlers);
-        }
-
-        // 如果没有 handler，直接返回
-        if (handlersToInvoke.isEmpty()) {
-            return;
-        }
-
-        // 根据执行模式选择分发策略
-        switch (executionMode) {
-            case SERIAL -> dispatchSerial(event, handlersToInvoke);
-            case CONCURRENT -> dispatchConcurrent(event, handlersToInvoke);
-        }
-    }
-
-    /**
-     * 串行分发（旧版本行为）
-     * <p>
-     * Handler 按顺序执行，一个 Handler 阻塞会影响后续 Handler。
-     *
-     * @param event            事件
-     * @param handlersToInvoke 要调用的 handler 列表
-     */
-    private void dispatchSerial(Event event, List<EventHandler> handlersToInvoke) {
-        for (EventHandler handler : handlersToInvoke) {
+        // 1. 分发给所有 ANY handler
+        for (EventHandler handler : anyHandlers) {
             try {
                 handler.onEvent(event);
             } catch (Exception ex) {
-                LOG.error("Handler error for event type {} in handler {}",
-                        event.getType(), handler.getClass().getSimpleName(), ex);
+                LOG.error("ANY handler error for event type {}", event.getType(), ex);
             }
         }
-    }
 
-    /**
-     * 并发分发（Java 21 虚拟线程 + CountDownLatch）
-     * <p>
-     * 每个 Handler 在独立的虚拟线程中执行，互不阻塞。
-     * 使用 {@link CountDownLatch} 等待所有虚拟线程完成：
-     * <ul>
-     *   <li>使用 {@code Thread.startVirtualThread()} 启动虚拟线程</li>
-     *   <li>等待所有 Handler 完成或超时</li>
-     *   <li>错误隔离：一个 Handler 异常不影响其他 Handler</li>
-     * </ul>
-     * <p>
-     * <b>性能优势：</b>
-     * <ul>
-     *   <li>虚拟线程开销极低（~1KB 栈空间）</li>
-     *   <li>不阻塞平台线程（Netty I/O 线程和 Agent 线程）</li>
-     *   <li>理论吞吐量提升 10x+（取决于 Handler 数量和耗时）</li>
-     * </ul>
-     *
-     * @param event            事件
-     * @param handlersToInvoke 要调用的 handler 列表
-     */
-    private void dispatchConcurrent(Event event, List<EventHandler> handlersToInvoke) {
-        var latch = new CountDownLatch(handlersToInvoke.size());
-
-        // 为每个 handler 创建虚拟线程
-        for (EventHandler handler : handlersToInvoke) {
-            Thread.startVirtualThread(() -> {
+        // 2. 分发给特定类型的 handler
+        List<EventHandler> handlers = handlersByEventType.get(event.getType());
+        if (handlers != null) {
+            for (EventHandler handler : handlers) {
                 try {
                     handler.onEvent(event);
                 } catch (Exception ex) {
-                    LOG.error("Handler error for event type {} in handler {}",
-                            event.getType(), handler.getClass().getSimpleName(), ex);
-                } finally {
-                    latch.countDown();
+                    LOG.error("Handler error for event type {}", event.getType(), ex);
                 }
-            });
-        }
-
-        // 等待所有 handler 完成（带超时）
-        try {
-            if (!latch.await(HANDLER_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                LOG.warn("Handler execution timeout ({} ms) for event type {}, {} handlers still running",
-                        HANDLER_TIMEOUT_MS, event.getType(), latch.getCount());
             }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            LOG.warn("Handler execution interrupted for event type {}, {} handlers still running",
-                    event.getType(), latch.getCount(), e);
         }
     }
-
-    // ==================== 内部方法：Handler 管理 ====================
 
     /**
      * 添加 ANY 类型的 handler
@@ -571,7 +400,8 @@ public class AgronaEventDispatcher implements EventDispatcher, Agent {
         List<EventHandler> removeList = new ArrayList<>();
         if (handlerList != null) {
             for (EventHandler handler : handlerList) {
-                if (handler instanceof SessionEventHandler sessionHandler) {
+                if (handler instanceof SessionEventHandler) {
+                    SessionEventHandler sessionHandler = (SessionEventHandler) handler;
                     if (sessionHandler.getSession().equals(session)) {
                         removeList.add(handler);
                     }
@@ -582,15 +412,6 @@ public class AgronaEventDispatcher implements EventDispatcher, Agent {
     }
 
     // ==================== 监控方法 ====================
-
-    /**
-     * 获取执行模式
-     *
-     * @return 执行模式（SERIAL 或 CONCURRENT）
-     */
-    public ExecutionMode getExecutionMode() {
-        return executionMode;
-    }
 
     /**
      * 获取当前队列中待处理的事件数量
@@ -611,5 +432,4 @@ public class AgronaEventDispatcher implements EventDispatcher, Agent {
     public int getQueueCapacity() {
         return QUEUE_CAPACITY;
     }
-
 }

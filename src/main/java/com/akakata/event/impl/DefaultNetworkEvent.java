@@ -73,8 +73,10 @@ public class DefaultNetworkEvent extends DefaultEvent implements NetworkEvent {
      * <p>
      * 如果设置了 Channel，可以直接通过这个 Channel 发送消息。
      * 大多数情况下此字段为 null，使用 Session 中的 MessageSender 发送。
+     * <p>
+     * <b>注意：</b>此字段标记为 transient，因为 Channel 不可序列化。
      */
-    private Channel channel;
+    private transient Channel channel;
 
     // ==================== 构造函数 ====================
 
@@ -135,7 +137,7 @@ public class DefaultNetworkEvent extends DefaultEvent implements NetworkEvent {
     /**
      * 获取 Netty Channel
      *
-     * @return Netty Channel（可能为 null）
+     * @return Channel 实例（可能为 null）
      */
     public Channel getChannel() {
         return channel;
@@ -144,7 +146,7 @@ public class DefaultNetworkEvent extends DefaultEvent implements NetworkEvent {
     /**
      * 设置 Netty Channel
      *
-     * @param channel Netty Channel
+     * @param channel Channel 实例
      */
     public void setChannel(Channel channel) {
         this.channel = channel;

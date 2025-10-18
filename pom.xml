@@ -72,14 +72,6 @@
             <version>3.1.8</version>
         </dependency>
 
-        <!-- Lombok - 减少样板代码 -->
-        <dependency>
-            <groupId>org.projectlombok</groupId>
-            <artifactId>lombok</artifactId>
-            <version>1.18.30</version>
-            <scope>provided</scope>
-        </dependency>
-
         <!-- Logstash Logback Encoder - 结构化日志 -->
         <dependency>
             <groupId>net.logstash.logback</groupId>
@@ -102,12 +94,6 @@
                             <groupId>com.google.dagger</groupId>
                             <artifactId>dagger-compiler</artifactId>
                             <version>${dagger.version}</version>
-                        </path>
-                        <!-- Lombok 注解处理器 -->
-                        <path>
-                            <groupId>org.projectlombok</groupId>
-                            <artifactId>lombok</artifactId>
-                            <version>1.18.30</version>
                         </path>
                     </annotationProcessorPaths>
                 </configuration>

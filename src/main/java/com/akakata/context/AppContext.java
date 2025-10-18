@@ -57,10 +57,9 @@ public class AppContext {
     private static ServerContext serverContext;
 
     /**
-     * Set the server context instance.
-     * Should be called once at application startup.
+     * Set the server context.
      *
-     * @param context the server context
+     * @param context ServerContext instance
      */
     public static void setServerContext(ServerContext context) {
         serverContext = context;

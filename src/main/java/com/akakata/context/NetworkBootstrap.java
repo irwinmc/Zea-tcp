@@ -26,10 +26,20 @@ public final class NetworkBootstrap implements AutoCloseable {
                 bossThreads, workerThreads);
     }
 
+    /**
+     * Get the boss event loop group.
+     *
+     * @return NioEventLoopGroup for accepting connections
+     */
     public NioEventLoopGroup getBossGroup() {
         return bossGroup;
     }
 
+    /**
+     * Get the worker event loop group.
+     *
+     * @return NioEventLoopGroup for handling I/O
+     */
     public NioEventLoopGroup getWorkerGroup() {
         return workerGroup;
     }

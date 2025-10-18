@@ -164,8 +164,7 @@ public class ShardedEventDispatcher implements EventDispatcher {
         Objects.requireNonNull(eventHandler, "eventHandler");
 
         // SessionEventHandler 根据 session 分片（只注册到一个分片）
-        if (eventHandler instanceof SessionEventHandler) {
-            SessionEventHandler sessionHandler = (SessionEventHandler) eventHandler;
+        if (eventHandler instanceof SessionEventHandler sessionHandler) {
             Session session = sessionHandler.getSession();
             if (session != null) {
                 selectShardBySession(session).addHandler(eventHandler);

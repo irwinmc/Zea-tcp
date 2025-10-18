@@ -60,7 +60,13 @@ public final class ConfigurationManager {
         return properties.getProperty(key, defaultValue);
     }
 
+    /**
+     * Get the underlying Properties object.
+     *
+     * @return Properties instance
+     */
     public Properties getProperties() {
         return properties;
     }
+
 }

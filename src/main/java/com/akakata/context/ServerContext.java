@@ -94,7 +94,9 @@ public final class ServerContext implements AutoCloseable {
     }
 
     /**
-     * Get configuration manager for direct access.
+     * Get the configuration manager.
+     *
+     * @return ConfigurationManager instance
      */
     public ConfigurationManager getConfigManager() {
         return configManager;

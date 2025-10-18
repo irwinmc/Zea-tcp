@@ -16,6 +16,7 @@ import com.akakata.protocols.impl.JsonProtocol;
 import com.akakata.protocols.impl.SbeProtocol;
 import com.akakata.protocols.impl.WebSocketProtocol;
 import com.akakata.security.Credentials;
+import com.akakata.service.LoginService;
 import com.akakata.service.SessionManagerService;
 import dagger.Module;
 import dagger.Provides;
@@ -160,15 +161,15 @@ public final class ProtocolModule {
     @Singleton
     static LoginHandler provideLoginHandler(@Named("tcpProtocol") Protocol protocol,
                                             Game game,
-                                            SessionManagerService<Credentials> sessionManagerService) {
-        return new LoginHandler(protocol, game, sessionManagerService);
+                                            LoginService loginService) {
+        return new LoginHandler(protocol, game, loginService);
     }
 
     @Provides
     @Singleton
     static WebSocketLoginHandler provideWebSocketLoginHandler(WebSocketProtocol protocol,
                                                               Game game,
-                                                              SessionManagerService<Credentials> sessionManagerService) {
-        return new WebSocketLoginHandler(protocol, game, sessionManagerService);
+                                                              LoginService loginService) {
+        return new WebSocketLoginHandler(protocol, game, loginService);
     }
 }

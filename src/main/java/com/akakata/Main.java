@@ -58,8 +58,10 @@ public class Main {
         // Start TCP server
         try {
             Server tcpServer = context.getBean(AppContext.TCP_SERVER, Server.class);
-            tcpServer.startServer();
-            LOG.info("TCP server started");
+            if (tcpServer != null) {
+                tcpServer.startServer();
+                LOG.info("TCP server started");
+            }
         } catch (Exception e) {
             LOG.error("Failed to start TCP server", e);
             throw new RuntimeException("TCP server startup failed", e);
@@ -68,8 +70,10 @@ public class Main {
         // Start HTTP server
         try {
             Server httpServer = context.getBean(AppContext.HTTP_SERVER, Server.class);
-            httpServer.startServer();
-            LOG.info("HTTP server started");
+            if (httpServer != null) {
+                httpServer.startServer();
+                LOG.info("HTTP server started");
+            }
         } catch (Exception e) {
             LOG.error("Failed to start HTTP server", e);
             throw new RuntimeException("HTTP server startup failed", e);
@@ -78,8 +82,10 @@ public class Main {
         // Start WebSocket server
         try {
             Server wsServer = context.getBean(AppContext.WEB_SOCKET_SERVER, Server.class);
-            wsServer.startServer();
-            LOG.info("WebSocket server started");
+            if (wsServer != null) {
+                wsServer.startServer();
+                LOG.info("WebSocket server started");
+            }
         } catch (Exception e) {
             LOG.error("Failed to start WebSocket server", e);
             throw new RuntimeException("WebSocket server startup failed", e);

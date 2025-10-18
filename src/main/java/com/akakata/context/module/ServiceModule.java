@@ -2,10 +2,8 @@ package com.akakata.context.module;
 
 import com.akakata.app.Game;
 import com.akakata.app.impl.DefaultGame;
-import com.akakata.security.Credentials;
 import com.akakata.service.LoginService;
-import com.akakata.service.SessionManagerService;
-import com.akakata.service.impl.CaffeineSessionManager;
+import com.akakata.service.SessionService;
 import dagger.Module;
 import dagger.Provides;
 
@@ -29,14 +27,14 @@ public final class ServiceModule {
 
     @Provides
     @Singleton
-    static SessionManagerService<Credentials> provideSessionManagerService() {
-        return new CaffeineSessionManager();
+    static SessionService provideSessionService() {
+        return new SessionService();
     }
 
     @Provides
     @Singleton
-    static LoginService provideLoginService(SessionManagerService<Credentials> sessionManager) {
-        return new LoginService(sessionManager);
+    static LoginService provideLoginService(SessionService sessionService) {
+        return new LoginService(sessionService);
     }
 
     @Provides

@@ -8,8 +8,7 @@ import com.akakata.event.EventDispatcher;
 import com.akakata.event.NetworkEvent;
 import com.akakata.event.impl.AgronaEventDispatcher;
 import com.akakata.event.impl.EventDispatchers;
-import com.akakata.service.UniqueIdGeneratorService;
-import com.akakata.service.impl.SimpleUniqueIdGeneratorImpl;
+import com.akakata.service.IdGeneratorService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,7 +31,7 @@ import java.util.Set;
 public abstract class AbstractGame implements Game {
 
     private static final Logger LOG = LoggerFactory.getLogger(AbstractGame.class);
-    private static final UniqueIdGeneratorService ID_GENERATOR = new SimpleUniqueIdGeneratorImpl();
+    private static final IdGeneratorService ID_GENERATOR = new IdGeneratorService();
 
     // ==================== 字段 ====================
 

@@ -4,12 +4,12 @@ import com.akakata.app.Game;
 import com.akakata.app.PlayerSession;
 import com.akakata.security.Credentials;
 import com.akakata.security.crypto.AesGcmCipher;
-import com.akakata.service.impl.CaffeineSessionManager;
 import io.netty.buffer.ByteBuf;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.inject.Inject;
+import java.util.Objects;
 
 /**
  * 登录服务
@@ -19,7 +19,7 @@ import javax.inject.Inject;
  * <ul>
  *   <li>认证凭证（{@link #verify(ByteBuf)}）</li>
  *   <li>创建会话（{@link #createAndReplaceSession(Credentials, Game)}）</li>
- *   <li>替换旧会话（{@link CaffeineSessionManager#replaceSession}）</li>
+ *   <li>替换旧会话（{@link SessionService#replaceSession}）</li>
  *   <li>生成加密 token（{@link #generateToken(Credentials)}）</li>
  * </ul>
  * <p>
@@ -99,21 +99,115 @@ public class LoginService {
     private static final Logger LOG = LoggerFactory.getLogger(LoginService.class);
 
     /**
-     * 会话管理器（使用 Caffeine 实现）
+     * 登录结果
+     * <p>
+     * 封装登录成功后的会话和 token。
+     * 如果登录失败，返回 null。
+     *
+     * @param session 玩家会话
+     * @param token   加密后的 token
      */
-    private final CaffeineSessionManager sessionManager;
+    public record LoginResult(PlayerSession session, String token) {
+        public LoginResult {
+            Objects.requireNonNull(session, "session cannot be null");
+            Objects.requireNonNull(token, "token cannot be null");
+        }
+    }
+
+    /**
+     * 会话管理服务
+     */
+    private final SessionService sessionService;
 
     /**
      * 构造函数（依赖注入）
      *
-     * @param sessionManager 会话管理器
+     * @param sessionService 会话管理服务
      */
     @Inject
-    public LoginService(SessionManagerService<Credentials> sessionManager) {
-        // 如果注入的是旧的 SimpleSessionManagerServiceImpl，会有类型转换异常
-        // 这是有意为之，强制使用新的 CaffeineSessionManager
-        this.sessionManager = (CaffeineSessionManager) sessionManager;
-        LOG.info("LoginService initialized with CaffeineSessionManager");
+    public LoginService(SessionService sessionService) {
+        this.sessionService = sessionService;
+        LOG.info("LoginService initialized with SessionService");
+    }
+
+    /**
+     * 完整的登录流程（一站式服务）
+     * <p>
+     * 封装了登录的所有业务逻辑，包括：
+     * <ol>
+     *   <li>验证凭证（{@link #verify(ByteBuf)}）</li>
+     *   <li>创建并替换会话（{@link #createAndReplaceSession(Credentials, Game)}）</li>
+     *   <li>生成加密 token（{@link #generateToken(Credentials)}）</li>
+     * </ol>
+     * <p>
+     * <b>使用示例：</b>
+     * <pre>{@code
+     * // 在 LoginHandler 中
+     * LoginResult result = loginService.login(buffer, game);
+     * if (result == null) {
+     *     // 登录失败
+     *     sendLoginFailure(channel);
+     * } else {
+     *     // 登录成功
+     *     sendLoginSuccess(channel, result.session(), result.token());
+     * }
+     * }</pre>
+     * <p>
+     * <b>对比旧实现：</b>
+     * <table border="1">
+     *   <tr>
+     *     <th>方面</th>
+     *     <th>旧实现（在 Handler 中）</th>
+     *     <th>新实现（在 Service 中）</th>
+     *   </tr>
+     *   <tr>
+     *     <td>代码位置</td>
+     *     <td>LoginHandler（网络层）</td>
+     *     <td>LoginService（业务层）</td>
+     *   </tr>
+     *   <tr>
+     *     <td>代码行数</td>
+     *     <td>~15 行</td>
+     *     <td>~5 行</td>
+     *   </tr>
+     *   <tr>
+     *     <td>重复代码</td>
+     *     <td>LoginHandler 和 WebSocketLoginHandler 各一份</td>
+     *     <td>只有一份</td>
+     *   </tr>
+     *   <tr>
+     *     <td>可测试性</td>
+     *     <td>依赖 Netty Channel（难以单测）</td>
+     *     <td>纯业务逻辑（易于单测）</td>
+     *   </tr>
+     * </table>
+     *
+     * @param buffer 客户端发送的认证数据（包含 token）
+     * @param game   游戏实例（用于创建会话）
+     * @return 登录成功返回 {@link LoginResult}，失败返回 null
+     */
+    public LoginResult login(ByteBuf buffer, Game game) {
+        try {
+            // 1. 验证凭证
+            Credentials credentials = verify(buffer);
+            if (credentials == null) {
+                LOG.warn("Login failed: invalid credentials");
+                return null;
+            }
+
+            // 2. 创建会话
+            PlayerSession session = createAndReplaceSession(credentials, game);
+
+            // 3. 生成 token
+            String token = generateToken(credentials);
+
+            LOG.info("Login successful: sessionId={}, credentials={}", session.getId(), credentials);
+            return new LoginResult(session, token);
+
+        } catch (Exception e) {
+            LOG.error("Login failed due to exception", e);
+            return null;
+        }
     }
 
     /**
@@ -132,7 +226,7 @@ public class LoginService {
      */
     public Credentials verify(ByteBuf buffer) {
         try {
-            Credentials credentials = sessionManager.verify(buffer);
+            Credentials credentials = sessionService.verify(buffer);
             if (credentials == null) {
                 LOG.warn("Invalid credentials: buffer is empty or token is blank");
             }
@@ -150,12 +244,12 @@ public class LoginService {
      * <ol>
      *   <li>创建新会话（{@link Game#createPlayerSession()}）</li>
      *   <li>设置凭证属性</li>
-     *   <li>替换旧会话（{@link CaffeineSessionManager#replaceSession}）</li>
+     *   <li>替换旧会话（{@link SessionService#replaceSession}）</li>
      * </ol>
      * <p>
      * <b>并发安全：</b>
      * <ul>
-     *   <li>使用 {@link CaffeineSessionManager#replaceSession} 原子替换会话</li>
+     *   <li>使用 {@link SessionService#replaceSession} 原子替换会话</li>
      *   <li>旧会话在虚拟线程中异步清理，不阻塞登录流程</li>
      * </ul>
      *
@@ -170,7 +264,7 @@ public class LoginService {
             newSession.setAttribute("credentials", credentials);
 
             // 2. 替换旧会话（原子操作）
-            PlayerSession oldSession = sessionManager.replaceSession(credentials, newSession);
+            PlayerSession oldSession = sessionService.replaceSession(credentials, newSession);
             if (oldSession != null) {
                 LOG.warn("Replaced old session: credentials={}, oldSessionId={}, newSessionId={}",
                         credentials, oldSession.getId(), newSession.getId());
@@ -227,7 +321,7 @@ public class LoginService {
      * @return 缓存统计
      */
     public com.github.benmanes.caffeine.cache.stats.CacheStats getSessionStats() {
-        return sessionManager.getStats();
+        return sessionService.getStats();
     }
 
     /**
@@ -236,7 +330,7 @@ public class LoginService {
      * @return 会话总数
      */
     public long getSessionCount() {
-        return sessionManager.size();
+        return sessionService.size();
     }
 
     /**
@@ -248,7 +342,7 @@ public class LoginService {
      * @return true 如果会话存在并被移除
      */
     public boolean kickSession(Credentials credentials) {
-        boolean removed = sessionManager.removeSession(credentials);
+        boolean removed = sessionService.removeSession(credentials);
         if (removed) {
             LOG.info("Session kicked: credentials={}", credentials);
         }

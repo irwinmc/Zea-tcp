@@ -10,7 +10,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
-import java.util.concurrent.*;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 高性能事件调度器（Java 21 现代化版本）
@@ -226,8 +228,7 @@ public class AgronaEventDispatcher implements EventDispatcher, Agent {
         agentThread.setDaemon(false);
         agentThread.start();
 
-        LOG.info("AgronaEventDispatcher started with mode={}, queueCapacity={}, batchSize={}",
-                executionMode, QUEUE_CAPACITY, BATCH_SIZE);
+        LOG.info("AgronaEventDispatcher started with mode={}, queueCapacity={}, batchSize={}", executionMode, QUEUE_CAPACITY, BATCH_SIZE);
     }
 
     /**
@@ -304,8 +305,7 @@ public class AgronaEventDispatcher implements EventDispatcher, Agent {
     @Override
     public void fireEvent(Event event) {
         if (!eventQueue.offer(event)) {
-            LOG.warn("Event queue full (capacity {}), dropping event type {}",
-                    QUEUE_CAPACITY, event.getType());
+            LOG.warn("Event queue full (capacity {}), dropping event type {}", QUEUE_CAPACITY, event.getType());
         }
     }
 
@@ -485,8 +485,7 @@ public class AgronaEventDispatcher implements EventDispatcher, Agent {
             try {
                 handler.onEvent(event);
             } catch (Exception ex) {
-                LOG.error("Handler error for event type {} in handler {}",
-                        event.getType(), handler.getClass().getSimpleName(), ex);
+                LOG.error("Handler error for event type {} in handler {}", event.getType(), handler.getClass().getSimpleName(), ex);
             }
         }
     }
@@ -521,8 +520,7 @@ public class AgronaEventDispatcher implements EventDispatcher, Agent {
                 try {
                     handler.onEvent(event);
                 } catch (Exception ex) {
-                    LOG.error("Handler error for event type {} in handler {}",
-                            event.getType(), handler.getClass().getSimpleName(), ex);
+                    LOG.error("Handler error for event type {} in handler {}", event.getType(), handler.getClass().getSimpleName(), ex);
                 } finally {
                     latch.countDown();
                 }
@@ -532,13 +530,11 @@ public class AgronaEventDispatcher implements EventDispatcher, Agent {
         // 等待所有 handler 完成（带超时）
         try {
             if (!latch.await(HANDLER_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                LOG.warn("Handler execution timeout ({} ms) for event type {}, {} handlers still running",
-                        HANDLER_TIMEOUT_MS, event.getType(), latch.getCount());
+                LOG.warn("Handler execution timeout ({} ms) for event type {}, {} handlers still running", HANDLER_TIMEOUT_MS, event.getType(), latch.getCount());
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            LOG.warn("Handler execution interrupted for event type {}, {} handlers still running",
-                    event.getType(), latch.getCount(), e);
+            LOG.warn("Handler execution interrupted for event type {}, {} handlers still running", event.getType(), latch.getCount(), e);
         }
     }
 

@@ -6,15 +6,17 @@ import com.akakata.communication.impl.SocketMessageSender;
 import com.akakata.event.Event;
 import com.akakata.event.Events;
 import com.akakata.protocols.Protocol;
-import com.akakata.security.Credentials;
 import com.akakata.service.LoginService;
 import com.akakata.util.ByteBufHolder;
 import com.akakata.util.NettyUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import io.netty.channel.*;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandler.Sharable;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.WebSocketFrame;
 import org.slf4j.Logger;
@@ -30,15 +32,6 @@ import javax.inject.Inject;
  *   <li>接收 {@link WebSocketFrame} 而不是 {@link Event}</li>
  *   <li>需要 {@link #frameToEvent} 和 {@link #eventToFrame} 转换方法</li>
  *   <li>消息格式：[opcode:1byte] [payload:variable]</li>
- * </ul>
- * <p>
- * <b>相比旧版本的改进：</b>
- * <ul>
- *   <li><b>虚拟线程</b>：使用 {@code Thread.startVirtualThread()} 替代回调</li>
- *   <li><b>try-with-resources</b>：使用 {@link ByteBufHolder} 自动管理 ByteBuf</li>
- *   <li><b>职责分离</b>：业务逻辑移至 {@link LoginService}</li>
- *   <li><b>并发安全</b>：会话替换通过 CaffeineSessionManager 原子完成</li>
- *   <li><b>事件驱动</b>：完全使用事件系统，无需 LoginResult 返回值类型</li>
  * </ul>
  * <p>
  * <b>WebSocket 消息格式：</b>
@@ -71,9 +64,9 @@ import javax.inject.Inject;
  * </pre>
  *
  * @author Kelvin
- * @since 0.7.8
  * @see LoginHandler
  * @see LoginService
+ * @since 0.7.8
  */
 @Sharable
 public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocketFrame> {
@@ -98,8 +91,8 @@ public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocket
      */
     @Inject
     public WebSocketLoginHandler(Protocol protocol,
-                                  Game game,
-                                  LoginService loginService) {
+                                 Game game,
+                                 LoginService loginService) {
         this.protocol = protocol;
         this.game = game;
         this.loginService = loginService;
@@ -114,6 +107,7 @@ public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocket
      * <ul>
      *   <li>Pattern Matching for instanceof - 类型检查和转换</li>
      *   <li>{@link ByteBufHolder} - try-with-resources 自动释放 ByteBuf</li>
+     *   <li>{@link LoginService#login(ByteBuf, Game)} - 业务逻辑封装在 Service 层</li>
      *   <li>虚拟线程 - 异步初始化会话</li>
      * </ul>
      *
@@ -134,37 +128,31 @@ public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocket
         // 转换为 Event
         var event = frameToEvent(binaryFrame);
 
+        // 验证事件类型
+        if (event.getType() != Events.LOG_IN) {
+            LOG.error("Invalid event type {} from {}, expected LOG_IN",
+                    event.getType(), channel.remoteAddress());
+            closeChannelWithLoginFailure(channel);
+            return;
+        }
+
+        LOG.debug("WebSocket login attempt from {}", channel.remoteAddress());
+
         // 使用 try-with-resources 自动管理 ByteBuf
         try (var bufferHolder = new ByteBufHolder(event.getSource())) {
-            var buffer = bufferHolder.buffer();
+            // 调用 LoginService.login() 完成所有业务逻辑
+            var result = loginService.login(bufferHolder.buffer(), game);
 
-            // 验证事件类型
-            if (event.getType() != Events.LOG_IN) {
-                LOG.error("Invalid event type {} from {}, expected LOG_IN",
-                        event.getType(), channel.remoteAddress());
+            if (result == null) {
+                // 登录失败
+                LOG.warn("WebSocket login failed from {}", channel.remoteAddress());
                 closeChannelWithLoginFailure(channel);
-                return;
+            } else {
+                // 登录成功
+                LOG.info("WebSocket login successful: sessionId={}, channel={}",
+                        result.session().getId(), channel.id());
+                sendLoginSuccessAndInitialize(channel, result.session(), result.token());
             }
-
-            LOG.debug("WebSocket login attempt from {}", channel.remoteAddress());
-
-            // 1. 验证凭证
-            Credentials credentials = loginService.verify(buffer);
-            if (credentials == null) {
-                LOG.warn("Invalid credentials from {}", channel.remoteAddress());
-                closeChannelWithLoginFailure(channel);
-                return;
-            }
-
-            // 2. 创建会话
-            PlayerSession session = loginService.createAndReplaceSession(credentials, game);
-
-            // 3. 生成 token
-            String token = loginService.generateToken(credentials);
-
-            // 4. 发送登录成功消息并初始化会话
-            LOG.info("WebSocket login successful: sessionId={}, channel={}", session.getId(), channel.id());
-            sendLoginSuccessAndInitialize(channel, session, token);
         }
     }
 
@@ -213,11 +201,9 @@ public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocket
                         // 初始化会话（WebSocket 不需要清理 pipeline）
                         initializeSession(channel, session);
 
-                        LOG.info("WebSocket session initialized: sessionId={}, channel={}",
-                                session.getId(), channel.id());
+                        LOG.info("WebSocket session initialized: sessionId={}, channel={}", session.getId(), channel.id());
                     } else {
-                        LOG.error("Failed to send WebSocket LOG_IN_SUCCESS to channel {}, closing",
-                                channel.id(), sendFuture.cause());
+                        LOG.error("Failed to send WebSocket LOG_IN_SUCCESS to channel {}, closing", channel.id(), sendFuture.cause());
                         channel.close();
                     }
                 } catch (InterruptedException e) {

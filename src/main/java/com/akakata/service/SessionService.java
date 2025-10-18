@@ -1,10 +1,9 @@
-package com.akakata.service.impl;
+package com.akakata.service;
 
 import com.akakata.app.PlayerSession;
 import com.akakata.app.Session;
 import com.akakata.communication.impl.SocketMessageSender;
 import com.akakata.security.Credentials;
-import com.akakata.service.SessionManagerService;
 import com.akakata.util.NettyUtils;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
@@ -20,10 +19,9 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 基于 Caffeine 的现代化会话管理器
+ * 会话管理服务（基于 Caffeine Cache）
  * <p>
- * 相比传统的 {@link SimpleSessionManagerServiceImpl}（使用 ConcurrentHashMap），
- * 这个实现提供了以下高级特性：
+ * 提供以下高级特性：
  * <ul>
  *   <li><b>自动过期</b>：2小时无活动或24小时绝对过期，防止僵尸会话</li>
  *   <li><b>自动清理</b>：过期时自动调用 {@code session.close()}，释放资源</li>
@@ -63,42 +61,42 @@ import java.util.concurrent.TimeUnit;
  *   </tr>
  *   <tr>
  *     <td>自动清理</td>
- *     <td>❌ 无</td>
- *     <td>✅ 自动</td>
+ *     <td>无</td>
+ *     <td>自动</td>
  *   </tr>
  *   <tr>
  *     <td>监控统计</td>
- *     <td>❌ 无</td>
- *     <td>✅ 内置</td>
+ *     <td>无</td>
+ *     <td>内置</td>
  *   </tr>
  * </table>
  * <p>
  * <b>使用示例：</b>
  * <pre>{@code
- * // 1. 创建 SessionManager
- * var manager = new CaffeineSessionManager();
+ * // 1. 创建 SessionService
+ * var sessionService = new SessionService();
  *
  * // 2. 登录时替换旧会话（自动清理）
  * PlayerSession newSession = game.createPlayerSession();
- * PlayerSession oldSession = manager.replaceSession(credentials, newSession);
+ * PlayerSession oldSession = sessionService.replaceSession(credentials, newSession);
  * if (oldSession != null) {
  *     LOG.warn("Kicked old session for {}", credentials);
  * }
  *
  * // 3. 获取会话统计
- * CacheStats stats = manager.getStats();
+ * CacheStats stats = sessionService.getStats();
  * LOG.info("Cache hit rate: {}", stats.hitRate());
  *
  * // 4. 服务器关闭时清理
- * manager.close();
+ * sessionService.close();
  * }</pre>
  *
  * @author Kelvin
  * @since 0.7.8
  */
-public class CaffeineSessionManager implements SessionManagerService<Credentials> {
+public class SessionService {
 
-    private static final Logger LOG = LoggerFactory.getLogger(CaffeineSessionManager.class);
+    private static final Logger LOG = LoggerFactory.getLogger(SessionService.class);
 
     /**
      * Caffeine 缓存实例
@@ -136,7 +134,7 @@ public class CaffeineSessionManager implements SessionManagerService<Credentials
      * <p>
      * 初始化 Caffeine 缓存和定期清理任务。
      */
-    public CaffeineSessionManager() {
+    public SessionService() {
         this.sessions = Caffeine.newBuilder()
                 // 容量限制：最大10K会话
                 .maximumSize(10_000)
@@ -158,7 +156,7 @@ public class CaffeineSessionManager implements SessionManagerService<Credentials
                 1, 1, TimeUnit.MINUTES
         );
 
-        LOG.info("CaffeineSessionManager initialized (max size: 10K, access expiry: 2h, write expiry: 24h)");
+        LOG.info("SessionService initialized (max size: 10K, access expiry: 2h, write expiry: 24h)");
     }
 
     /**
@@ -202,7 +200,7 @@ public class CaffeineSessionManager implements SessionManagerService<Credentials
         }
     }
 
-    // ==================== SessionManagerService 接口实现 ====================
+    // ==================== 公共方法 ====================
 
     /**
      * 验证客户端凭证
@@ -214,7 +212,6 @@ public class CaffeineSessionManager implements SessionManagerService<Credentials
      * @param byteBuf 客户端发送的数据（包含 token）
      * @return 验证通过返回 Credentials，否则返回 null
      */
-    @Override
     public Credentials verify(ByteBuf byteBuf) {
         if (byteBuf == null || byteBuf.readableBytes() == 0) {
             return null;
@@ -241,7 +238,6 @@ public class CaffeineSessionManager implements SessionManagerService<Credentials
      * @param key 凭证
      * @return 会话，不存在返回 null
      */
-    @Override
     public Session getSession(Credentials key) {
         return sessions.getIfPresent(key);
     }
@@ -255,7 +251,6 @@ public class CaffeineSessionManager implements SessionManagerService<Credentials
      * @param session 会话
      * @return 总是返回 true（Caffeine 不区分新增/覆盖）
      */
-    @Override
     public boolean putSession(Credentials key, Session session) {
         if (key == null || session == null) {
             return false;
@@ -272,7 +267,6 @@ public class CaffeineSessionManager implements SessionManagerService<Credentials
      * @param key 凭证
      * @return true 如果会话存在并被移除，false 如果会话不存在
      */
-    @Override
     public boolean removeSession(Credentials key) {
         var session = sessions.getIfPresent(key);
         if (session != null) {
@@ -392,7 +386,7 @@ public class CaffeineSessionManager implements SessionManagerService<Credentials
         }
 
         closed = true;
-        LOG.info("Shutting down CaffeineSessionManager...");
+        LOG.info("Shutting down SessionService...");
 
         // 停止清理任务
         cleanupExecutor.shutdown();
@@ -409,6 +403,6 @@ public class CaffeineSessionManager implements SessionManagerService<Credentials
         sessions.invalidateAll();
         sessions.cleanUp();
 
-        LOG.info("CaffeineSessionManager shut down (final stats: {})", getStats());
+        LOG.info("SessionService shut down (final stats: {})", getStats());
     }
 }

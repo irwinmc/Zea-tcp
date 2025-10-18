@@ -6,8 +6,7 @@ import com.akakata.event.Event;
 import com.akakata.event.EventDispatcher;
 import com.akakata.event.EventHandler;
 import com.akakata.event.impl.EventDispatchers;
-import com.akakata.service.UniqueIdGeneratorService;
-import com.akakata.service.impl.SimpleUniqueIdGeneratorImpl;
+import com.akakata.service.IdGeneratorService;
 
 import java.util.HashMap;
 import java.util.List;
@@ -248,7 +247,7 @@ public class DefaultSession implements Session {
         /**
          * Used to set a unique id on the incoming sessions to this room
          */
-        protected static final UniqueIdGeneratorService ID_GENERATOR_SERVICE = new SimpleUniqueIdGeneratorImpl();
+        protected static final IdGeneratorService ID_GENERATOR_SERVICE = new IdGeneratorService();
         protected Object id = null;
         protected EventDispatcher eventDispatcher = null;
         protected Map<String, Object> sessionAttributes = null;

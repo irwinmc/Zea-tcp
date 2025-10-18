@@ -6,16 +6,17 @@ import com.akakata.communication.impl.SocketMessageSender;
 import com.akakata.event.Event;
 import com.akakata.event.Events;
 import com.akakata.protocols.Protocol;
-import com.akakata.security.Credentials;
-import com.akakata.security.crypto.AesGcmCipher;
 import com.akakata.server.impl.AbstractNettyServer;
 import com.akakata.service.LoginService;
 import com.akakata.util.ByteBufHolder;
 import com.akakata.util.NettyUtils;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import io.netty.channel.*;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandler.Sharable;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.SimpleChannelInboundHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,44 +31,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <ul>
  *   <li><b>虚拟线程</b>：使用 {@code Thread.startVirtualThread()} 替代回调地狱</li>
  *   <li><b>try-with-resources</b>：使用 {@link ByteBufHolder} 自动管理 ByteBuf 生命周期</li>
- *   <li><b>职责分离</b>：业务逻辑移至 {@link LoginService}，Handler 只负责网络 I/O</li>
- *   <li><b>并发安全</b>：会话替换通过 {@link com.akakata.service.impl.CaffeineSessionManager} 原子完成</li>
- *   <li><b>事件驱动</b>：完全使用事件系统，无需 LoginResult 返回值类型</li>
+ *   <li><b>职责分离</b>：业务逻辑封装在 {@link LoginService#login(ByteBuf, Game)}</li>
+ *   <li><b>并发安全</b>：会话替换通过 Caffeine Cache 原子完成</li>
+ *   <li><b>代码简洁</b>：核心登录逻辑只需 1 行代码</li>
  * </ul>
- * <p>
- * <b>代码对比：</b>
- * <table border="1">
- *   <tr>
- *     <th>方面</th>
- *     <th>旧版本（175行）</th>
- *     <th>新版本（~200行）</th>
- *   </tr>
- *   <tr>
- *     <td>异步处理</td>
- *     <td>ChannelFutureListener（回调嵌套）</td>
- *     <td>虚拟线程（同步风格）</td>
- *   </tr>
- *   <tr>
- *     <td>错误处理</td>
- *     <td>if-else 分支</td>
- *     <td>事件驱动（LOG_IN_SUCCESS / LOG_IN_FAILURE）</td>
- *   </tr>
- *   <tr>
- *     <td>资源管理</td>
- *     <td>手动 release</td>
- *     <td>try-with-resources</td>
- *   </tr>
- *   <tr>
- *     <td>业务逻辑</td>
- *     <td>混在 Handler 中</td>
- *     <td>分离到 LoginService</td>
- *   </tr>
- *   <tr>
- *     <td>会话替换</td>
- *     <td>异步事件（资源泄漏风险）</td>
- *     <td>原子操作 + 虚拟线程清理</td>
- *   </tr>
- * </table>
  * <p>
  * <b>工作流程：</b>
  * <pre>
@@ -89,8 +56,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  * </pre>
  *
  * @author Kelvin
- * @since 0.7.8
  * @see LoginService
+ * @since 0.7.8
  */
 @Sharable
 public class LoginHandler extends SimpleChannelInboundHandler<Event> {
@@ -135,6 +102,7 @@ public class LoginHandler extends SimpleChannelInboundHandler<Event> {
      * 使用 Java 21 特性重构：
      * <ul>
      *   <li>{@link ByteBufHolder} - try-with-resources 自动释放 ByteBuf</li>
+     *   <li>{@link LoginService#login(ByteBuf, Game)} - 业务逻辑封装在 Service 层</li>
      *   <li>虚拟线程 - 异步初始化会话</li>
      * </ul>
      *
@@ -143,38 +111,33 @@ public class LoginHandler extends SimpleChannelInboundHandler<Event> {
      */
     @Override
     public void channelRead0(ChannelHandlerContext ctx, Event event) {
+        var channel = ctx.channel();
+
+        // 验证事件类型
+        if (event.getType() != Events.LOG_IN) {
+            LOG.error("Invalid event type {} from {}, expected LOG_IN",
+                    event.getType(), channel.remoteAddress());
+            closeChannelWithLoginFailure(channel);
+            return;
+        }
+
+        LOG.debug("Login attempt from {}", channel.remoteAddress());
+
         // 使用 try-with-resources 自动管理 ByteBuf
         try (var bufferHolder = new ByteBufHolder(event.getSource())) {
-            var buffer = bufferHolder.buffer();
-            var channel = ctx.channel();
+            // 调用 LoginService.login() 完成所有业务逻辑
+            var result = loginService.login(bufferHolder.buffer(), game);
 
-            // 验证事件类型
-            if (event.getType() != Events.LOG_IN) {
-                LOG.error("Invalid event type {} from {}, expected LOG_IN",
-                        event.getType(), channel.remoteAddress());
+            if (result == null) {
+                // 登录失败
+                LOG.warn("Login failed from {}", channel.remoteAddress());
                 closeChannelWithLoginFailure(channel);
-                return;
+            } else {
+                // 登录成功
+                LOG.info("Login successful: sessionId={}, channel={}",
+                        result.session().getId(), channel.id());
+                sendLoginSuccessAndInitialize(channel, result.session(), result.token());
             }
-
-            LOG.debug("Login attempt from {}", channel.remoteAddress());
-
-            // 1. 验证凭证
-            Credentials credentials = loginService.verify(buffer);
-            if (credentials == null) {
-                LOG.warn("Invalid credentials from {}", channel.remoteAddress());
-                closeChannelWithLoginFailure(channel);
-                return;
-            }
-
-            // 2. 创建会话
-            PlayerSession session = loginService.createAndReplaceSession(credentials, game);
-
-            // 3. 生成 token
-            String token = loginService.generateToken(credentials);
-
-            // 4. 发送登录成功消息并初始化会话
-            LOG.info("Login successful: sessionId={}, channel={}", session.getId(), channel.id());
-            sendLoginSuccessAndInitialize(channel, session, token);
         }
     }
 

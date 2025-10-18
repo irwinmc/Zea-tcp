@@ -2,16 +2,15 @@ package com.akakata.context.module;
 
 import com.akakata.context.ConfigurationManager;
 import com.akakata.context.NetworkBootstrap;
-import com.akakata.server.Server;
+import com.akakata.server.ServerManager;
 import dagger.BindsInstance;
 import dagger.Component;
-import javax.inject.Named;
 import javax.inject.Singleton;
 
-import static com.akakata.context.AppContext.HTTP_SERVER;
-import static com.akakata.context.AppContext.TCP_SERVER;
-import static com.akakata.context.AppContext.WEB_SOCKET_SERVER;
-
+/**
+ * Dagger component for server infrastructure.
+ * Only exposes ServerManager - individual servers are managed internally.
+ */
 @Singleton
 @Component(modules = {
         ServiceModule.class,
@@ -20,14 +19,10 @@ import static com.akakata.context.AppContext.WEB_SOCKET_SERVER;
 })
 public interface GameServerComponent {
 
-    @Named(TCP_SERVER)
-    Server tcpServer();
-
-    @Named(HTTP_SERVER)
-    Server httpServer();
-
-    @Named(WEB_SOCKET_SERVER)
-    Server webSocketServer();
+    /**
+     * Get the server manager that controls all server instances.
+     */
+    ServerManager serverManager();
 
     @Component.Builder
     interface Builder {

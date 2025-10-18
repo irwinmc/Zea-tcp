@@ -1,30 +1,26 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- Runtime sources live in `src/main/java/com/akakata`. Key areas: `context` (Dagger modules, `ServerContext`, configuration), `server` (Netty bootstrapping), `handlers` (login, HTTP, WebSocket pipelines), `protocols` (SBE/JSON wiring), `event` (Agrona sharded dispatcher), and `app/impl` (game/session domain objects).
-- Shared assets are in `src/main/resources`: `props/conf.properties` controls ports, thread counts, and metrics; `logback.xml` defines logging; `sbe/zea-message-schema.xml` stores the Aeron-compatible message schema.
-- Add tests under `src/test/java`, matching the production package structure. Create sub-packages (for example `com.akakata.server`) to mirror the code under test.
+Runtime sources live under `src/main/java/com/akakata`, with key domains in `context` for Dagger wiring, `server` for Netty bootstrapping, `handlers` for login and transport pipelines, `protocols` for SBE and JSON translation, and `event` for the Agrona dispatcher. Session and gameplay objects reside in `app/impl`. Shared assets stay in `src/main/resources`, including `props/conf.properties`, `logback.xml`, and `sbe/zea-message-schema.xml`. Mirror production packages in `src/test/java` when adding tests (for example `src/test/java/com/akakata/server`).
 
 ## Build, Test, and Development Commands
-- `mvn clean package` – compiles with annotation processing (Dagger) and emits `target/Zea-tcp-0.7.8.jar`.
-- `mvn test` – runs the unit test suite; add JUnit 5 dependencies in the POM when introducing new tests.
-- `mvn exec:java -Dexec.mainClass=com.akakata.Main -Dexec.args="--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED"` – convenient way to start all transports with the required Agrona JVM flag. Equivalent manual command after packaging: `java --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED -cp target/classes:target/dependency/* com.akakata.Main`.
+Use Maven for all lifecycle tasks:
+```bash
+mvn clean package           # Compile with annotation processing, emit target/Zea-tcp-0.7.8.jar
+mvn test                    # Execute the JUnit 5 suite
+mvn exec:java -Dexec.mainClass=com.akakata.Main \
+  -Dexec.args="--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED"
+```
+The exec goal starts all transports with the required Agrona JVM flag; after packaging, the equivalent manual command uses `java --add-opens ... -cp target/classes:target/dependency/* com.akakata.Main`.
 
 ## Coding Style & Naming Conventions
-- Project targets Java 17. Use 4 spaces for indentation, braces on the same line, and final fields wherever possible.
-- Prefer constructor injection; Dagger will auto-generate factories from `ServiceModule`, `ProtocolModule`, and `ServerModule`. New injectable classes should expose a constructor receiving all dependencies.
-- Packages stay under `com.akakata.<module>` and class names describe their role (`ShardedEventDispatcher`, `SbeProtocol`, etc.).
-- Obtain loggers through SLF4J (`LoggerFactory.getLogger`) and rely on Logback configuration for formatting.
+Target Java 17 with 4-space indentation, braces on the same line, and prefer `final` fields. Rely on constructor injection so Dagger auto-generates factories from `ServiceModule`, `ProtocolModule`, and `ServerModule`. Keep package names under `com.akakata.<module>` and use descriptive class names such as `ShardedEventDispatcher` and `SbeProtocol`. Acquire loggers via `LoggerFactory.getLogger` and let Logback handle formatting.
 
 ## Testing Guidelines
-- Add JUnit 5 tests that suffix classes with `Test` (for example `ShardedEventDispatcherTest`). Keep Netty and Agrona interactions behind interfaces so they can be mocked.
-- Cover session lifecycle, dispatcher back-pressure behaviour, and protocol interoperability. Integration tests that spin up Netty pipelines should live in a dedicated package (for example `com.akakata.it`).
+Write JUnit 5 tests suffixed with `Test`, mirroring the package of the code under test. Mock Netty and Agrona interactions behind interfaces to avoid network dependencies. Run `mvn test` locally before pushing and extend coverage for session lifecycle, dispatcher back-pressure, and protocol interoperability.
 
 ## Commit & Pull Request Guidelines
-- Use short, imperative commit subjects (≤50 chars) with optional context in the body, and reference issues (`Refs #123`) where applicable.
-- PRs must describe motivation, configuration changes (ports, VM flags), and manual verification steps. Attach logs or screenshots when touching login flows or network protocols.
-- Update `AGENTS.md`, `conf.properties`, or `logback.xml` when behaviour changes, and note any required JVM options in the PR description.
+Compose commits with imperative subjects ≤50 characters; add optional body context and issue references such as `Refs #123`. Pull requests should explain motivation, list configuration changes (ports, JVM flags), and document manual verification, attaching logs or screenshots for login or network adjustments.
 
-## Configuration & Security Tips
-- Never commit secrets; when adding new configuration keys keep them lowercase with dot delimiters and document defaults in `conf.properties`.
-- Always run servers with `--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED`. Validate external ports against firewalls before merging.
+## Security & Configuration Tips
+Do not commit secrets. Document new configuration keys in `src/main/resources/props/conf.properties` using lowercase dot-delimited names. Always run transports with `--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED` and validate external ports with network controls before merging.

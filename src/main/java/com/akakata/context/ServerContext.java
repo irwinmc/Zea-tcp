@@ -4,14 +4,11 @@ import com.akakata.context.module.DaggerGameServerComponent;
 import com.akakata.context.module.GameServerComponent;
 import com.akakata.event.impl.EventDispatcherMetrics;
 import com.akakata.event.impl.EventDispatchers;
-import com.akakata.server.Server;
+import com.akakata.server.ServerManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
 
 /**
  * Lightweight application context coordinator.
@@ -28,7 +25,7 @@ public final class ServerContext implements AutoCloseable {
     private final NetworkBootstrap networkBootstrap;
     private EventDispatcherMetrics dispatcherMetrics;
     private volatile boolean initialized = false;
-    private volatile Map<String, Server> servers = new HashMap<>();
+    private volatile ServerManager serverManager;
 
     public ServerContext() throws IOException {
         this(DEFAULT_CONFIG_PATH);
@@ -61,11 +58,8 @@ public final class ServerContext implements AutoCloseable {
                 .networkBootstrap(networkBootstrap)
                 .build();
 
-        Map<String, Server> tempServers = new HashMap<>();
-        tempServers.put(AppContext.TCP_SERVER, component.tcpServer());
-        tempServers.put(AppContext.HTTP_SERVER, component.httpServer());
-        tempServers.put(AppContext.WEB_SOCKET_SERVER, component.webSocketServer());
-        servers = Collections.unmodifiableMap(tempServers);
+        // Initialize ServerManager (it manages all servers internally)
+        serverManager = component.serverManager();
 
         startDispatcherMetrics();
         initialized = true;
@@ -73,24 +67,14 @@ public final class ServerContext implements AutoCloseable {
     }
 
     /**
-     * Get bean by name and type.
+     * Get bean by type.
+     * Currently only supports ServerManager.
      */
-    public <T> T getBean(String name, Class<T> type) {
-        Object bean = getBean(name);
-        if (bean == null) {
-            return null;
+    public <T> T getBean(Class<T> type) {
+        if (type == ServerManager.class) {
+            return type.cast(serverManager);
         }
-        if (!type.isInstance(bean)) {
-            throw new IllegalArgumentException("Bean " + name + " is not of type " + type.getName());
-        }
-        return type.cast(bean);
-    }
-
-    /**
-     * Get bean by name.
-     */
-    public Object getBean(String name) {
-        return servers.get(name);
+        throw new IllegalArgumentException("No bean found for type: " + type.getName());
     }
 
     /**
@@ -106,8 +90,14 @@ public final class ServerContext implements AutoCloseable {
     public void close() {
         LOG.info("Shutting down ServerContext");
 
-        // Stop servers
-        stopServers();
+        // Stop all servers via ServerManager
+        if (serverManager != null) {
+            try {
+                serverManager.stopServers();
+            } catch (Exception e) {
+                LOG.error("Error stopping servers", e);
+            }
+        }
 
         // Close network resources
         networkBootstrap.close();
@@ -122,28 +112,9 @@ public final class ServerContext implements AutoCloseable {
         LOG.info("ServerContext shutdown complete");
     }
 
-    private void stopServers() {
-        stopServer(AppContext.TCP_SERVER, "TCP");
-        stopServer(AppContext.HTTP_SERVER, "HTTP");
-        stopServer(AppContext.WEB_SOCKET_SERVER, "WebSocket");
-    }
-
     private void startDispatcherMetrics() {
         long intervalSeconds = configManager.getInt("metrics.event.interval.seconds", 30);
         dispatcherMetrics = new EventDispatcherMetrics();
         dispatcherMetrics.start(intervalSeconds);
-    }
-
-    private void stopServer(String beanName, String serverType) {
-        Server server = servers.get(beanName);
-        if (server == null) {
-            return;
-        }
-        try {
-            server.stopServer();
-            LOG.info("{} server stopped", serverType);
-        } catch (Exception e) {
-            LOG.error("Error stopping {} server", serverType, e);
-        }
     }
 }

@@ -3,7 +3,7 @@ package com.akakata.service;
 import com.akakata.app.Game;
 import com.akakata.app.PlayerSession;
 import com.akakata.security.Credentials;
-import com.akakata.security.crypto.AesGcmCipher;
+import com.github.benmanes.caffeine.cache.stats.CacheStats;
 import io.netty.buffer.ByteBuf;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -14,82 +14,28 @@ import java.util.Objects;
 /**
  * 登录服务
  * <p>
- * 从 {@link com.akakata.handlers.LoginHandler} 中分离出来的业务逻辑层，
- * 负责处理登录流程的核心逻辑：
- * <ul>
- *   <li>认证凭证（{@link #verify(ByteBuf)}）</li>
- *   <li>创建会话（{@link #createAndReplaceSession(Credentials, Game)}）</li>
- *   <li>替换旧会话（{@link SessionService#replaceSession}）</li>
- *   <li>生成加密 token（{@link #generateToken(Credentials)}）</li>
- * </ul>
+ * 从 {@link com.akakata.handlers.LoginHandler} 中分离出来的业务逻辑层。
  * <p>
  * <b>职责边界：</b>
  * <pre>
  * LoginHandler (网络层)
  *   ↓ 接收 ByteBuf
  * LoginService (业务层)
- *   ↓ 验证凭证、创建会话、生成 token
+ *   ↓ 验证凭证、踢出旧会话、创建新会话、生成 token
  * LoginHandler (网络层)
- *   ↓ 触发事件（LOG_IN_SUCCESS / LOG_IN_FAILURE）
+ *   ↓ 发送 LOG_IN_SUCCESS / LOG_IN_FAILURE
  * </pre>
  * <p>
  * <b>使用示例：</b>
  * <pre>{@code
- * // 在 LoginHandler 中使用
- * @Inject
- * private LoginService loginService;
- *
- * @Override
- * protected void channelRead0(ChannelHandlerContext ctx, Event event) {
- *     try (var holder = new ByteBufHolder(event.getSource())) {
- *         // 1. 验证凭证
- *         Credentials credentials = loginService.verify(holder.buffer());
- *         if (credentials == null) {
- *             // 触发 LOG_IN_FAILURE 事件
- *             ctx.fireUserEventTriggered(Events.event(null, Events.LOG_IN_FAILURE));
- *             return;
- *         }
- *
- *         // 2. 创建会话
- *         PlayerSession session = loginService.createAndReplaceSession(credentials, game);
- *
- *         // 3. 生成 token
- *         String token = loginService.generateToken(credentials);
- *
- *         // 4. 触发 LOG_IN_SUCCESS 事件
- *         ctx.fireUserEventTriggered(Events.event(token, Events.LOG_IN_SUCCESS));
- *     }
+ * // 在 LoginHandler 中
+ * try (var holder = new ByteBufHolder(event.getSource())) {
+ *     LoginResult result = loginService.login(holder.buffer(), game);
+ *     handleLoginSuccess(channel, result.session(), result.token());
+ * } catch (LoginException e) {
+ *     handleLoginFailure(channel, e.getReason());
  * }
  * }</pre>
- * <p>
- * <b>对比旧实现：</b>
- * <table border="1">
- *   <tr>
- *     <th>方面</th>
- *     <th>旧实现（LoginHandler）</th>
- *     <th>新实现（LoginService）</th>
- *   </tr>
- *   <tr>
- *     <td>职责</td>
- *     <td>网络 + 业务 + 加密混在一起</td>
- *     <td>只负责业务逻辑</td>
- *   </tr>
- *   <tr>
- *     <td>可测试性</td>
- *     <td>依赖 Netty Channel，难以单测</td>
- *     <td>纯业务逻辑，易于单测</td>
- *   </tr>
- *   <tr>
- *     <td>错误处理</td>
- *     <td>回调嵌套，异常处理分散</td>
- *     <td>返回 null 表示失败（简单明了）</td>
- *   </tr>
- *   <tr>
- *     <td>并发安全</td>
- *     <td>synchronized + 异步事件（不可控）</td>
- *     <td>Caffeine 原子操作 + 虚拟线程</td>
- *   </tr>
- * </table>
  *
  * @author Kelvin
  * @since 0.7.8
@@ -102,7 +48,6 @@ public class LoginService {
      * 登录结果
      * <p>
      * 封装登录成功后的会话和 token。
-     * 如果登录失败，返回 null。
      *
      * @param session 玩家会话
      * @param token   加密后的 token
@@ -114,77 +59,49 @@ public class LoginService {
         }
     }
 
-    /**
-     * 会话管理服务
-     */
     private final SessionService sessionService;
+    private final SecurityService securityService;
 
     /**
      * 构造函数（依赖注入）
      *
-     * @param sessionService 会话管理服务
+     * @param sessionService  会话管理服务
+     * @param securityService 安全服务（Token 生成）
      */
     @Inject
-    public LoginService(SessionService sessionService) {
+    public LoginService(SessionService sessionService, SecurityService securityService) {
         this.sessionService = sessionService;
-        LOG.info("LoginService initialized with SessionService");
+        this.securityService = securityService;
+        LOG.info("LoginService initialized");
     }
 
     /**
-     * 完整的登录流程（一站式服务）
+     * 完整的登录流程（改进版）
      * <p>
-     * 封装了登录的所有业务逻辑，包括：
+     * 工作流程：
      * <ol>
-     *   <li>验证凭证（{@link #verify(ByteBuf)}）</li>
-     *   <li>创建并替换会话（{@link #createAndReplaceSession(Credentials, Game)}）</li>
-     *   <li>生成加密 token（{@link #generateToken(Credentials)}）</li>
+     *   <li>验证凭证 ({@link #verify(ByteBuf)})</li>
+     *   <li>创建新会话 ({@link #createSession(Credentials, Game)})</li>
+     *   <li>替换旧会话 </li>
+     *   <li>生成 token ({@link SecurityService#generateToken(Credentials)})</li>
      * </ol>
      * <p>
      * <b>使用示例：</b>
      * <pre>{@code
-     * // 在 LoginHandler 中
-     * LoginResult result = loginService.login(buffer, game);
-     * if (result == null) {
-     *     // 登录失败
-     *     sendLoginFailure(channel);
-     * } else {
-     *     // 登录成功
+     * try {
+     *     LoginResult result = loginService.login(buffer, game);
      *     sendLoginSuccess(channel, result.session(), result.token());
+     * } catch (LoginException e) {
+     *     switch (e.getReason()) {
+     *         case INVALID_CREDENTIALS -> sendLoginFailure(channel, "Invalid credentials");
+     *         case SYSTEM_ERROR -> sendLoginFailure(channel, "Internal server error");
+     *     }
      * }
      * }</pre>
-     * <p>
-     * <b>对比旧实现：</b>
-     * <table border="1">
-     *   <tr>
-     *     <th>方面</th>
-     *     <th>旧实现（在 Handler 中）</th>
-     *     <th>新实现（在 Service 中）</th>
-     *   </tr>
-     *   <tr>
-     *     <td>代码位置</td>
-     *     <td>LoginHandler（网络层）</td>
-     *     <td>LoginService（业务层）</td>
-     *   </tr>
-     *   <tr>
-     *     <td>代码行数</td>
-     *     <td>~15 行</td>
-     *     <td>~5 行</td>
-     *   </tr>
-     *   <tr>
-     *     <td>重复代码</td>
-     *     <td>LoginHandler 和 WebSocketLoginHandler 各一份</td>
-     *     <td>只有一份</td>
-     *   </tr>
-     *   <tr>
-     *     <td>可测试性</td>
-     *     <td>依赖 Netty Channel（难以单测）</td>
-     *     <td>纯业务逻辑（易于单测）</td>
-     *   </tr>
-     * </table>
      *
-     * @param buffer 客户端发送的认证数据（包含 token）
-     * @param game   游戏实例（用于创建会话）
-     * @return 登录成功返回 {@link LoginResult}，失败返回 null
+     * @param buffer 客户端发送的认证数据
+     * @param game   游戏实例
+     * @return 登录成功返回 {@link LoginResult}
      */
     public LoginResult login(ByteBuf buffer, Game game) {
         try {
@@ -195,15 +112,27 @@ public class LoginService {
                 return null;
             }
 
-            // 2. 创建会话
-            PlayerSession session = createAndReplaceSession(credentials, game);
+            // 2. 创建新会话
+            PlayerSession newSession = createSession(credentials, game);
+            if (newSession == null || newSession.getId() == null) {
+                LOG.error("Login failed: session creation returned null or missing ID, credentials={}", credentials);
+                return null;
+            }
 
-            // 3. 生成 token
-            String token = generateToken(credentials);
+            // 3. 替换旧会话
+            PlayerSession oldSession = sessionService.replaceSession(credentials, newSession);
+            if (oldSession != null) {
+                LOG.warn("Kicked old session: credentials={}, oldSessionId={}, newSessionId={}",
+                        credentials,
+                        Objects.toString(oldSession.getId(), "N/A"),
+                        newSession.getId());
+            }
 
-            LOG.info("Login successful: sessionId={}, credentials={}", session.getId(), credentials);
-            return new LoginResult(session, token);
+            // 4. 生成 token（委托给 SecurityService）
+            String token = securityService.generateToken(credentials);
 
+            LOG.info("Login successful: sessionId={}, credentials={}", newSession.getId(), credentials);
+            return new LoginResult(newSession, token);
         } catch (Exception e) {
             LOG.error("Login failed due to exception", e);
             return null;
@@ -213,15 +142,9 @@ public class LoginService {
     /**
      * 验证凭证
      * <p>
-     * 从客户端发送的 ByteBuf 中解析并验证凭证（token）。
-     * <p>
-     * <b>返回值：</b>
-     * <ul>
-     *   <li>验证成功：返回 {@link Credentials} 对象</li>
-     *   <li>验证失败：返回 null</li>
-     * </ul>
+     * 从客户端发送的 ByteBuf 中解析并验证凭证。
      *
-     * @param buffer 客户端发送的认证数据（包含 token）
+     * @param buffer 客户端发送的认证数据
      * @return 验证通过返回 Credentials，失败返回 null
      */
     public Credentials verify(ByteBuf buffer) {
@@ -238,89 +161,39 @@ public class LoginService {
     }
 
     /**
-     * 创建新会话并替换旧会话
+     * 创建新会话
      * <p>
-     * 完整的会话创建流程，包括：
-     * <ol>
-     *   <li>创建新会话（{@link Game#createPlayerSession()}）</li>
-     *   <li>设置凭证属性</li>
-     *   <li>替换旧会话（{@link SessionService#replaceSession}）</li>
-     * </ol>
+     * 创建新的玩家会话并设置凭证属性。
      * <p>
-     * <b>并发安全：</b>
-     * <ul>
-     *   <li>使用 {@link SessionService#replaceSession} 原子替换会话</li>
-     *   <li>旧会话在虚拟线程中异步清理，不阻塞登录流程</li>
-     * </ul>
+     * <b>注意：</b>此方法只创建会话，不处理旧会话的替换。
+     * 替换逻辑由 {@link SessionService#replaceSession} 处理。
      *
      * @param credentials 凭证
-     * @param game        游戏实例（用于创建会话）
+     * @param game        游戏实例
      * @return 新创建的会话
      */
-    public PlayerSession createAndReplaceSession(Credentials credentials, Game game) {
+    private PlayerSession createSession(Credentials credentials, Game game) {
         try {
-            // 1. 创建新会话
+            // 创建新会话
             PlayerSession newSession = game.createPlayerSession();
             newSession.setAttribute("credentials", credentials);
 
-            // 2. 替换旧会话（原子操作）
-            PlayerSession oldSession = sessionService.replaceSession(credentials, newSession);
-            if (oldSession != null) {
-                LOG.warn("Replaced old session: credentials={}, oldSessionId={}, newSessionId={}",
-                        credentials, oldSession.getId(), newSession.getId());
-            }
-
             LOG.info("Session created: credentials={}, sessionId={}", credentials, newSession.getId());
             return newSession;
-
         } catch (Exception e) {
             LOG.error("Failed to create session for credentials: {}", credentials, e);
-            throw new RuntimeException("Session creation failed", e);
-        }
-    }
-
-    /**
-     * 生成加密 token
-     * <p>
-     * 使用 {@link AesGcmCipher} 加密凭证的 randomKey，返回加密后的 token。
-     * 这个 token 会发送给客户端，用于后续请求的认证。
-     * <p>
-     * <b>安全性：</b>
-     * <ul>
-     *   <li>使用 AES-GCM 加密（AEAD 模式）</li>
-     *   <li>randomKey 是随机生成的8字节字符串（{@link com.akakata.security.SimpleCredentials}）</li>
-     *   <li>每次登录生成新的 randomKey</li>
-     * </ul>
-     *
-     * @param credentials 凭证
-     * @return 加密后的 token
-     * @throws RuntimeException 如果加密失败
-     */
-    public String generateToken(Credentials credentials) {
-        try {
-            String randomKey = credentials.getRandomKey();
-            return AesGcmCipher.encrypt(randomKey);
-        } catch (Exception e) {
-            LOG.error("Failed to generate token for credentials: {}", credentials, e);
-            throw new RuntimeException("Token generation failed", e);
+            return null;
         }
     }
 
     /**
      * 获取会话管理器的统计信息
      * <p>
-     * 用于监控和调试，返回 Caffeine 缓存的统计数据。
-     * <p>
-     * <b>示例：</b>
-     * <pre>{@code
-     * var stats = loginService.getSessionStats();
-     * LOG.info("Session cache: hit rate={}, size={}",
-     *          stats.hitRate(), loginService.getSessionCount());
-     * }</pre>
+     * 用于监控和调试。
      *
      * @return 缓存统计
      */
-    public com.github.benmanes.caffeine.cache.stats.CacheStats getSessionStats() {
+    public CacheStats getSessionStats() {
         return sessionService.getStats();
     }
 
@@ -331,21 +204,5 @@ public class LoginService {
      */
     public long getSessionCount() {
         return sessionService.size();
-    }
-
-    /**
-     * 强制清理指定凭证的会话
-     * <p>
-     * 手动移除会话，通常用于管理员踢人、封号等场景。
-     *
-     * @param credentials 凭证
-     * @return true 如果会话存在并被移除
-     */
-    public boolean kickSession(Credentials credentials) {
-        boolean removed = sessionService.removeSession(credentials);
-        if (removed) {
-            LOG.info("Session kicked: credentials={}", credentials);
-        }
-        return removed;
     }
 }

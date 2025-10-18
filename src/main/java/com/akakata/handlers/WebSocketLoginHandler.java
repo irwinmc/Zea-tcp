@@ -12,11 +12,8 @@ import com.akakata.util.NettyUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import io.netty.channel.Channel;
-import io.netty.channel.ChannelFutureListener;
+import io.netty.channel.*;
 import io.netty.channel.ChannelHandler.Sharable;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.WebSocketFrame;
 import org.slf4j.Logger;
@@ -74,7 +71,7 @@ public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocket
     private static final Logger LOG = LoggerFactory.getLogger(WebSocketLoginHandler.class);
 
     /**
-     * Jackson ObjectMapper（用于 JSON 序列化）
+     * 静态 ObjectMapper - 线程安全且避免重复创建
      */
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
@@ -82,13 +79,6 @@ public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocket
     private final Game game;
     private final LoginService loginService;
 
-    /**
-     * 构造函数（依赖注入）
-     *
-     * @param protocol     WebSocket 协议实现
-     * @param game         游戏实例
-     * @param loginService 登录服务
-     */
     @Inject
     public WebSocketLoginHandler(Protocol protocol,
                                  Game game,
@@ -98,30 +88,13 @@ public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocket
         this.loginService = loginService;
     }
 
-    // ==================== Netty 生命周期方法 ====================
-
-    /**
-     * 处理接收到的 WebSocket 帧
-     * <p>
-     * 使用 Java 21 特性重构：
-     * <ul>
-     *   <li>Pattern Matching for instanceof - 类型检查和转换</li>
-     *   <li>{@link ByteBufHolder} - try-with-resources 自动释放 ByteBuf</li>
-     *   <li>{@link LoginService#login(ByteBuf, Game)} - 业务逻辑封装在 Service 层</li>
-     *   <li>虚拟线程 - 异步初始化会话</li>
-     * </ul>
-     *
-     * @param ctx   Channel 上下文
-     * @param frame WebSocket 帧（应为 BinaryWebSocketFrame）
-     */
     @Override
     public void channelRead0(ChannelHandlerContext ctx, WebSocketFrame frame) {
         var channel = ctx.channel();
 
-        // 使用 Pattern Matching 检查帧类型（Java 21）
         if (!(frame instanceof BinaryWebSocketFrame binaryFrame)) {
             LOG.warn("Received non-binary WebSocket frame from {}, closing", channel.remoteAddress());
-            closeChannelWithLoginFailure(channel);
+            sendLoginFailureAndClose(channel);
             return;
         }
 
@@ -132,129 +105,86 @@ public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocket
         if (event.getType() != Events.LOG_IN) {
             LOG.error("Invalid event type {} from {}, expected LOG_IN",
                     event.getType(), channel.remoteAddress());
-            closeChannelWithLoginFailure(channel);
+            sendLoginFailureAndClose(channel);
             return;
         }
 
         LOG.debug("WebSocket login attempt from {}", channel.remoteAddress());
 
-        // 使用 try-with-resources 自动管理 ByteBuf
+        // ByteBufHolder 自动内存管理
         try (var bufferHolder = new ByteBufHolder(event.getSource())) {
-            // 调用 LoginService.login() 完成所有业务逻辑
+            // LoginService 登录
             var result = loginService.login(bufferHolder.buffer(), game);
 
             if (result == null) {
-                // 登录失败
                 LOG.warn("WebSocket login failed from {}", channel.remoteAddress());
-                closeChannelWithLoginFailure(channel);
+                sendLoginFailureAndClose(channel);
             } else {
-                // 登录成功
-                LOG.info("WebSocket login successful: sessionId={}, channel={}",
-                        result.session().getId(), channel.id());
-                sendLoginSuccessAndInitialize(channel, result.session(), result.token());
+                LOG.info("WebSocket login successful: sessionId={}", result.session().getId());
+                handleLoginSuccess(channel, result.session(), result.token());
             }
+        } catch (Exception e) {
+            LOG.error("WebSocket login processing failed for {}", channel.remoteAddress(), e);
+            sendLoginFailureAndClose(channel);
         }
     }
 
     /**
-     * 异常捕获
-     *
-     * @param ctx   Channel 上下文
-     * @param cause 异常原因
+     * 处理登录成功
      */
-    @Override
-    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-        LOG.error("Exception in WebSocketLoginHandler for channel {}", ctx.channel().id(), cause);
-        ctx.close();
-    }
-
-    // ==================== 登录处理逻辑 ====================
-
-    /**
-     * 发送登录成功消息并初始化会话（虚拟线程 - Java 21）
-     * <p>
-     * 与 {@link LoginHandler#sendLoginSuccessAndInitialize} 类似，
-     * 但使用 {@link #eventToFrame} 将 Event 转换为 WebSocketFrame。
-     *
-     * @param channel Netty Channel
-     * @param session 玩家会话
-     * @param token   加密后的 token
-     */
-    private void sendLoginSuccessAndInitialize(Channel channel, PlayerSession session, String token) {
+    private void handleLoginSuccess(Channel channel, PlayerSession session, String token) {
         try {
-            // 创建 LOG_IN_SUCCESS 事件
+            // 创建登录成功帧
             var event = Events.event(null, Events.LOG_IN_SUCCESS);
             var frame = eventToFrame(event);
 
-            // 发送 WebSocket 帧
-            var sendFuture = channel.writeAndFlush(frame);
+            channel.writeAndFlush(frame).addListener((ChannelFuture future) -> {
+                if (future.isSuccess()) {
+                    LOG.debug("WebSocket LOG_IN_SUCCESS sent to channel {}", channel.id());
 
-            // 在虚拟线程中等待发送完成并初始化会话（Java 21）
-            Thread.startVirtualThread(() -> {
-                try {
-                    // 等待发送完成（不阻塞平台线程！）
-                    sendFuture.await();
-
-                    if (sendFuture.isSuccess()) {
-                        LOG.debug("WebSocket LOG_IN_SUCCESS sent successfully to channel {}", channel.id());
-
-                        // 初始化会话（WebSocket 不需要清理 pipeline）
+                    try {
+                        // WebSocket 不需要清理 pipeline
                         initializeSession(channel, session);
 
-                        LOG.info("WebSocket session initialized: sessionId={}, channel={}", session.getId(), channel.id());
-                    } else {
-                        LOG.error("Failed to send WebSocket LOG_IN_SUCCESS to channel {}, closing", channel.id(), sendFuture.cause());
-                        channel.close();
+                        LOG.info("WebSocket session initialized: sessionId={}", session.getId());
+                    } catch (Exception e) {
+                        LOG.error("Failed to initialize WebSocket session", e);
+                        cleanupAndClose(session, channel);
                     }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    LOG.error("Interrupted while waiting for WebSocket send completion", e);
-                    channel.close();
-                } catch (Exception e) {
-                    LOG.error("Failed to initialize WebSocket session for channel {}", channel.id(), e);
-                    session.close();
-                    channel.close();
+                } else {
+                    LOG.error("Failed to send WebSocket LOG_IN_SUCCESS to {}", channel.id(), future.cause());
+                    cleanupAndClose(session, channel);
                 }
             });
         } catch (Exception e) {
             LOG.error("Failed to create WebSocket login success frame", e);
-            channel.close();
+            cleanupAndClose(session, channel);
         }
     }
 
     /**
      * 初始化会话
-     *
-     * @param channel Netty Channel
-     * @param session 玩家会话
      */
     private void initializeSession(Channel channel, PlayerSession session) {
         // 设置 MessageSender
         var sender = new SocketMessageSender(channel);
         session.setSender(sender);
 
-        // 连接到 Game
-        game.connectSession(session);
-
-        // 应用 Protocol
+        // 应用协议
         LOG.debug("Applying WebSocket protocol: {}", protocol.getClass().getSimpleName());
         protocol.applyProtocol(session);
 
-        // 调用 onLogin（添加 EventHandler）
+        // 连接到游戏
+        game.connectSession(session);
+
+        // 登录
         game.onLogin(session);
     }
-
-    // ==================== 协议转换方法 ====================
 
     /**
      * WebSocket 帧转换为 Event
      * <p>
      * 消息格式：[opcode:1byte] [payload:variable]
-     * <p>
-     * <b>注意：</b>返回的 Event 的 source 是新创建的 ByteBuf，需要释放。
-     *
-     * @param frame BinaryWebSocketFrame
-     * @return Event
      */
     private Event frameToEvent(BinaryWebSocketFrame frame) {
         ByteBuf buffer = frame.content();
@@ -265,20 +195,13 @@ public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocket
         // 读取剩余数据（payload）
         ByteBuf data = buffer.readBytes(buffer.readableBytes());
 
-        // 创建 Event
         return Events.event(data, opcode);
     }
 
     /**
      * Event 转换为 WebSocket 帧
      * <p>
-     * 消息格式：[opcode:1byte] [payload:JSON]
-     * <p>
-     * <b>注意：</b>如果 event.getSource() 不为 null，会将其序列化为 JSON。
-     *
-     * @param event Event
-     * @return BinaryWebSocketFrame
-     * @throws Exception 如果 JSON 序列化失败
+     * 使用静态 ObjectMapper
      */
     private BinaryWebSocketFrame eventToFrame(Event event) throws Exception {
         ByteBuf opcode = NettyUtils.createBufferForOpcode(event.getType());
@@ -295,20 +218,35 @@ public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocket
 
     /**
      * 发送登录失败消息并关闭连接
-     *
-     * @param channel Netty Channel
      */
-    private void closeChannelWithLoginFailure(Channel channel) {
+    private void sendLoginFailureAndClose(Channel channel) {
         try {
             var event = Events.event(null, Events.LOG_IN_FAILURE);
             var frame = eventToFrame(event);
-            var future = channel.writeAndFlush(frame);
-            future.addListener(ChannelFutureListener.CLOSE);
+            channel.writeAndFlush(frame).addListener(ChannelFutureListener.CLOSE);
 
-            LOG.debug("Sent WebSocket LOG_IN_FAILURE to channel {}, closing", channel.id());
+            LOG.debug("Sent WebSocket LOG_IN_FAILURE to {}", channel.id());
         } catch (Exception e) {
             LOG.error("Failed to send WebSocket LOG_IN_FAILURE", e);
             channel.close();
         }
+    }
+
+    /**
+     * 清理资源并关闭
+     */
+    private void cleanupAndClose(PlayerSession session, Channel channel) {
+        try {
+            session.close();
+        } catch (Exception e) {
+            LOG.error("Error closing session", e);
+        }
+        channel.close();
+    }
+
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+        LOG.error("Exception in WebSocketLoginHandler for {}", ctx.channel().id(), cause);
+        ctx.close();
     }
 }

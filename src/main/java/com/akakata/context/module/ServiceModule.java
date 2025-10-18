@@ -2,6 +2,7 @@ package com.akakata.context.module;
 
 import com.akakata.app.Game;
 import com.akakata.app.impl.DefaultGame;
+import com.akakata.security.SimpleCredentialsVerifier;
 import com.akakata.service.LoginService;
 import com.akakata.service.SecurityService;
 import com.akakata.service.SessionService;
@@ -35,7 +36,7 @@ public final class ServiceModule {
     @Provides
     @Singleton
     static SessionService provideSessionService() {
-        return new SessionService(null);
+        return new SessionService(new SimpleCredentialsVerifier());
     }
 
     @Provides

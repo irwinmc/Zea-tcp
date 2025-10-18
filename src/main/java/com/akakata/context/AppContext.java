@@ -26,25 +26,11 @@ public class AppContext {
      * Services with default implementations
      */
     public static final String SESSION_REGISTRY_SERVICE = "sessionManager";
-    public static final String GAME_ADMIN_SERVICE = "gameAdminService";
-
-    /**
-     * Netty default handlers
-     */
-    public static final String HASHED_WHEEL_TIMER = "hashedWheelTimer";
-    public static final String LENGTH_FIELD_PREPENDER = "lengthFieldPrepender";
-    public static final String LENGTH_FIELD_BASED_FRAME_DECODER = "lengthFieldBasedFrameDecoder";
-    public static final String IDLE_CHECK_HANDLER = "idleCheckHandler";
 
     /**
      * Specific handlers
      */
     public static final String WEB_SOCKET_LOGIN_HANDLER = "webSocketLoginHandler";
-
-    /**
-     * Other Netty specific beans
-     */
-    public static final String NETTY_CHANNEL_GROUP = "defaultChannelGroup";
 
     /**
      * Cache store

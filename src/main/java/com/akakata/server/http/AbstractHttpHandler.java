@@ -70,11 +70,23 @@ public abstract class AbstractHttpHandler {
      * @param content response content
      */
     protected void sendHttpResponse(ChannelHandlerContext ctx, ByteBuf content) {
+        sendHttpResponse(ctx, content, "text/html; charset=UTF-8");
+    }
+
+    /**
+     * Send HTTP response with content, custom content type, and CORS headers.
+     *
+     * @param ctx         channel handler context
+     * @param content     response content
+     * @param contentType content type (e.g., "application/json; charset=UTF-8")
+     */
+    protected void sendHttpResponse(ChannelHandlerContext ctx, ByteBuf content, String contentType) {
         FullHttpResponse response = new DefaultFullHttpResponse(HTTP_1_1, OK);
-        response.headers().set(CONTENT_TYPE, "text/html; charset=UTF-8");
+        response.headers().set(CONTENT_TYPE, contentType);
         response.headers().set(ACCESS_CONTROL_ALLOW_ORIGIN, "*");
-        response.headers().set(ACCESS_CONTROL_ALLOW_HEADERS, "Origin, X-Requested-With, Content-Type, Accept");
-        response.headers().set(ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, PUT, DELETE");
+        response.headers().set(ACCESS_CONTROL_ALLOW_HEADERS, "Origin, X-Requested-With, Content-Type, Accept, Authorization");
+        response.headers().set(ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, PUT, DELETE, OPTIONS");
+        response.headers().set(ACCESS_CONTROL_MAX_AGE, "3600");
         response.content().writeBytes(content);
 
         ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);

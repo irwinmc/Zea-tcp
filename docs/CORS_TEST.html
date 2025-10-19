@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zea-tcp CORS 测试</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+            border-bottom: 3px solid #4CAF50;
+            padding-bottom: 10px;
+        }
+        .test-section {
+            background-color: white;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        .result {
+            margin-top: 15px;
+            padding: 15px;
+            background-color: #f9f9f9;
+            border-left: 4px solid #4CAF50;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+        }
+        .error {
+            border-left-color: #f44336;
+            background-color: #ffebee;
+        }
+        .success {
+            border-left-color: #4CAF50;
+            background-color: #e8f5e9;
+        }
+        input {
+            padding: 8px;
+            margin-right: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            width: 300px;
+        }
+        label {
+            font-weight: bold;
+            margin-right: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔗 Zea-tcp CORS 跨域测试页面</h1>
+
+    <div class="test-section">
+        <h2>配置</h2>
+        <label for="serverUrl">服务器地址:</label>
+        <input type="text" id="serverUrl" value="http://localhost:8081" placeholder="http://localhost:8081">
+    </div>
+
+    <div class="test-section">
+        <h2>1. 健康检查端点测试</h2>
+        <button onclick="testEndpoint('/health')">测试 /health</button>
+        <button onclick="testEndpoint('/health/live')">测试 /health/live</button>
+        <button onclick="testEndpoint('/health/ready')">测试 /health/ready</button>
+        <button onclick="testEndpoint('/health/invalid')">测试 /health/invalid (应返回404)</button>
+        <div id="health-result" class="result"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>2. 指标端点测试</h2>
+        <button onclick="testEndpoint('/metrics')">测试 /metrics</button>
+        <button onclick="testEndpoint('/metrics/connections')">测试 /metrics/connections</button>
+        <button onclick="testEndpoint('/metrics/traffic')">测试 /metrics/traffic</button>
+        <button onclick="testEndpoint('/metrics/system')">测试 /metrics/system</button>
+        <button onclick="testEndpoint('/metrics/prometheus')">测试 /metrics/prometheus</button>
+        <div id="metrics-result" class="result"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>3. OPTIONS 预检请求测试</h2>
+        <button onclick="testOptions('/health')">OPTIONS /health</button>
+        <button onclick="testOptions('/metrics')">OPTIONS /metrics</button>
+        <div id="options-result" class="result"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>4. 自定义端点测试</h2>
+        <input type="text" id="customPath" placeholder="/your/custom/path" value="/api/test">
+        <button onclick="testCustomEndpoint()">测试自定义端点</button>
+        <div id="custom-result" class="result"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>5. 批量测试</h2>
+        <button onclick="runAllTests()">运行所有测试</button>
+        <div id="batch-result" class="result"></div>
+    </div>
+
+    <script>
+        function getServerUrl() {
+            return document.getElementById('serverUrl').value;
+        }
+
+        async function testEndpoint(path) {
+            const resultId = path.startsWith('/health') ? 'health-result' : 'metrics-result';
+            const resultDiv = document.getElementById(resultId);
+            const url = getServerUrl() + path;
+
+            resultDiv.innerHTML = `⏳ 正在请求: ${url}...`;
+
+            try {
+                const response = await fetch(url, {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                const corsHeaders = {
+                    'Access-Control-Allow-Origin': response.headers.get('Access-Control-Allow-Origin'),
+                    'Access-Control-Allow-Methods': response.headers.get('Access-Control-Allow-Methods'),
+                    'Access-Control-Allow-Headers': response.headers.get('Access-Control-Allow-Headers'),
+                    'Content-Type': response.headers.get('Content-Type')
+                };
+
+                let body;
+                const contentType = response.headers.get('Content-Type') || '';
+                if (contentType.includes('application/json')) {
+                    body = await response.json();
+                    body = JSON.stringify(body, null, 2);
+                } else {
+                    body = await response.text();
+                }
+
+                const result = `✅ 响应状态: ${response.status} ${response.statusText}
+
+📋 CORS 头信息:
+${JSON.stringify(corsHeaders, null, 2)}
+
+📦 响应内容:
+${body}`;
+
+                resultDiv.className = 'result success';
+                resultDiv.textContent = result;
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = `❌ 请求失败: ${error.message}
+
+可能的原因:
+1. 服务器未启动
+2. CORS 配置错误
+3. 网络连接问题
+
+错误详情:
+${error.stack}`;
+            }
+        }
+
+        async function testOptions(path) {
+            const resultDiv = document.getElementById('options-result');
+            const url = getServerUrl() + path;
+
+            resultDiv.innerHTML = `⏳ 正在发送 OPTIONS 预检请求: ${url}...`;
+
+            try {
+                const response = await fetch(url, {
+                    method: 'OPTIONS',
+                    headers: {
+                        'Origin': window.location.origin,
+                        'Access-Control-Request-Method': 'GET',
+                        'Access-Control-Request-Headers': 'Content-Type'
+                    }
+                });
+
+                const corsHeaders = {};
+                for (let [key, value] of response.headers) {
+                    if (key.toLowerCase().startsWith('access-control')) {
+                        corsHeaders[key] = value;
+                    }
+                }
+
+                const result = `✅ OPTIONS 响应状态: ${response.status} ${response.statusText}
+
+📋 CORS 预检响应头:
+${JSON.stringify(corsHeaders, null, 2)}
+
+✅ CORS 预检成功！浏览器现在可以发送实际的跨域请求了。`;
+
+                resultDiv.className = 'result success';
+                resultDiv.textContent = result;
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = `❌ OPTIONS 请求失败: ${error.message}
+
+这意味着 CORS 预检失败，浏览器会阻止实际的跨域请求。
+
+错误详情:
+${error.stack}`;
+            }
+        }
+
+        function testCustomEndpoint() {
+            const path = document.getElementById('customPath').value;
+            const resultDiv = document.getElementById('custom-result');
+            const url = getServerUrl() + path;
+
+            resultDiv.innerHTML = `⏳ 正在请求: ${url}...`;
+
+            fetch(url)
+                .then(response => {
+                    const corsHeaders = {
+                        'Access-Control-Allow-Origin': response.headers.get('Access-Control-Allow-Origin'),
+                        'Content-Type': response.headers.get('Content-Type')
+                    };
+
+                    return response.text().then(body => ({
+                        status: response.status,
+                        statusText: response.statusText,
+                        headers: corsHeaders,
+                        body: body
+                    }));
+                })
+                .then(result => {
+                    const output = `✅ 响应状态: ${result.status} ${result.statusText}
+
+📋 CORS 头信息:
+${JSON.stringify(result.headers, null, 2)}
+
+📦 响应内容:
+${result.body}`;
+
+                    resultDiv.className = 'result success';
+                    resultDiv.textContent = output;
+                })
+                .catch(error => {
+                    resultDiv.className = 'result error';
+                    resultDiv.textContent = `❌ 请求失败: ${error.message}`;
+                });
+        }
+
+        async function runAllTests() {
+            const resultDiv = document.getElementById('batch-result');
+            resultDiv.innerHTML = `⏳ 正在运行所有测试...`;
+
+            const tests = [
+                '/health',
+                '/health/live',
+                '/health/ready',
+                '/metrics',
+                '/metrics/connections',
+                '/metrics/system'
+            ];
+
+            let results = [];
+
+            for (const path of tests) {
+                try {
+                    const response = await fetch(getServerUrl() + path);
+                    const hasCors = response.headers.get('Access-Control-Allow-Origin') === '*';
+                    results.push(`${hasCors ? '✅' : '❌'} ${path} - ${response.status} ${hasCors ? '(CORS OK)' : '(No CORS)'}`);
+                } catch (error) {
+                    results.push(`❌ ${path} - 失败: ${error.message}`);
+                }
+            }
+
+            resultDiv.className = 'result';
+            resultDiv.textContent = `批量测试结果:\n\n${results.join('\n')}`;
+        }
+
+        // 页面加载时显示提示
+        window.onload = function() {
+            console.log('Zea-tcp CORS 测试页面已加载');
+            console.log('请确保服务器运行在:', getServerUrl());
+        };
+    </script>
+</body>
+</html>

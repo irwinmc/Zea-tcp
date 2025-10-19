@@ -282,14 +282,7 @@ public class StaticFileHandler {
      * Automatically closes the RandomAccessFile to prevent resource leaks.
      * </p>
      */
-    private static class FileCloseListener implements ChannelFutureListener {
-        private final RandomAccessFile raf;
-        private final Path path;
-
-        FileCloseListener(RandomAccessFile raf, Path path) {
-            this.raf = raf;
-            this.path = path;
-        }
+    private record FileCloseListener(RandomAccessFile raf, Path path) implements ChannelFutureListener {
 
         @Override
         public void operationComplete(ChannelFuture future) {

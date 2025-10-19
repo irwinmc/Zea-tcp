@@ -11,7 +11,9 @@ import com.akakata.server.NettyConfig;
 import com.akakata.server.Server;
 import com.akakata.server.ServerManager;
 import com.akakata.server.http.ApiHandler;
+import com.akakata.server.http.HealthCheckHandler;
 import com.akakata.server.http.IndexPageHandler;
+import com.akakata.server.http.MetricsHandler;
 import com.akakata.server.http.RpcHandler;
 import com.akakata.server.http.StaticFileHandler;
 import com.akakata.server.impl.NettyTCPServer;
@@ -84,11 +86,26 @@ public abstract class ServerModule {
 
     @Provides
     @Singleton
+    static HealthCheckHandler provideHealthCheckHandler() {
+        return new HealthCheckHandler();
+    }
+
+    @Provides
+    @Singleton
+    static MetricsHandler provideMetricsHandler() {
+        return new MetricsHandler();
+    }
+
+    @Provides
+    @Singleton
     static HttpRequestHandler provideHttpRequestHandler(StaticFileHandler staticFileHandler,
                                                          IndexPageHandler indexPageHandler,
                                                          ApiHandler apiHandler,
-                                                         RpcHandler rpcHandler) {
-        return new HttpRequestHandler(staticFileHandler, indexPageHandler, apiHandler, rpcHandler);
+                                                         RpcHandler rpcHandler,
+                                                         HealthCheckHandler healthCheckHandler,
+                                                         MetricsHandler metricsHandler) {
+        return new HttpRequestHandler(staticFileHandler, indexPageHandler, apiHandler, rpcHandler,
+                healthCheckHandler, metricsHandler);
     }
 
     // ============================================================

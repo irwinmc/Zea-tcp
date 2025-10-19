@@ -40,6 +40,12 @@ public class AdvancedTestServer extends CommandLine {
     }
 
     @Override
+    protected void printBanner() {
+        // Use default banner (can override to customize)
+        super.printBanner();
+    }
+
+    @Override
     protected void beforeServerStartup() throws Exception {
         LOG.info("╔═══════════════════════════════════════════════╗");
         LOG.info("║   Advanced Test Server - Enhanced Mode       ║");

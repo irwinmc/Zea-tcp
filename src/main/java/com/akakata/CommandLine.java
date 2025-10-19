@@ -1,5 +1,6 @@
 package com.akakata;
 
+import com.akakata.banner.Banner;
 import com.akakata.context.ServerContext;
 import com.akakata.server.ServerManager;
 import org.slf4j.Logger;
@@ -47,6 +48,9 @@ public abstract class CommandLine {
      * @param args command line arguments
      */
     public final void run(String[] args) {
+        // Print banner
+        printBanner();
+
         LOG.info("Starting Zea-tcp server...");
 
         try {
@@ -66,6 +70,14 @@ public abstract class CommandLine {
             shutdown();
             System.exit(1);
         }
+    }
+
+    /**
+     * Print the startup banner.
+     * Override this method to customize the banner.
+     */
+    protected void printBanner() {
+        Banner.printBanner(LOG);
     }
 
     /**

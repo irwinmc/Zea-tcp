@@ -1,6 +1,7 @@
 package com.akakata.server.impl;
 
 import com.akakata.context.AppContext;
+import com.akakata.context.ConfigurationManager;
 import com.akakata.server.Server;
 import com.akakata.server.ServerManager;
 import org.slf4j.Logger;
@@ -12,6 +13,9 @@ import java.util.HashSet;
 import java.util.Set;
 
 /**
+ * Implementation of ServerManager that manages multiple server instances.
+ * Supports selective server startup based on configuration.
+ *
  * @author Kelvin
  */
 public class ServerManagerImpl implements ServerManager {
@@ -21,15 +25,18 @@ public class ServerManagerImpl implements ServerManager {
     private final Server tcpServer;
     private final Server httpServer;
     private final Server webSocketServer;
+    private final ConfigurationManager configManager;
     private final Set<Server> servers = new HashSet<>();
 
     @Inject
     public ServerManagerImpl(@Named(AppContext.TCP_SERVER) Server tcpServer,
                              @Named(AppContext.HTTP_SERVER) Server httpServer,
-                             @Named(AppContext.WEB_SOCKET_SERVER) Server webSocketServer) {
+                             @Named(AppContext.WEB_SOCKET_SERVER) Server webSocketServer,
+                             ConfigurationManager configManager) {
         this.tcpServer = tcpServer;
         this.httpServer = httpServer;
         this.webSocketServer = webSocketServer;
+        this.configManager = configManager;
     }
 
     @Override
@@ -62,14 +69,53 @@ public class ServerManagerImpl implements ServerManager {
             return;
         }
 
-        tcpServer.startServer();
-        servers.add(tcpServer);
+        LOG.info("Starting servers based on configuration...");
 
-        httpServer.startServer();
-        servers.add(httpServer);
+        // Check TCP server
+        if (isServerEnabled("server.tcp.enabled")) {
+            LOG.info("Starting TCP server on port {}...", configManager.getInt("tcp.port", 8090));
+            tcpServer.startServer();
+            servers.add(tcpServer);
+            LOG.info("TCP server started successfully");
+        } else {
+            LOG.info("TCP server disabled by configuration");
+        }
 
-        webSocketServer.startServer();
-        servers.add(webSocketServer);
+        // Check HTTP server
+        if (isServerEnabled("server.http.enabled")) {
+            LOG.info("Starting HTTP server on port {}...", configManager.getInt("http.port", 8081));
+            httpServer.startServer();
+            servers.add(httpServer);
+            LOG.info("HTTP server started successfully");
+        } else {
+            LOG.info("HTTP server disabled by configuration");
+        }
+
+        // Check WebSocket server
+        if (isServerEnabled("server.websocket.enabled")) {
+            LOG.info("Starting WebSocket server on port {}...", configManager.getInt("web.socket.port", 8300));
+            webSocketServer.startServer();
+            servers.add(webSocketServer);
+            LOG.info("WebSocket server started successfully");
+        } else {
+            LOG.info("WebSocket server disabled by configuration");
+        }
+
+        if (servers.isEmpty()) {
+            LOG.warn("No servers were started. All servers are disabled in configuration.");
+        } else {
+            LOG.info("Total servers started: {}", servers.size());
+        }
+    }
+
+    /**
+     * Check if a server is enabled in configuration.
+     *
+     * @param configKey the configuration key
+     * @return true if enabled (default), false otherwise
+     */
+    private boolean isServerEnabled(String configKey) {
+        return configManager.getBoolean(configKey, true);
     }
 
     @Override

@@ -6,16 +6,10 @@ import com.akakata.context.NetworkBootstrap;
 import com.akakata.handlers.HttpRequestHandler;
 import com.akakata.handlers.LoginHandler;
 import com.akakata.handlers.WebSocketLoginHandler;
-import com.akakata.protocols.Protocol;
 import com.akakata.server.NettyConfig;
 import com.akakata.server.Server;
 import com.akakata.server.ServerManager;
-import com.akakata.server.http.ApiHandler;
-import com.akakata.server.http.HealthCheckHandler;
-import com.akakata.server.http.IndexPageHandler;
-import com.akakata.server.http.MetricsHandler;
-import com.akakata.server.http.RpcHandler;
-import com.akakata.server.http.StaticFileHandler;
+import com.akakata.server.http.*;
 import com.akakata.server.impl.NettyTCPServer;
 import com.akakata.server.impl.ServerManagerImpl;
 import com.akakata.server.initializer.HttpServerChannelInitializer;
@@ -32,7 +26,6 @@ import io.netty.handler.codec.LengthFieldPrepender;
 
 import javax.inject.Named;
 import javax.inject.Singleton;
-
 import java.util.HashMap;
 import java.util.Map;
 
@@ -99,11 +92,11 @@ public abstract class ServerModule {
     @Provides
     @Singleton
     static HttpRequestHandler provideHttpRequestHandler(StaticFileHandler staticFileHandler,
-                                                         IndexPageHandler indexPageHandler,
-                                                         ApiHandler apiHandler,
-                                                         RpcHandler rpcHandler,
-                                                         HealthCheckHandler healthCheckHandler,
-                                                         MetricsHandler metricsHandler) {
+                                                        IndexPageHandler indexPageHandler,
+                                                        ApiHandler apiHandler,
+                                                        RpcHandler rpcHandler,
+                                                        HealthCheckHandler healthCheckHandler,
+                                                        MetricsHandler metricsHandler) {
         return new HttpRequestHandler(staticFileHandler, indexPageHandler, apiHandler, rpcHandler,
                 healthCheckHandler, metricsHandler);
     }
@@ -168,10 +161,10 @@ public abstract class ServerModule {
     // ============================================================
 
     private static Server createServer(ConfigurationManager configurationManager,
-                                        NetworkBootstrap networkBootstrap,
-                                        String portKey,
-                                        int defaultPort,
-                                        ChannelInitializer<? extends Channel> initializer) {
+                                       NetworkBootstrap networkBootstrap,
+                                       String portKey,
+                                       int defaultPort,
+                                       ChannelInitializer<? extends Channel> initializer) {
         NettyConfig config = new NettyConfig();
         config.setPortNumber(configurationManager.getInt(portKey, defaultPort));
         config.setBossGroup(networkBootstrap.getBossGroup());

@@ -117,8 +117,7 @@ public class AdvancedTestServer extends CommandLine {
 
         // Task 1: Periodic metrics reporting
         scheduler.scheduleAtFixedRate(() -> {
-            LOG.info("Metrics - Connections: {}, Messages: {}",
-                    connectionCount.get(), messageCount.get());
+            LOG.info("Metrics - Connections: {}, Messages: {}", connectionCount.get(), messageCount.get());
         }, 10, 10, TimeUnit.SECONDS);
 
         // Task 2: Health check

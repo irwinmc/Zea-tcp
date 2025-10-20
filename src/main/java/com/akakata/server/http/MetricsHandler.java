@@ -1,6 +1,8 @@
 package com.akakata.server.http;
 
+import com.akakata.metrics.EventDispatcherMetrics;
 import com.akakata.metrics.ServerMetrics;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.http.FullHttpRequest;
@@ -8,6 +10,9 @@ import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.util.CharsetUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * Metrics endpoint handler.
@@ -19,6 +24,7 @@ import org.slf4j.LoggerFactory;
  *   <li>GET /metrics/connections - Connection metrics</li>
  *   <li>GET /metrics/traffic - Traffic metrics</li>
  *   <li>GET /metrics/system - System metrics (CPU, memory, threads)</li>
+ *   <li>GET /metrics/event-dispatcher - Event dispatcher queue metrics</li>
  *   <li>GET /metrics/prometheus - Prometheus-compatible format</li>
  * </ul>
  *
@@ -27,6 +33,7 @@ import org.slf4j.LoggerFactory;
 public class MetricsHandler extends AbstractHttpHandler {
 
     private static final Logger LOG = LoggerFactory.getLogger(MetricsHandler.class);
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final ServerMetrics metrics = ServerMetrics.getInstance();
 
@@ -48,6 +55,8 @@ public class MetricsHandler extends AbstractHttpHandler {
                 handleTrafficMetrics(ctx);
             } else if (uri.startsWith("/metrics/system")) {
                 handleSystemMetrics(ctx);
+            } else if (uri.startsWith("/metrics/event-dispatcher")) {
+                handleEventDispatcherMetrics(ctx);
             } else if (uri.startsWith("/metrics/prometheus")) {
                 handlePrometheusMetrics(ctx);
             } else {
@@ -63,124 +72,144 @@ public class MetricsHandler extends AbstractHttpHandler {
      * Return all metrics in JSON format.
      */
     private void handleAllMetrics(ChannelHandlerContext ctx) {
-        StringBuilder json = new StringBuilder();
-        json.append("{\n");
+        try {
+            Map<String, Object> response = new LinkedHashMap<>();
 
-        // Server info
-        json.append("  \"server\": {\n");
-        json.append("    \"uptime_seconds\": ").append(metrics.getUptimeSeconds()).append(",\n");
-        json.append("    \"uptime_formatted\": \"").append(formatUptime(metrics.getUptimeSeconds())).append("\"\n");
-        json.append("  },\n");
+            // Server info
+            Map<String, Object> server = new LinkedHashMap<>();
+            server.put("uptime_seconds", metrics.getUptimeSeconds());
+            server.put("uptime_formatted", formatUptime(metrics.getUptimeSeconds()));
+            response.put("server", server);
 
-        // Connection metrics
-        json.append("  \"connections\": {\n");
-        json.append("    \"total\": ").append(metrics.getTotalConnections()).append(",\n");
-        json.append("    \"active\": ").append(metrics.getActiveConnections()).append(",\n");
-        json.append("    \"channels\": ").append(metrics.getCurrentChannelCount()).append("\n");
-        json.append("  },\n");
+            // Connection metrics
+            Map<String, Object> connections = new LinkedHashMap<>();
+            connections.put("total", metrics.getTotalConnections());
+            connections.put("active", metrics.getActiveConnections());
+            connections.put("channels", metrics.getCurrentChannelCount());
+            response.put("connections", connections);
 
-        // Traffic metrics
-        json.append("  \"traffic\": {\n");
-        json.append("    \"messages_received\": ").append(metrics.getTotalMessagesReceived()).append(",\n");
-        json.append("    \"messages_sent\": ").append(metrics.getTotalMessagesSent()).append(",\n");
-        json.append("    \"bytes_received\": ").append(metrics.getTotalBytesReceived()).append(",\n");
-        json.append("    \"bytes_sent\": ").append(metrics.getTotalBytesSent()).append(",\n");
-        json.append("    \"bytes_received_mb\": ").append(metrics.getTotalBytesReceived() / 1024 / 1024).append(",\n");
-        json.append("    \"bytes_sent_mb\": ").append(metrics.getTotalBytesSent() / 1024 / 1024).append("\n");
-        json.append("  },\n");
+            // Traffic metrics
+            Map<String, Object> traffic = new LinkedHashMap<>();
+            traffic.put("messages_received", metrics.getTotalMessagesReceived());
+            traffic.put("messages_sent", metrics.getTotalMessagesSent());
+            traffic.put("bytes_received", metrics.getTotalBytesReceived());
+            traffic.put("bytes_sent", metrics.getTotalBytesSent());
+            traffic.put("bytes_received_mb", metrics.getTotalBytesReceived() / 1024 / 1024);
+            traffic.put("bytes_sent_mb", metrics.getTotalBytesSent() / 1024 / 1024);
+            response.put("traffic", traffic);
 
-        // System metrics
-        json.append("  \"system\": {\n");
-        json.append("    \"memory_used_mb\": ").append(metrics.getUsedMemoryMB()).append(",\n");
-        json.append("    \"memory_max_mb\": ").append(metrics.getMaxMemoryMB()).append(",\n");
-        json.append("    \"memory_usage_percent\": ").append((int) (metrics.getUsedMemoryMB() * 100.0 / metrics.getMaxMemoryMB())).append(",\n");
-        json.append("    \"thread_count\": ").append(metrics.getThreadCount()).append(",\n");
-        json.append("    \"cpu_load\": ").append(String.format("%.2f", metrics.getCpuLoad())).append("\n");
-        json.append("  },\n");
+            // System metrics
+            Map<String, Object> system = new LinkedHashMap<>();
+            system.put("memory_used_mb", metrics.getUsedMemoryMB());
+            system.put("memory_max_mb", metrics.getMaxMemoryMB());
+            system.put("memory_usage_percent", (int) (metrics.getUsedMemoryMB() * 100.0 / metrics.getMaxMemoryMB()));
+            system.put("thread_count", metrics.getThreadCount());
+            system.put("cpu_load", Double.parseDouble(String.format("%.2f", metrics.getCpuLoad())));
+            response.put("system", system);
 
-        // Error metrics
-        json.append("  \"errors\": {\n");
-        json.append("    \"total\": ").append(metrics.getTotalErrors()).append("\n");
-        json.append("  },\n");
+            // Error metrics
+            Map<String, Object> errors = new LinkedHashMap<>();
+            errors.put("total", metrics.getTotalErrors());
+            response.put("errors", errors);
 
-        // Timestamp
-        json.append("  \"timestamp\": ").append(System.currentTimeMillis()).append("\n");
+            // Timestamp
+            response.put("timestamp", System.currentTimeMillis());
 
-        json.append("}");
-
-        sendHttpResponse(ctx, Unpooled.copiedBuffer(json.toString(), CharsetUtil.UTF_8), "application/json; charset=UTF-8");
+            String json = MAPPER.writeValueAsString(response);
+            sendHttpResponse(ctx, Unpooled.copiedBuffer(json, CharsetUtil.UTF_8), "application/json; charset=UTF-8");
+        } catch (Exception e) {
+            LOG.error("Failed to serialize all metrics", e);
+            sendError(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, true);
+        }
     }
 
     /**
      * Return connection metrics only.
      */
     private void handleConnectionMetrics(ChannelHandlerContext ctx) {
-        String json = String.format(
-                "{\n" +
-                "  \"total_connections\": %d,\n" +
-                "  \"active_connections\": %d,\n" +
-                "  \"active_channels\": %d,\n" +
-                "  \"timestamp\": %d\n" +
-                "}",
-                metrics.getTotalConnections(),
-                metrics.getActiveConnections(),
-                metrics.getCurrentChannelCount(),
-                System.currentTimeMillis()
-        );
+        try {
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("total_connections", metrics.getTotalConnections());
+            response.put("active_connections", metrics.getActiveConnections());
+            response.put("active_channels", metrics.getCurrentChannelCount());
+            response.put("timestamp", System.currentTimeMillis());
 
-        sendHttpResponse(ctx, Unpooled.copiedBuffer(json, CharsetUtil.UTF_8), "application/json; charset=UTF-8");
+            String json = MAPPER.writeValueAsString(response);
+            sendHttpResponse(ctx, Unpooled.copiedBuffer(json, CharsetUtil.UTF_8), "application/json; charset=UTF-8");
+        } catch (Exception e) {
+            LOG.error("Failed to serialize connection metrics", e);
+            sendError(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, true);
+        }
     }
 
     /**
      * Return traffic metrics only.
      */
     private void handleTrafficMetrics(ChannelHandlerContext ctx) {
-        String json = String.format(
-                "{\n" +
-                "  \"messages_received\": %d,\n" +
-                "  \"messages_sent\": %d,\n" +
-                "  \"bytes_received\": %d,\n" +
-                "  \"bytes_sent\": %d,\n" +
-                "  \"bytes_received_mb\": %d,\n" +
-                "  \"bytes_sent_mb\": %d,\n" +
-                "  \"timestamp\": %d\n" +
-                "}",
-                metrics.getTotalMessagesReceived(),
-                metrics.getTotalMessagesSent(),
-                metrics.getTotalBytesReceived(),
-                metrics.getTotalBytesSent(),
-                metrics.getTotalBytesReceived() / 1024 / 1024,
-                metrics.getTotalBytesSent() / 1024 / 1024,
-                System.currentTimeMillis()
-        );
+        try {
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("messages_received", metrics.getTotalMessagesReceived());
+            response.put("messages_sent", metrics.getTotalMessagesSent());
+            response.put("bytes_received", metrics.getTotalBytesReceived());
+            response.put("bytes_sent", metrics.getTotalBytesSent());
+            response.put("bytes_received_mb", metrics.getTotalBytesReceived() / 1024 / 1024);
+            response.put("bytes_sent_mb", metrics.getTotalBytesSent() / 1024 / 1024);
+            response.put("timestamp", System.currentTimeMillis());
 
-        sendHttpResponse(ctx, Unpooled.copiedBuffer(json, CharsetUtil.UTF_8), "application/json; charset=UTF-8");
+            String json = MAPPER.writeValueAsString(response);
+            sendHttpResponse(ctx, Unpooled.copiedBuffer(json, CharsetUtil.UTF_8), "application/json; charset=UTF-8");
+        } catch (Exception e) {
+            LOG.error("Failed to serialize traffic metrics", e);
+            sendError(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, true);
+        }
     }
 
     /**
      * Return system metrics only.
      */
     private void handleSystemMetrics(ChannelHandlerContext ctx) {
-        String json = String.format(
-                "{\n" +
-                "  \"memory_used_mb\": %d,\n" +
-                "  \"memory_max_mb\": %d,\n" +
-                "  \"memory_usage_percent\": %d,\n" +
-                "  \"thread_count\": %d,\n" +
-                "  \"cpu_load\": %.2f,\n" +
-                "  \"uptime_seconds\": %d,\n" +
-                "  \"timestamp\": %d\n" +
-                "}",
-                metrics.getUsedMemoryMB(),
-                metrics.getMaxMemoryMB(),
-                (int) (metrics.getUsedMemoryMB() * 100.0 / metrics.getMaxMemoryMB()),
-                metrics.getThreadCount(),
-                metrics.getCpuLoad(),
-                metrics.getUptimeSeconds(),
-                System.currentTimeMillis()
-        );
+        try {
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("memory_used_mb", metrics.getUsedMemoryMB());
+            response.put("memory_max_mb", metrics.getMaxMemoryMB());
+            response.put("memory_usage_percent", (int) (metrics.getUsedMemoryMB() * 100.0 / metrics.getMaxMemoryMB()));
+            response.put("thread_count", metrics.getThreadCount());
+            response.put("cpu_load", Double.parseDouble(String.format("%.2f", metrics.getCpuLoad())));
+            response.put("uptime_seconds", metrics.getUptimeSeconds());
+            response.put("timestamp", System.currentTimeMillis());
 
-        sendHttpResponse(ctx, Unpooled.copiedBuffer(json, CharsetUtil.UTF_8), "application/json; charset=UTF-8");
+            String json = MAPPER.writeValueAsString(response);
+            sendHttpResponse(ctx, Unpooled.copiedBuffer(json, CharsetUtil.UTF_8), "application/json; charset=UTF-8");
+        } catch (Exception e) {
+            LOG.error("Failed to serialize system metrics", e);
+            sendError(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, true);
+        }
+    }
+
+    /**
+     * Return event dispatcher queue metrics.
+     */
+    private void handleEventDispatcherMetrics(ChannelHandlerContext ctx) {
+        try {
+            EventDispatcherMetrics edMetrics = EventDispatcherMetrics.getInstance();
+
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("total_queue_size", edMetrics.getTotalQueueSize());
+            response.put("per_shard_queue_sizes", edMetrics.getPerShardQueueSizes());
+            response.put("shard_count", edMetrics.getShardCount());
+            response.put("max_shard_queue_size", edMetrics.getMaxShardQueueSize());
+            response.put("min_shard_queue_size", edMetrics.getMinShardQueueSize());
+            response.put("average_shard_queue_size", edMetrics.getAverageShardQueueSize());
+            response.put("last_update_timestamp", edMetrics.getLastUpdateTimestamp());
+            response.put("is_started", edMetrics.isStarted());
+            response.put("timestamp", System.currentTimeMillis());
+
+            String json = MAPPER.writeValueAsString(response);
+            sendHttpResponse(ctx, Unpooled.copiedBuffer(json, CharsetUtil.UTF_8), "application/json; charset=UTF-8");
+        } catch (Exception e) {
+            LOG.error("Failed to serialize event dispatcher metrics", e);
+            sendError(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, true);
+        }
     }
 
     /**
@@ -188,69 +217,53 @@ public class MetricsHandler extends AbstractHttpHandler {
      * Compatible with Prometheus scraping.
      */
     private void handlePrometheusMetrics(ChannelHandlerContext ctx) {
-        StringBuilder prometheus = new StringBuilder();
+        StringBuilder prom = new StringBuilder();
 
         // Server uptime
-        prometheus.append("# HELP server_uptime_seconds Server uptime in seconds\n");
-        prometheus.append("# TYPE server_uptime_seconds counter\n");
-        prometheus.append("server_uptime_seconds ").append(metrics.getUptimeSeconds()).append("\n\n");
+        addPrometheusMetric(prom, "server_uptime_seconds", "counter", "Server uptime in seconds", metrics.getUptimeSeconds());
 
         // Connections
-        prometheus.append("# HELP connections_total Total number of connections\n");
-        prometheus.append("# TYPE connections_total counter\n");
-        prometheus.append("connections_total ").append(metrics.getTotalConnections()).append("\n\n");
-
-        prometheus.append("# HELP connections_active Current active connections\n");
-        prometheus.append("# TYPE connections_active gauge\n");
-        prometheus.append("connections_active ").append(metrics.getActiveConnections()).append("\n\n");
-
-        prometheus.append("# HELP channels_active Current active channels\n");
-        prometheus.append("# TYPE channels_active gauge\n");
-        prometheus.append("channels_active ").append(metrics.getCurrentChannelCount()).append("\n\n");
+        addPrometheusMetric(prom, "connections_total", "counter", "Total number of connections", metrics.getTotalConnections());
+        addPrometheusMetric(prom, "connections_active", "gauge", "Current active connections", metrics.getActiveConnections());
+        addPrometheusMetric(prom, "channels_active", "gauge", "Current active channels", metrics.getCurrentChannelCount());
 
         // Messages
-        prometheus.append("# HELP messages_received_total Total messages received\n");
-        prometheus.append("# TYPE messages_received_total counter\n");
-        prometheus.append("messages_received_total ").append(metrics.getTotalMessagesReceived()).append("\n\n");
-
-        prometheus.append("# HELP messages_sent_total Total messages sent\n");
-        prometheus.append("# TYPE messages_sent_total counter\n");
-        prometheus.append("messages_sent_total ").append(metrics.getTotalMessagesSent()).append("\n\n");
+        addPrometheusMetric(prom, "messages_received_total", "counter", "Total messages received", metrics.getTotalMessagesReceived());
+        addPrometheusMetric(prom, "messages_sent_total", "counter", "Total messages sent", metrics.getTotalMessagesSent());
 
         // Bytes
-        prometheus.append("# HELP bytes_received_total Total bytes received\n");
-        prometheus.append("# TYPE bytes_received_total counter\n");
-        prometheus.append("bytes_received_total ").append(metrics.getTotalBytesReceived()).append("\n\n");
-
-        prometheus.append("# HELP bytes_sent_total Total bytes sent\n");
-        prometheus.append("# TYPE bytes_sent_total counter\n");
-        prometheus.append("bytes_sent_total ").append(metrics.getTotalBytesSent()).append("\n\n");
+        addPrometheusMetric(prom, "bytes_received_total", "counter", "Total bytes received", metrics.getTotalBytesReceived());
+        addPrometheusMetric(prom, "bytes_sent_total", "counter", "Total bytes sent", metrics.getTotalBytesSent());
 
         // Memory
-        prometheus.append("# HELP memory_used_bytes Memory used in bytes\n");
-        prometheus.append("# TYPE memory_used_bytes gauge\n");
-        prometheus.append("memory_used_bytes ").append(metrics.getUsedMemoryMB() * 1024 * 1024).append("\n\n");
-
-        prometheus.append("# HELP memory_max_bytes Maximum memory in bytes\n");
-        prometheus.append("# TYPE memory_max_bytes gauge\n");
-        prometheus.append("memory_max_bytes ").append(metrics.getMaxMemoryMB() * 1024 * 1024).append("\n\n");
+        addPrometheusMetric(prom, "memory_used_bytes", "gauge", "Memory used in bytes", metrics.getUsedMemoryMB() * 1024 * 1024);
+        addPrometheusMetric(prom, "memory_max_bytes", "gauge", "Maximum memory in bytes", metrics.getMaxMemoryMB() * 1024 * 1024);
 
         // Threads
-        prometheus.append("# HELP threads_current Current thread count\n");
-        prometheus.append("# TYPE threads_current gauge\n");
-        prometheus.append("threads_current ").append(metrics.getThreadCount()).append("\n\n");
+        addPrometheusMetric(prom, "threads_current", "gauge", "Current thread count", metrics.getThreadCount());
 
         // CPU
-        prometheus.append("# HELP cpu_load System CPU load\n");
-        prometheus.append("# TYPE cpu_load gauge\n");
-        prometheus.append("cpu_load ").append(String.format("%.2f", metrics.getCpuLoad())).append("\n\n");
+        addPrometheusMetric(prom, "cpu_load", "gauge", "System CPU load", Double.parseDouble(String.format("%.2f", metrics.getCpuLoad())));
 
         // Errors
-        prometheus.append("# HELP errors_total Total errors\n");
-        prometheus.append("# TYPE errors_total counter\n");
-        prometheus.append("errors_total ").append(metrics.getTotalErrors()).append("\n");
+        addPrometheusMetric(prom, "errors_total", "counter", "Total errors", metrics.getTotalErrors());
 
-        sendHttpResponse(ctx, Unpooled.copiedBuffer(prometheus.toString(), CharsetUtil.UTF_8), "text/plain; charset=UTF-8");
+        sendHttpResponse(ctx, Unpooled.copiedBuffer(prom.toString(), CharsetUtil.UTF_8), "text/plain; charset=UTF-8");
+    }
+
+    /**
+     * Add a Prometheus metric entry.
+     *
+     * @param sb    StringBuilder to append to
+     * @param name  metric name
+     * @param type  metric type (counter, gauge, histogram, summary)
+     * @param help  help description
+     * @param value metric value
+     */
+    private void addPrometheusMetric(StringBuilder sb, String name, String type, String help, Object value) {
+        sb.append("# HELP ").append(name).append(" ").append(help).append("\n");
+        sb.append("# TYPE ").append(name).append(" ").append(type).append("\n");
+        sb.append(name).append(" ").append(value).append("\n\n");
     }
 
     /**

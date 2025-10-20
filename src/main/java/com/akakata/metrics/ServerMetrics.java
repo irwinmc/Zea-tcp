@@ -1,7 +1,6 @@
 package com.akakata.metrics;
 
 import com.akakata.server.impl.AbstractNettyServer;
-import io.netty.channel.Channel;
 
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;

@@ -2,7 +2,7 @@ package com.akakata.context;
 
 import com.akakata.context.module.DaggerGameServerComponent;
 import com.akakata.context.module.GameServerComponent;
-import com.akakata.event.impl.EventDispatcherMetrics;
+import com.akakata.metrics.EventDispatcherMetrics;
 import com.akakata.event.impl.EventDispatchers;
 import com.akakata.server.ServerManager;
 import org.slf4j.Logger;
@@ -114,7 +114,7 @@ public final class ServerContext implements AutoCloseable {
 
     private void startDispatcherMetrics() {
         long intervalSeconds = configManager.getInt("metrics.event.interval.seconds", 30);
-        dispatcherMetrics = new EventDispatcherMetrics();
+        dispatcherMetrics = EventDispatcherMetrics.getInstance();
         dispatcherMetrics.start(intervalSeconds);
     }
 }

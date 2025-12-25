@@ -372,54 +372,54 @@ protocol.type=JSON
 - **Metrics Collection**: Real-time performance monitoring
 - **Memory Optimization**: Agrona high-performance data structures
 
-## 开发和构建
+## Development and Build
 
-### 构建项目
+### Build Project
 
 ```bash
-# 编译
+# Compile
 mvn clean compile
 
-# 运行测试
+# Run tests
 mvn test
 
-# 打包
+# Package
 mvn clean package
 
-# 安装到本地仓库
+# Install to local repository
 mvn clean install
 ```
 
-### 运行示例
+### Run Examples
 
 ```bash
-# 编译后运行
+# Run after compilation
 java -cp target/classes:target/dependency/* com.akakata.CommandLine
 
-# 或使用提供的脚本
+# Or use the provided script
 ./run.sh
 ```
 
-## 许可证
+## License
 
-本项目采用 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 许可证。
+This project is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
 
-## 贡献
+## Contributing
 
-欢迎提交Issue和Pull Request！
+Issues and Pull Requests are welcome!
 
-## 支持
+## Support
 
 - **GitHub Issues**: [https://github.com/akakata/zea-tcp/issues](https://github.com/akakata/zea-tcp/issues)
-- **文档**: 查看 `docs/` 目录获取详细文档
-- **示例**: 查看 `src/test/java/com/akakata/` 目录获取示例代码
+- **Documentation**: See `docs/` directory for detailed documentation
+- **Examples**: See `src/test/java/com/akakata/` directory for example code
 
-## 作者
+## Author
 
-**Kelvin** - *项目负责人和维护者*
+**Kelvin** - *Lead Developer and Maintainer*
 - Email: kyia.x52@gmail.com
 - Organization: Akakata
 
 ---
 
-*Zea TCP Transport - 为现代应用提供高性能网络传输解决方案*
+*Zea TCP Transport - High-performance network transport solutions for modern applications*

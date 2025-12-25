@@ -5,14 +5,57 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.akakata</groupId>
-    <artifactId>Zea-tcp</artifactId>
+    <artifactId>zea-tcp</artifactId>
     <version>0.7.8</version>
+
+    <name>Zea TCP Transport</name>
+    <description>High-performance Netty transport and protocol gateway for the Zea platform.</description>
+    <url>https://github.com/akakata/zea-tcp</url>
+    <inceptionYear>2025</inceptionYear>
+
+    <organization>
+        <name>Akakata</name>
+    </organization>
+
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <id>kelvin</id>
+            <name>Kelvin</name>
+            <email>kyia.x52@gmail.com</email>
+            <organization>Akakata</organization>
+            <roles>
+                <role>lead</role>
+                <role>maintainer</role>
+            </roles>
+        </developer>
+    </developers>
+
+    <scm>
+        <connection>scm:git:https://github.com/akakata/zea-tcp.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/akakata/zea-tcp.git</developerConnection>
+        <url>https://github.com/akakata/zea-tcp</url>
+        <tag>HEAD</tag>
+    </scm>
+
+    <issueManagement>
+        <system>GitHub Issues</system>
+        <url>https://github.com/akakata/zea-tcp/issues</url>
+    </issueManagement>
 
     <properties>
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <io.netty.version>4.2.4.Final</io.netty.version>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        <io.netty.version>4.2.5.Final</io.netty.version>
         <org.agrona.version>2.3.0</org.agrona.version>
         <dagger.version>2.51.1</dagger.version>
     </properties>
@@ -80,6 +123,13 @@
         </dependency>
     </dependencies>
 
+    <distributionManagement>
+        <repository>
+            <id>central</id>
+            <url>https://central.sonatype.com/api/v1/publisher</url>
+        </repository>
+    </distributionManagement>
+
     <build>
         <plugins>
             <plugin>
@@ -107,7 +157,7 @@
                     <classpathScope>test</classpathScope>
                     <executableDependency>
                         <groupId>com.akakata</groupId>
-                        <artifactId>Zea-tcp</artifactId>
+                        <artifactId>zea-tcp</artifactId>
                     </executableDependency>
                     <additionalClasspathElements>
                         <additionalClasspathElement>${project.build.outputDirectory}</additionalClasspathElement>
@@ -123,6 +173,71 @@
                     <argLine>--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED</argLine>
                 </configuration>
             </plugin>
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <version>0.7.0</version>
+                <extensions>true</extensions>
+                <configuration>
+                    <publishingServerId>central</publishingServerId>
+                    <autoPublish>false</autoPublish>
+                    <checksums>required</checksums>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <profile>
+            <id>release</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <version>3.3.1</version>
+                        <executions>
+                            <execution>
+                                <id>attach-sources</id>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <version>3.12.0</version>
+                        <configuration>
+                            <doclint>none</doclint>
+                            <failOnError>false</failOnError>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>attach-javadocs</id>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <version>3.2.8</version>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>sign</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

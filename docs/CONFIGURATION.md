@@ -416,11 +416,3 @@ tcp.nodelay=true
 # Use binary protocol
 protocol.type=SBE
 ```
-
----
-
-## See Also
-
-- `conf-examples.properties` - Copy-paste examples
-- `LIBRARY_USAGE.md` - Library usage guide
-- `BANNER_CUSTOMIZATION.md` - Customize startup banner

@@ -1,72 +1,72 @@
-# Metrics Architecture 指标架构
+# Metrics Architecture
 
-## 📊 架构概述
+## Architecture Overview
 
-Zea-tcp 的指标系统采用**模块化设计**，提供两个独立的指标收集器。
+Zea-tcp's metrics system adopts a **modular design**, providing two independent metrics collectors.
 
 ```
-指标系统
-    ├── ServerMetrics (服务器指标)
-    │   ├── 连接指标
-    │   ├── 流量指标
-    │   ├── 系统指标
-    │   └── 错误指标
+Metrics System
+    ├── ServerMetrics (Server Metrics)
+    │   ├── Connection Metrics
+    │   ├── Traffic Metrics
+    │   ├── System Metrics
+    │   └── Error Metrics
     │
-    └── EventDispatcherMetrics (事件分发器指标)
-        └── 队列状态监控
+    └── EventDispatcherMetrics (Event Dispatcher Metrics)
+        └── Queue Status Monitoring
 ```
 
-## 🎯 设计原则
+## Design Principles
 
-### 1. **单一职责原则 (SRP)**
-每个指标收集器只负责一类指标：
-- `ServerMetrics` → 服务器级别指标
-- `EventDispatcherMetrics` → 事件分发器队列指标
+### 1. **Single Responsibility Principle (SRP)**
+Each metrics collector is responsible for only one type of metrics:
+- `ServerMetrics` → Server-level metrics
+- `EventDispatcherMetrics` → Event dispatcher queue metrics
 
-### 2. **单例模式 (Singleton Pattern)**
-所有指标收集器都采用单例模式：
-- `ServerMetrics.getInstance()` - 获取服务器指标单例
-- `EventDispatcherMetrics.getInstance()` - 获取事件分发器指标单例
-- 保证全局唯一实例，避免重复创建
+### 2. **Singleton Pattern**
+All metrics collectors adopt the singleton pattern:
+- `ServerMetrics.getInstance()` - Get server metrics singleton
+- `EventDispatcherMetrics.getInstance()` - Get event dispatcher metrics singleton
+- Ensures globally unique instances, avoiding duplicate creation
 
-### 3. **线程安全**
-- `ServerMetrics`: 使用 `AtomicLong` 确保线程安全
-- `EventDispatcherMetrics`: 使用 `AtomicBoolean`、`AtomicInteger`、`AtomicReference` 确保线程安全
+### 3. **Thread Safety**
+- `ServerMetrics`: Uses `AtomicLong` to ensure thread safety
+- `EventDispatcherMetrics`: Uses `AtomicBoolean`, `AtomicInteger`, `AtomicReference` to ensure thread safety
 
-## 📦 核心组件
+## Core Components
 
 ### 1. ServerMetrics
 
-**收集的指标：**
+**Collected Metrics:**
 
-| 分类 | 指标 | 说明 |
-|------|------|------|
-| **连接** | `totalConnections` | 累计连接数 |
-| | `activeConnections` | 当前活跃连接数 |
-| | `currentChannelCount` | 当前Channel数量 |
-| **流量** | `totalMessagesReceived` | 累计接收消息数 |
-| | `totalMessagesSent` | 累计发送消息数 |
-| | `totalBytesReceived` | 累计接收字节数 |
-| | `totalBytesSent` | 累计发送字节数 |
-| **系统** | `usedMemoryMB` | 已用内存（MB）|
-| | `maxMemoryMB` | 最大内存（MB）|
-| | `threadCount` | 线程数 |
-| | `cpuLoad` | CPU负载 |
-| | `uptimeSeconds` | 运行时间（秒）|
-| **错误** | `totalErrors` | 累计错误数 |
+| Category | Metric | Description |
+|----------|--------|-------------|
+| **Connections** | `totalConnections` | Total connection count |
+| | `activeConnections` | Current active connections |
+| | `currentChannelCount` | Current channel count |
+| **Traffic** | `totalMessagesReceived` | Total messages received |
+| | `totalMessagesSent` | Total messages sent |
+| | `totalBytesReceived` | Total bytes received |
+| | `totalBytesSent` | Total bytes sent |
+| **System** | `usedMemoryMB` | Used memory (MB) |
+| | `maxMemoryMB` | Maximum memory (MB) |
+| | `threadCount` | Thread count |
+| | `cpuLoad` | CPU load |
+| | `uptimeSeconds` | Uptime (seconds) |
+| **Errors** | `totalErrors` | Total error count |
 
-**使用示例：**
+**Usage Example:**
 ```java
-// 直接访问单例
+// Direct access to singleton
 ServerMetrics serverMetrics = ServerMetrics.getInstance();
 
-// 记录指标
+// Record metrics
 serverMetrics.recordConnection();
 serverMetrics.recordDisconnection();
 serverMetrics.recordMessageReceived();
 serverMetrics.recordBytesReceived(1024);
 
-// 读取指标
+// Read metrics
 long total = serverMetrics.getTotalConnections();
 long active = serverMetrics.getActiveConnections();
 double cpuLoad = serverMetrics.getCpuLoad();
@@ -74,38 +74,38 @@ double cpuLoad = serverMetrics.getCpuLoad();
 
 ### 2. EventDispatcherMetrics
 
-**功能：**
-- 周期性监控事件分发器队列状态
-- 输出总队列大小和各分片队列大小
-- 帮助识别性能瓶颈和热点分片
+**Features:**
+- Periodically monitors event dispatcher queue status
+- Outputs total queue size and per-shard queue sizes
+- Helps identify performance bottlenecks and hot shards
 
-**使用场景：**
-- 压力测试
-- 负载均衡验证
-- 性能调优
-- 生产环境监控
+**Use Cases:**
+- Load testing
+- Load balancing verification
+- Performance tuning
+- Production environment monitoring
 
-**使用示例：**
+**Usage Example:**
 ```java
-// 直接使用单例
+// Direct use of singleton
 EventDispatcherMetrics metrics = EventDispatcherMetrics.getInstance();
-metrics.start(5); // 每5秒收集一次
+metrics.start(5); // Collect every 5 seconds
 
-// 获取指标数据
+// Get metrics data
 int totalQueueSize = metrics.getTotalQueueSize();
 int[] perShardSizes = metrics.getPerShardQueueSizes();
 int maxShardSize = metrics.getMaxShardQueueSize();
 
-// 停止监控
+// Stop monitoring
 metrics.stop();
 ```
 
-**HTTP访问示例：**
+**HTTP Access Example:**
 ```bash
-# 获取事件分发器队列指标
+# Get event dispatcher queue metrics
 curl http://localhost:8081/metrics/event-dispatcher
 
-# 返回示例
+# Response example
 {
   "total_queue_size": 1234,
   "per_shard_queue_sizes": [150, 148, 162, 155, 149, 153, 158, 159],
@@ -119,9 +119,9 @@ curl http://localhost:8081/metrics/event-dispatcher
 }
 ```
 
-## 🔧 集成方式
+## Integration Methods
 
-### 方式1：在 Handler 中使用 ServerMetrics
+### Method 1: Use ServerMetrics in Handler
 
 ```java
 public class MyHandler {
@@ -140,12 +140,12 @@ public class MyHandler {
 }
 ```
 
-### 方式2：在启动时配置 EventDispatcherMetrics
+### Method 2: Configure EventDispatcherMetrics at Startup
 
 ```java
 public class MyServer {
     public void start() {
-        // 启动事件分发器监控（可选）
+        // Start event dispatcher monitoring (optional)
         EventDispatcherMetrics edMetrics = EventDispatcherMetrics.getInstance();
         long interval = configManager.getLong("metrics.event.dispatcher.interval", 0);
         if (interval > 0) {
@@ -159,35 +159,35 @@ public class MyServer {
 }
 ```
 
-## 📊 HTTP API 集成
+## HTTP API Integration
 
-`MetricsHandler` 已经自动使用 `ServerMetrics` 和 `EventDispatcherMetrics`：
+`MetricsHandler` automatically uses `ServerMetrics` and `EventDispatcherMetrics`:
 
 ```java
-// MetricsHandler 内部
+// Inside MetricsHandler
 private final ServerMetrics metrics = ServerMetrics.getInstance();
 
 private void handleAllMetrics(ChannelHandlerContext ctx) {
-    // 使用 ServerMetrics 获取数据并返回JSON
+    // Use ServerMetrics to get data and return JSON
 }
 
 private void handleEventDispatcherMetrics(ChannelHandlerContext ctx) {
     EventDispatcherMetrics edMetrics = EventDispatcherMetrics.getInstance();
-    // 获取事件分发器队列数据并返回JSON
+    // Get event dispatcher queue data and return JSON
 }
 ```
 
-**可用的HTTP端点：**
-- `GET /metrics` - 所有指标
-- `GET /metrics/connections` - 连接指标
-- `GET /metrics/traffic` - 流量指标
-- `GET /metrics/system` - 系统指标
-- `GET /metrics/event-dispatcher` - 事件分发器队列指标
-- `GET /metrics/prometheus` - Prometheus格式
+**Available HTTP Endpoints:**
+- `GET /metrics` - All metrics
+- `GET /metrics/connections` - Connection metrics
+- `GET /metrics/traffic` - Traffic metrics
+- `GET /metrics/system` - System metrics
+- `GET /metrics/event-dispatcher` - Event dispatcher queue metrics
+- `GET /metrics/prometheus` - Prometheus format
 
-## 🏗️ 扩展新的指标收集器
+## Extending New Metrics Collectors
 
-### 步骤1：创建新的指标收集器
+### Step 1: Create New Metrics Collector
 
 ```java
 public class DatabaseMetrics {
@@ -212,7 +212,7 @@ public class DatabaseMetrics {
 }
 ```
 
-### 步骤2：在 MetricsHandler 中暴露端点
+### Step 2: Expose Endpoint in MetricsHandler
 
 ```java
 public class MetricsHandler extends AbstractHttpHandler {
@@ -223,7 +223,7 @@ public class MetricsHandler extends AbstractHttpHandler {
             handleDatabaseMetrics(ctx);
             return;
         }
-        // ... 其他端点 ...
+        // ... other endpoints ...
     }
 
     private void handleDatabaseMetrics(ChannelHandlerContext ctx) {
@@ -240,7 +240,7 @@ public class MetricsHandler extends AbstractHttpHandler {
 }
 ```
 
-## 🎨 UML 类图
+## UML Class Diagram
 
 ```
 ┌─────────────────────┐     ┌──────────────────────┐
@@ -263,7 +263,7 @@ public class MetricsHandler extends AbstractHttpHandler {
            │                           │
            └───────────┬───────────────┘
                        │
-                       │ 使用
+                       │ uses
                        ▼
            ┌───────────────────────┐
            │   MetricsHandler      │
@@ -276,7 +276,7 @@ public class MetricsHandler extends AbstractHttpHandler {
            └───────────────────────┘
 ```
 
-## 📋 配置示例
+## Configuration Example
 
 ```properties
 # conf.properties
@@ -289,7 +289,7 @@ metrics.event.dispatcher.interval=5
 http.port=8081
 ```
 
-## 🧪 测试用法
+## Test Usage
 
 ```java
 public class MetricsTest {
@@ -297,17 +297,17 @@ public class MetricsTest {
     public void testServerMetrics() {
         ServerMetrics metrics = ServerMetrics.getInstance();
 
-        // 记录一些指标
+        // Record some metrics
         metrics.recordConnection();
         metrics.recordMessageReceived();
         metrics.recordBytesReceived(1024);
 
-        // 验证
+        // Verify
         assertEquals(1, metrics.getTotalConnections());
         assertEquals(1, metrics.getTotalMessagesReceived());
         assertEquals(1024, metrics.getTotalBytesReceived());
 
-        // 清理
+        // Cleanup
         metrics.reset();
     }
 
@@ -315,35 +315,35 @@ public class MetricsTest {
     public void testEventDispatcherMetrics() {
         EventDispatcherMetrics metrics = EventDispatcherMetrics.getInstance();
 
-        // 启动监控
+        // Start monitoring
         metrics.start(1);
 
-        // 等待收集
+        // Wait for collection
         Thread.sleep(1500);
 
-        // 验证数据已收集
+        // Verify data has been collected
         assertTrue(metrics.getLastUpdateTimestamp() > 0);
         assertTrue(metrics.getShardCount() > 0);
 
-        // 停止监控
+        // Stop monitoring
         metrics.stop();
     }
 }
 ```
 
-## 🎯 最佳实践
+## Best Practices
 
-### 1. 直接使用单例模式
+### 1. Use Singleton Pattern Directly
 ```java
-// ✅ 推荐 - 直接使用单例
+// Recommended - Use singleton directly
 ServerMetrics.getInstance().recordConnection();
 EventDispatcherMetrics.getInstance().start(5);
 ```
 
-### 2. 在应用启动时配置监控
+### 2. Configure Monitoring at Application Startup
 ```java
 public void startServer() {
-    // 根据配置启动事件分发器监控
+    // Start event dispatcher monitoring based on configuration
     long interval = config.getLong("metrics.event.dispatcher.interval", 0);
     if (interval > 0) {
         EventDispatcherMetrics.getInstance().start(interval);
@@ -351,36 +351,36 @@ public void startServer() {
 }
 ```
 
-### 3. 在应用关闭时清理资源
+### 3. Clean Up Resources at Application Shutdown
 ```java
 public void stopServer() {
     EventDispatcherMetrics.getInstance().stop();
 }
 ```
 
-### 4. 通过 HTTP API 访问指标
+### 4. Access Metrics via HTTP API
 ```bash
-# 服务器指标
+# Server metrics
 curl http://localhost:8081/metrics
 
-# 事件分发器队列指标
+# Event dispatcher queue metrics
 curl http://localhost:8081/metrics/event-dispatcher
 
-# Prometheus格式
+# Prometheus format
 curl http://localhost:8081/metrics/prometheus
 ```
 
-## 🔮 未来扩展方向
+## Future Extension Directions
 
-- [ ] JMX集成（通过MBeans暴露指标）
-- [ ] 指标持久化（存储到时序数据库）
-- [ ] 告警系统（阈值监控）
-- [ ] 更多维度的指标（按协议、按端口等）
-- [ ] 自定义指标注册机制
+- [ ] JMX integration (expose metrics through MBeans)
+- [ ] Metrics persistence (store to time-series database)
+- [ ] Alerting system (threshold monitoring)
+- [ ] More dimensional metrics (by protocol, by port, etc.)
+- [ ] Custom metrics registration mechanism
 
-## 📚 相关文档
+## Related Documentation
 
-- [MONITORING.md](MONITORING.md) - HTTP监控端点文档
-- [ServerMetrics.java](../src/main/java/com/akakata/metrics/ServerMetrics.java) - 服务器指标源码
-- [EventDispatcherMetrics.java](../src/main/java/com/akakata/metrics/EventDispatcherMetrics.java) - 事件分发器指标源码
-- [MetricsHandler.java](../src/main/java/com/akakata/server/http/MetricsHandler.java) - HTTP指标处理器源码
+- [MONITORING.md](MONITORING.md) - HTTP monitoring endpoints documentation
+- [ServerMetrics.java](../src/main/java/com/akakata/metrics/ServerMetrics.java) - Server metrics source code
+- [EventDispatcherMetrics.java](../src/main/java/com/akakata/metrics/EventDispatcherMetrics.java) - Event dispatcher metrics source code
+- [MetricsHandler.java](../src/main/java/com/akakata/server/http/MetricsHandler.java) - HTTP metrics handler source code

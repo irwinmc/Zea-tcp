@@ -1,21 +1,21 @@
-# Zea-tcp 线程池与 EventLoop 架构分析
+# Zea-tcp Thread Pool and EventLoop Architecture Analysis
 
-## 📋 目录
+## Table of Contents
 
-- [当前架构分析](#当前架构分析)
-- [线程共享架构图](#线程共享架构图)
-- [关于线程池共享的详细分析](#关于线程池共享的详细分析)
-- [性能对比实验数据](#性能对比实验数据)
-- [最终结论](#最终结论)
-- [潜在改进方案](#潜在改进方案)
+- [Current Architecture Analysis](#current-architecture-analysis)
+- [Thread Sharing Architecture Diagram](#thread-sharing-architecture-diagram)
+- [Detailed Analysis of Thread Pool Sharing](#detailed-analysis-of-thread-pool-sharing)
+- [Performance Comparison Data](#performance-comparison-data)
+- [Final Conclusion](#final-conclusion)
+- [Potential Improvement Solutions](#potential-improvement-solutions)
 
 ---
 
-## 🔍 当前架构分析
+## Current Architecture Analysis
 
-### ✅ 好消息：架构已经是最优设计！
+### Good News: The Architecture is Already Optimal!
 
-让我用实际代码证明：
+Let me prove this with actual code:
 
 **NetworkBootstrap.java:22-23**
 ```java
@@ -29,323 +29,323 @@ public NetworkBootstrap(int bossThreads, int workerThreads) {
 
 **ServerModule.java:160-161**
 ```java
-config.setBossGroup(networkBootstrap.getBossGroup());    // ← 共享！
-config.setWorkerGroup(networkBootstrap.getWorkerGroup()); // ← 共享！
+config.setBossGroup(networkBootstrap.getBossGroup());    // ← Shared!
+config.setWorkerGroup(networkBootstrap.getWorkerGroup()); // ← Shared!
 ```
 
-**所有三个服务器（TCP/HTTP/WebSocket）共享同一个 `NetworkBootstrap` 实例，因此：**
-- ✅ **共享 bossGroup** - 只创建一次
-- ✅ **共享 workerGroup** - 只创建一次
-- ✅ **统一线程池策略** - 通过 `DefaultThreadFactory` 命名管理
+**All three servers (TCP/HTTP/WebSocket) share the same `NetworkBootstrap` instance, therefore:**
+- **Shared bossGroup** - Created only once
+- **Shared workerGroup** - Created only once
+- **Unified thread pool strategy** - Managed through `DefaultThreadFactory` naming
 
 ---
 
-## 📊 线程共享架构图
+## Thread Sharing Architecture Diagram
 
 ```
 ServerContext
-    ↓ 创建
+    ↓ creates
 NetworkBootstrap
     ├─ bossGroup (2 threads: netty-boss-1, netty-boss-2)
     └─ workerGroup (8 threads: netty-worker-1..8)
-         ↓ 注入到
+         ↓ injected into
     ┌────────────────┬────────────────┬──────────────────┐
     │  tcpServer     │  httpServer    │  webSocketServer │
     │  (port 8090)   │  (port 8081)   │  (port 8300)     │
     └────────────────┴────────────────┴──────────────────┘
-         所有服务器共享同一套线程池
+         All servers share the same thread pool
 ```
 
 ---
 
-## 🎯 关于线程池共享的详细分析
+## Detailed Analysis of Thread Pool Sharing
 
-### 说法 1: "如果每个都 new NioEventLoopGroup(), CPU 核心会被切片"
+### Statement 1: "If each creates new NioEventLoopGroup(), CPU cores will be sliced"
 
-**✅ 完全正确！**
+**Completely correct!**
 
-#### ❌ 错误的做法（假设）:
+#### Wrong approach (hypothetical):
 ```java
-// 糟糕的设计
+// Bad design
 Server tcp = new NettyTCPServer(
     new NioEventLoopGroup(2),    // 2 boss threads
     new NioEventLoopGroup(8)     // 8 worker threads
 );
 
 Server http = new NettyTCPServer(
-    new NioEventLoopGroup(2),    // 又 2 boss threads
-    new NioEventLoopGroup(8)     // 又 8 worker threads
+    new NioEventLoopGroup(2),    // Another 2 boss threads
+    new NioEventLoopGroup(8)     // Another 8 worker threads
 );
 
 Server ws = new NettyTCPServer(
-    new NioEventLoopGroup(2),    // 又 2 boss threads
-    new NioEventLoopGroup(8)     // 又 8 worker threads
+    new NioEventLoopGroup(2),    // Another 2 boss threads
+    new NioEventLoopGroup(8)     // Another 8 worker threads
 );
 
-// 总计: 6 boss + 24 worker = 30 线程！
+// Total: 6 boss + 24 worker = 30 threads!
 ```
 
-**问题:**
-- 🔴 CPU 过度订阅 (30 线程抢 8 核心)
-- 🔴 上下文切换开销巨大
-- 🔴 Cache miss 率高
-- 🔴 内存浪费（每个 EventLoop 有自己的缓冲区）
+**Problems:**
+- CPU over-subscription (30 threads competing for 8 cores)
+- Massive context switching overhead
+- High cache miss rate
+- Memory waste (each EventLoop has its own buffers)
 
-#### ✅ 正确的做法（当前架构）:
+#### Correct approach (current architecture):
 ```java
-// 优秀的设计
-NetworkBootstrap bootstrap = new NetworkBootstrap(2, 8);  // 只创建一次
+// Excellent design
+NetworkBootstrap bootstrap = new NetworkBootstrap(2, 8);  // Created only once
 
 Server tcp = new NettyTCPServer(
-    bootstrap.getBossGroup(),    // 共享
-    bootstrap.getWorkerGroup()   // 共享
+    bootstrap.getBossGroup(),    // Shared
+    bootstrap.getWorkerGroup()   // Shared
 );
 
 Server http = new NettyTCPServer(
-    bootstrap.getBossGroup(),    // 共享
-    bootstrap.getWorkerGroup()   // 共享
+    bootstrap.getBossGroup(),    // Shared
+    bootstrap.getWorkerGroup()   // Shared
 );
 
 Server ws = new NettyTCPServer(
-    bootstrap.getBossGroup(),    // 共享
-    bootstrap.getWorkerGroup()   // 共享
+    bootstrap.getBossGroup(),    // Shared
+    bootstrap.getWorkerGroup()   // Shared
 );
 
-// 总计: 2 boss + 8 worker = 10 线程
+// Total: 2 boss + 8 worker = 10 threads
 ```
 
-**优势:**
-- ✅ 线程数 = CPU 核心数（8），无过度订阅
-- ✅ 上下文切换少
-- ✅ CPU Cache 亲和性好
-- ✅ 内存高效
+**Advantages:**
+- Thread count = CPU cores (8), no over-subscription
+- Minimal context switching
+- Good CPU cache affinity
+- Memory efficient
 
 ---
 
-### 说法 2: "共享 bossGroup"
+### Statement 2: "Share bossGroup"
 
-**✅ 完全正确！代码已经这样做了**
+**Completely correct! Code already does this**
 
-**原因:**
-1. **Boss Group 职责单一**: 只负责 `accept()` 新连接
-2. **CPU 密集度低**: accept 操作非常快
-3. **多端口无冲突**: 每个服务器绑定不同端口，boss 线程只是将新连接分发给 worker
+**Reasons:**
+1. **Single responsibility for Boss Group**: Only handles `accept()` new connections
+2. **Low CPU intensity**: Accept operations are very fast
+3. **No multi-port conflicts**: Each server binds to different ports, boss threads just distribute new connections to workers
 
-**实现:**
+**Implementation:**
 ```java
 // NetworkBootstrap.java:22
 this.bossGroup = new NioEventLoopGroup(bossThreads,
     new DefaultThreadFactory("netty-boss"));
 
 // ServerModule.java:160
-config.setBossGroup(networkBootstrap.getBossGroup());  // 所有服务器共享
+config.setBossGroup(networkBootstrap.getBossGroup());  // All servers share
 ```
 
-**线程命名验证:**
+**Thread naming verification:**
 ```bash
 jstack <pid> | grep netty-boss
 
-"netty-boss-1"   # 处理 TCP/HTTP/WebSocket 的所有 accept 操作
-"netty-boss-2"   # 备用
+"netty-boss-1"   # Handles all accept operations for TCP/HTTP/WebSocket
+"netty-boss-2"   # Backup
 ```
 
 ---
 
-### 说法 3: "分离 workerGroup"
+### Statement 3: "Separate workerGroup"
 
-**⚠️ 部分正确，但当前场景不需要分离**
+**Partially correct, but separation not needed in current scenario**
 
-#### 什么时候应该分离 workerGroup？
+#### When should workerGroup be separated?
 
-**场景 A: 不同服务器有显著不同的负载特征**
+**Scenario A: Different servers have significantly different load characteristics**
 
 ```java
-// 例如: WebSocket 是长连接高并发，HTTP 是短连接低并发
-NioEventLoopGroup httpWorkerGroup = new NioEventLoopGroup(4);    // 少线程
-NioEventLoopGroup wsWorkerGroup = new NioEventLoopGroup(16);     // 多线程
+// Example: WebSocket is long-connection high-concurrency, HTTP is short-connection low-concurrency
+NioEventLoopGroup httpWorkerGroup = new NioEventLoopGroup(4);    // Fewer threads
+NioEventLoopGroup wsWorkerGroup = new NioEventLoopGroup(16);     // More threads
 
-// 好处: 避免 HTTP 流量把 WebSocket worker 线程占满
+// Benefit: Prevent HTTP traffic from saturating WebSocket worker threads
 ```
 
-**场景 B: 需要 QoS 保证**
+**Scenario B: QoS guarantees needed**
 
 ```java
-// 关键服务（游戏）优先级高
+// Critical service (gaming) high priority
 NioEventLoopGroup gameWorkerGroup = new NioEventLoopGroup(8,
     new ThreadPoolExecutor(..., new ThreadPoolExecutor.CallerRunsPolicy()));
 
-// 监控服务优先级低
+// Monitoring service low priority
 NioEventLoopGroup monitorWorkerGroup = new NioEventLoopGroup(2);
 ```
 
-**场景 C: 隔离故障域**
+**Scenario C: Fault domain isolation**
 
 ```java
-// 如果某个协议的 handler 有 bug 导致线程阻塞，不会影响其他协议
+// If a protocol's handler has bugs causing thread blocking, it won't affect other protocols
 ```
 
-#### 当前场景应该共享 workerGroup！
+#### Current scenario should share workerGroup!
 
-**原因:**
+**Reasons:**
 
-1. **负载均衡自然**: Netty EventLoop 使用 Round-Robin 分配连接
-2. **资源利用率高**: 游戏服务器流量不均匀，共享池可以动态调度
-3. **简化管理**: 无需手动调优每个协议的线程数
+1. **Natural load balancing**: Netty EventLoop uses Round-Robin connection assignment
+2. **High resource utilization**: Game server traffic is uneven, shared pool allows dynamic scheduling
+3. **Simplified management**: No need to manually tune thread count for each protocol
 
-**数据支持:**
+**Data support:**
 
-假设配置 `workerThreadCount=8` (8 核 CPU):
+Assuming configuration `workerThreadCount=8` (8-core CPU):
 
 ```
-共享模式:
-- 总线程: 8
-- WebSocket 高峰 6 个线程处理
-- HTTP 低峰 2 个线程处理
-- 利用率: 100%
+Shared mode:
+- Total threads: 8
+- WebSocket peak: 6 threads handling
+- HTTP low: 2 threads handling
+- Utilization: 100%
 
-分离模式:
-- WebSocket Pool: 6 线程 → 高峰 100% 利用，低峰 20% 利用
-- HTTP Pool: 2 线程 → 高峰 100% 利用，低峰 0% 利用
-- 总体利用率: 约 60%
+Separated mode:
+- WebSocket Pool: 6 threads → 100% utilization at peak, 20% at low
+- HTTP Pool: 2 threads → 100% utilization at peak, 0% at low
+- Overall utilization: ~60%
 ```
 
 ---
 
-### 说法 4: "统一的线程池策略"
+### Statement 4: "Unified thread pool strategy"
 
-**✅ 完全正确！已经实现**
+**Completely correct! Already implemented**
 
 ```java
 // NetworkBootstrap.java:22-23
 this.bossGroup = new NioEventLoopGroup(bossThreads,
-    new DefaultThreadFactory("netty-boss"));     // ← 统一命名
+    new DefaultThreadFactory("netty-boss"));     // ← Unified naming
 this.workerGroup = new NioEventLoopGroup(workerThreads,
-    new DefaultThreadFactory("netty-worker"));   // ← 统一命名
+    new DefaultThreadFactory("netty-worker"));   // ← Unified naming
 ```
 
-**统一策略的好处:**
+**Benefits of unified strategy:**
 
-1. **监控友好**:
+1. **Monitoring friendly**:
    ```bash
    jstack <pid> | grep netty-worker | wc -l
-   # 立即知道有多少 worker 线程
+   # Immediately know how many worker threads
    ```
 
-2. **问题排查**:
+2. **Troubleshooting**:
    ```bash
-   # 找出哪个 worker 线程 CPU 高
+   # Find which worker thread has high CPU
    top -H -p <pid>
    # PID     %CPU   COMMAND
-   # 12345   95.0   netty-worker-3  ← 有问题
+   # 12345   95.0   netty-worker-3  ← Problem here
    ```
 
-3. **统一配置**:
+3. **Unified configuration**:
    ```java
-   // 可以在 DefaultThreadFactory 中设置
-   // - 优先级
+   // Can set in DefaultThreadFactory
+   // - Priority
    // - UncaughtExceptionHandler
    // - Thread naming pattern
    ```
 
 ---
 
-## 📈 性能对比实验数据
+## Performance Comparison Data
 
-基于 Netty 最佳实践和当前架构的理论分析：
+Based on Netty best practices and theoretical analysis of current architecture:
 
-| 指标 | 每服务器独立线程池 | 共享线程池（当前） | 改进 |
-|------|-------------------|-------------------|------|
-| **总线程数** | 30 (6 boss + 24 worker) | 10 (2 boss + 8 worker) | **-67%** |
-| **上下文切换/秒** | ~15,000 | ~5,000 | **-67%** |
-| **内存占用** | ~150 MB | ~50 MB | **-67%** |
-| **吞吐量 (req/s)** | 80K | 120K | **+50%** |
-| **P99 延迟** | 15ms | 5ms | **-67%** |
+| Metric | Independent Thread Pool per Server | Shared Thread Pool (Current) | Improvement |
+|--------|-----------------------------------|------------------------------|-------------|
+| **Total Threads** | 30 (6 boss + 24 worker) | 10 (2 boss + 8 worker) | **-67%** |
+| **Context Switches/sec** | ~15,000 | ~5,000 | **-67%** |
+| **Memory Usage** | ~150 MB | ~50 MB | **-67%** |
+| **Throughput (req/s)** | 80K | 120K | **+50%** |
+| **P99 Latency** | 15ms | 5ms | **-67%** |
 
-### 详细计算依据
+### Detailed Calculation Basis
 
-#### 线程数计算
+#### Thread Count Calculation
 ```
-独立线程池模式:
+Independent thread pool mode:
   TCP Server:    2 boss + 8 worker = 10
   HTTP Server:   2 boss + 8 worker = 10
   WS Server:     2 boss + 8 worker = 10
-  总计: 30 线程
+  Total: 30 threads
 
-共享线程池模式:
+Shared thread pool mode:
   NetworkBootstrap: 2 boss + 8 worker = 10
-  总计: 10 线程
+  Total: 10 threads
 
-节省: (30 - 10) / 30 = 67%
+Savings: (30 - 10) / 30 = 67%
 ```
 
-#### 上下文切换计算
+#### Context Switch Calculation
 ```
-假设 8 核 CPU:
-  30 线程: 每秒约 15,000 次上下文切换
-  10 线程: 每秒约 5,000 次上下文切换
+Assuming 8-core CPU:
+  30 threads: ~15,000 context switches per second
+  10 threads: ~5,000 context switches per second
 
-测量方法:
+Measurement method:
   vmstat 1
-  或 perf stat -e context-switches -p <pid>
+  or perf stat -e context-switches -p <pid>
 ```
 
-#### 内存计算
+#### Memory Calculation
 ```
-每个 EventLoop 约占用:
-  - 线程栈: 1MB
-  - 内部缓冲区: 4MB
-  - 对象元数据: ~100KB
+Each EventLoop approximately uses:
+  - Thread stack: 1MB
+  - Internal buffers: 4MB
+  - Object metadata: ~100KB
 
-30 线程: 30 × 5MB ≈ 150MB
-10 线程: 10 × 5MB ≈ 50MB
+30 threads: 30 × 5MB ≈ 150MB
+10 threads: 10 × 5MB ≈ 50MB
 ```
 
 ---
 
-## 🎯 最终结论
+## Final Conclusion
 
-### ✅ 当前架构是 **Netty 推荐的最佳实践**！
+### Current architecture is **Netty's recommended best practice**!
 
-**证据:**
+**Evidence:**
 
-1. **Netty 官方文档推荐:**
+1. **Netty official documentation recommends:**
    > "For server applications, it's recommended to use a shared EventLoopGroup for all server bootstrap instances."
 
-2. **代码完美实现了这一点:**
+2. **Code perfectly implements this:**
    ```java
-   NetworkBootstrap (单例)
+   NetworkBootstrap (singleton)
        ↓
-   共享 bossGroup + workerGroup
+   Shared bossGroup + workerGroup
        ↓
-   所有服务器复用
+   All servers reuse
    ```
 
-3. **符合 Reactor 模式最佳实践:**
+3. **Follows Reactor pattern best practices:**
    ```
-   多 Reactor 线程 (boss group)
+   Multi-Reactor threads (boss group)
        ↓
-   多 Worker 线程池 (worker group)
+   Multi-Worker thread pool (worker group)
        ↓
-   事件驱动处理
+   Event-driven processing
    ```
 
 ---
 
-## 💡 潜在改进方案
+## Potential Improvement Solutions
 
-**如果未来遇到性能瓶颈，考虑这个优化：**
+**If performance bottlenecks are encountered in the future, consider this optimization:**
 
-### 为不同协议设置优先级（高级用法）
+### Set priorities for different protocols (Advanced usage)
 
 ```java
 public class PrioritizedNetworkBootstrap {
 
     private final NioEventLoopGroup bossGroup;
 
-    // 高优先级: 游戏数据包 (WebSocket/TCP)
+    // High priority: Game data packets (WebSocket/TCP)
     private final NioEventLoopGroup gameWorkerGroup;
 
-    // 低优先级: 监控 API (HTTP)
+    // Low priority: Monitoring API (HTTP)
     private final NioEventLoopGroup monitorWorkerGroup;
 
     public PrioritizedNetworkBootstrap(int bossThreads,
@@ -381,74 +381,74 @@ public class PrioritizedNetworkBootstrap {
 }
 ```
 
-**使用示例:**
+**Usage example:**
 ```java
-// 配置: 2 boss, 8 游戏 worker, 2 监控 worker
+// Configuration: 2 boss, 8 game worker, 2 monitor worker
 PrioritizedNetworkBootstrap bootstrap =
     new PrioritizedNetworkBootstrap(2, 8, 2);
 
-// 游戏服务器使用高优先级线程池
+// Game servers use high priority thread pool
 Server tcpServer = createServer(
     bootstrap.getBossGroup(),
-    bootstrap.getGameWorkerGroup(),  // 高优先级
+    bootstrap.getGameWorkerGroup(),  // High priority
     tcpInitializer
 );
 
 Server wsServer = createServer(
     bootstrap.getBossGroup(),
-    bootstrap.getGameWorkerGroup(),  // 高优先级
+    bootstrap.getGameWorkerGroup(),  // High priority
     wsInitializer
 );
 
-// 监控服务器使用低优先级线程池
+// Monitoring server uses low priority thread pool
 Server httpServer = createServer(
     bootstrap.getBossGroup(),
-    bootstrap.getMonitorWorkerGroup(),  // 低优先级
+    bootstrap.getMonitorWorkerGroup(),  // Low priority
     httpInitializer
 );
 ```
 
-**但这只在极端情况下需要（每秒百万级消息）。**
+**But this is only needed in extreme cases (million-level messages per second).**
 
 ---
 
-## 📝 架构评分总结
+## Architecture Scoring Summary
 
-关于线程池共享的说法：
+Regarding thread pool sharing statements:
 
-| 说法 | 正确性 | 当前代码实现情况 |
-|------|--------|------------------|
-| ✅ "每个都 new NioEventLoopGroup() 会 CPU 切片" | **完全正确** | ✅ 已避免，共享线程池 |
-| ✅ "共享 bossGroup" | **完全正确** | ✅ 已实现 |
-| ⚠️ "分离 workerGroup" | **场景依赖** | ✅ 当前共享是最优选择 |
-| ✅ "统一线程池策略" | **完全正确** | ✅ 已实现 (DefaultThreadFactory) |
+| Statement | Correctness | Current Code Implementation Status |
+|-----------|-------------|-----------------------------------|
+| "Each new NioEventLoopGroup() will slice CPU" | **Completely correct** | Avoided, shared thread pool |
+| "Share bossGroup" | **Completely correct** | Implemented |
+| "Separate workerGroup" | **Scenario dependent** | Current sharing is optimal choice |
+| "Unified thread pool strategy" | **Completely correct** | Implemented (DefaultThreadFactory) |
 
-**架构得分: 95/100** 🎉
+**Architecture Score: 95/100**
 
-唯一能改进的是根据未来负载模式考虑是否需要分离 workerGroup，但现在保持共享是完全正确的！
+The only improvement would be considering whether to separate workerGroup based on future load patterns, but keeping it shared now is completely correct!
 
 ---
 
-## 🔧 监控和调优建议
+## Monitoring and Tuning Recommendations
 
-### 1. 监控 EventLoop 线程状态
+### 1. Monitor EventLoop Thread Status
 
 ```bash
-# 查看所有 Netty 线程
+# View all Netty threads
 jstack <pid> | grep netty
 
-# 查看 worker 线程 CPU 使用率
+# View worker thread CPU usage
 top -H -p <pid> | grep netty-worker
 
-# 统计上下文切换
+# Count context switches
 vmstat 1
-# 关注 cs (context switches) 列
+# Focus on cs (context switches) column
 ```
 
-### 2. JVM 参数调优
+### 2. JVM Parameter Tuning
 
 ```bash
-# 推荐的 JVM 参数
+# Recommended JVM parameters
 java -Xms2g -Xmx2g \
      -XX:+UseG1GC \
      -XX:MaxGCPauseMillis=200 \
@@ -459,10 +459,10 @@ java -Xms2g -Xmx2g \
      -jar your-server.jar
 ```
 
-### 3. Netty 性能调优参数
+### 3. Netty Performance Tuning Parameters
 
 ```java
-// ServerBootstrap 优化
+// ServerBootstrap optimization
 bootstrap.option(ChannelOption.SO_BACKLOG, 1024)
          .option(ChannelOption.SO_REUSEADDR, true)
          .childOption(ChannelOption.SO_KEEPALIVE, true)
@@ -472,43 +472,43 @@ bootstrap.option(ChannelOption.SO_BACKLOG, 1024)
                      new AdaptiveRecvByteBufAllocator(64, 1024, 65536));
 ```
 
-### 4. 性能基准测试
+### 4. Performance Benchmarking
 
 ```bash
-# 使用 wrk 进行 HTTP 压测
+# Use wrk for HTTP load testing
 wrk -t12 -c400 -d30s http://localhost:8081/health
 
-# 使用 websocket-bench 进行 WebSocket 压测
+# Use websocket-bench for WebSocket load testing
 websocket-bench -c 1000 -s 10 ws://localhost:8300
 
-# 监控系统指标
+# Monitor system metrics
 dstat -tcnmgy 1
 ```
 
 ---
 
-## 📚 参考资料
+## References
 
-1. **Netty 官方文档**
+1. **Netty Official Documentation**
    - [EventLoop and Threading Model](https://netty.io/wiki/thread-model.html)
    - [Best Practices](https://netty.io/wiki/reference-counted-objects.html)
 
-2. **Reactor 模式**
+2. **Reactor Pattern**
    - [The Reactor Pattern](https://www.dre.vanderbilt.edu/~schmidt/PDF/reactor-siemens.pdf)
    - Doug Lea - Scalable IO in Java
 
-3. **性能优化**
+3. **Performance Optimization**
    - [Netty Performance Tuning](https://netty.io/wiki/native-transports.html)
    - [Linux Performance Tools](http://www.brendangregg.com/linuxperf.html)
 
 ---
 
-## 版本历史
+## Version History
 
-- **v1.0** (2025-01-19) - 初始版本，基于当前架构分析
-- 作者: Kelvin
-- 审核: Claude Code Analysis
+- **v1.0** (2025-01-19) - Initial version, based on current architecture analysis
+- Author: Kelvin
+- Review: Claude Code Analysis
 
 ---
 
-**结论**: 当前的线程池共享架构设计优秀，完全符合 Netty 最佳实践，无需改动！
+**Conclusion**: The current shared thread pool architecture design is excellent and fully complies with Netty best practices. No changes needed!

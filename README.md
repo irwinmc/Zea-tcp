@@ -8,13 +8,13 @@ High-performance Netty transport and protocol gateway for the Zea platform, prov
 
 ## Features
 
-- 🚀 **High Performance**: Asynchronous non-blocking I/O based on Netty
-- 🔌 **Multi-Protocol Support**: TCP, HTTP, WebSocket
-- 📊 **Built-in Monitoring**: Real-time metrics collection and HTTP monitoring endpoints
-- ⚙️ **Flexible Configuration**: Selective server enable/disable support
-- 🔧 **Dependency Injection**: Dagger 2-based dependency management
-- 📈 **Extensible**: Modular architecture, easy to extend
-- 🎯 **Production Ready**: Enterprise-grade features including caching, logging, and metrics
+- **High Performance**: Asynchronous non-blocking I/O based on Netty
+- **Multi-Protocol Support**: TCP, HTTP, WebSocket
+- **Built-in Monitoring**: Real-time metrics collection and HTTP monitoring endpoints
+- **Flexible Configuration**: Selective server enable/disable support
+- **Dependency Injection**: Dagger 2-based dependency management
+- **Extensible**: Modular architecture, easy to extend
+- **Production Ready**: Enterprise-grade features including caching, logging, and metrics
 
 ## Quick Start
 

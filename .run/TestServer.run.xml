@@ -1,0 +1,11 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="TestServer (Agrona)" type="Application" factoryName="Application">
+    <option name="MAIN_CLASS_NAME" value="com.akakata.TestServer" />
+    <option name="VM_PARAMETERS" value="--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+    <module name="zea-tcp" />
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>

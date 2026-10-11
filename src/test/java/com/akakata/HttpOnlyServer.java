@@ -5,27 +5,35 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Example server that only runs HTTP (REST API mode).
- * Demonstrates selective server startup using configuration.
- *
- * <p>Configuration: src/test/resources/conf-http-only.properties
- *
- * <p>Usage:
- * <pre>
- * mvn test-compile
- * java -cp target/classes:target/test-classes com.akakata.HttpOnlyServer
- * </pre>
+ * Runs the example application with only the HTTP server enabled.
  *
  * @author Kelvin
  */
 public class HttpOnlyServer extends CommandLine {
 
+    /**
+     * Creates a http only server instance.
+     */
+    public HttpOnlyServer() {
+    }
+
+    /**
+     * Logger for component lifecycle and diagnostic messages.
+     */
     private static final Logger LOG = LoggerFactory.getLogger(HttpOnlyServer.class);
 
+    /**
+     * Runs this executable example or isolated regression probe.
+     *
+     * @param args the command-line arguments
+     */
     public static void main(String[] args) {
         new HttpOnlyServer().run(args);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected ServerContext createServerContext() throws Exception {
         // Use custom configuration that only enables HTTP
@@ -34,6 +42,9 @@ public class HttpOnlyServer extends CommandLine {
         return new ServerContext(configPath);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void beforeServerStartup() throws Exception {
         LOG.info("╔═══════════════════════════════════════════════╗");
@@ -44,6 +55,9 @@ public class HttpOnlyServer extends CommandLine {
         LOG.info("╚═══════════════════════════════════════════════╝");
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void afterServerStartup() throws Exception {
         LOG.info("HTTP server ready");

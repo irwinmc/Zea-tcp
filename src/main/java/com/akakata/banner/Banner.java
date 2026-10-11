@@ -9,13 +9,21 @@ import java.nio.charset.StandardCharsets;
 import java.util.Properties;
 
 /**
- * Display startup banner for Zea-tcp server.
- * Similar to Spring Boot's banner.
+ * Loads an optional classpath banner and logs server version and process information.
  *
  * @author Kelvin
  */
 public class Banner {
 
+    /**
+     * Creates a banner instance.
+     */
+    public Banner() {
+    }
+
+    /**
+     * Fallback startup banner used when no custom banner is available.
+     */
     private static final String DEFAULT_BANNER =
             "\n" +
             "  __________ _____ \n" +
@@ -24,13 +32,25 @@ public class Banner {
             "   / / |  __| |_| |\n" +
             "  /_/  |_|  |_| |_| TCP\n";
 
+    /**
+     * Protocol schema version or application version identifier.
+     */
     private static final String VERSION = getVersion();
+    /**
+     * Java runtime version captured from system properties.
+     */
     private static final String JAVA_VERSION = System.getProperty("java.version");
+    /**
+     * Operating-system name captured from system properties.
+     */
     private static final String OS_NAME = System.getProperty("os.name");
+    /**
+     * Operating-system architecture captured from system properties.
+     */
     private static final String OS_ARCH = System.getProperty("os.arch");
 
     /**
-     * Print the banner to the logger.
+     * Loads and logs the configured banner with version and process information.
      *
      * @param logger the logger to use
      */
@@ -60,9 +80,9 @@ public class Banner {
     }
 
     /**
-     * Load custom banner from classpath: banner.txt
+     * Loads optional banner text from its classpath resource.
      *
-     * @return custom banner text, or null if not found
+     * @return the custom banner, or {@code null} when unavailable
      */
     private static String loadCustomBanner() {
         try (InputStream is = Banner.class.getClassLoader().getResourceAsStream("banner.txt")) {

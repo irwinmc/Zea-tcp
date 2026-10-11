@@ -12,14 +12,16 @@ import dagger.Provides;
 import javax.inject.Singleton;
 
 /**
- * Dagger module for core service dependencies.
- * Provides session management, login service, and game instances.
+ * Provides the game, login service, credential verifier and session registry.
  *
  * @author Kelvin
  */
 @Module
 public final class ServiceModule {
 
+    /**
+     * Prevents direct construction of this utility or singleton component.
+     */
     private ServiceModule() {
     }
 
@@ -27,24 +29,46 @@ public final class ServiceModule {
     // Core Services
     // ============================================================
 
+    /**
+     * Provides the security service dependency for the application component.
+     *
+     * @return the security service instance
+     */
     @Provides
     @Singleton
     static SecurityService provideSecurityService() {
         return new SecurityService();
     }
 
+    /**
+     * Provides the session service dependency for the application component.
+     *
+     * @return the session service instance
+     */
     @Provides
     @Singleton
     static SessionService provideSessionService() {
         return new SessionService(new SimpleCredentialsVerifier());
     }
 
+    /**
+     * Provides the login service dependency for the application component.
+     *
+     * @param sessionService the session registry and resource owner
+     * @param securityService the token generation and verification service
+     * @return the login service instance
+     */
     @Provides
     @Singleton
     static LoginService provideLoginService(SessionService sessionService, SecurityService securityService) {
         return new LoginService(sessionService, securityService);
     }
 
+    /**
+     * Provides the game dependency for the application component.
+     *
+     * @return the game instance
+     */
     @Provides
     @Singleton
     static Game provideGame() {

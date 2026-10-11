@@ -10,28 +10,32 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Health check endpoint handler.
- * Provides simple UP/DOWN status for load balancers and monitoring systems.
- *
- * <p>Endpoints:
- * <ul>
- *   <li>GET /health - Simple health check (returns "OK")</li>
- *   <li>GET /health/live - Liveness probe (is server running?)</li>
- *   <li>GET /health/ready - Readiness probe (is server ready to accept traffic?)</li>
- * </ul>
+ * Serves basic health, liveness and readiness responses from local resource checks.
  *
  * @author Kelvin
  */
 public class HealthCheckHandler extends AbstractHttpHandler {
 
+    /**
+     * Creates a health check handler instance.
+     */
+    public HealthCheckHandler() {
+    }
+
+    /**
+     * Logger for component lifecycle and diagnostic messages.
+     */
     private static final Logger LOG = LoggerFactory.getLogger(HealthCheckHandler.class);
 
+    /**
+     * Singleton server counter and JVM-resource metrics collector.
+     */
     private final ServerMetrics metrics = ServerMetrics.getInstance();
 
     /**
-     * Handle health check request.
+     * Routes a health request to the basic, liveness or readiness response.
      *
-     * @param ctx     channel handler context
+     * @param ctx channel handler context
      * @param request HTTP request
      */
     public void handleHealthCheck(ChannelHandlerContext ctx, FullHttpRequest request) {
@@ -54,7 +58,9 @@ public class HealthCheckHandler extends AbstractHttpHandler {
     }
 
     /**
-     * Basic health check - always returns OK if server is running.
+     * Writes overall server health and runtime details.
+     *
+     * @param ctx the Netty pipeline context
      */
     private void handleBasicHealth(ChannelHandlerContext ctx) {
         String response = buildJsonResponse("OK", "Server is running");
@@ -62,8 +68,9 @@ public class HealthCheckHandler extends AbstractHttpHandler {
     }
 
     /**
-     * Liveness probe - checks if server is alive.
-     * Used by orchestrators (K8s) to restart unhealthy containers.
+     * Writes the liveness result and corresponding HTTP status.
+     *
+     * @param ctx the Netty pipeline context
      */
     private void handleLivenessProbe(ChannelHandlerContext ctx) {
         // Check if server is responsive
@@ -78,8 +85,9 @@ public class HealthCheckHandler extends AbstractHttpHandler {
     }
 
     /**
-     * Readiness probe - checks if server is ready to accept traffic.
-     * Used by load balancers to route traffic only to ready instances.
+     * Writes the readiness result and corresponding HTTP status.
+     *
+     * @param ctx the Netty pipeline context
      */
     private void handleReadinessProbe(ChannelHandlerContext ctx) {
         boolean ready = isServerReady();
@@ -94,7 +102,9 @@ public class HealthCheckHandler extends AbstractHttpHandler {
     }
 
     /**
-     * Check if server is alive (basic checks).
+     * Checks whether the metrics collector reports a positive whole-second uptime.
+     *
+     * @return {@code true} when uptime is positive and the check succeeds
      */
     private boolean isServerAlive() {
         try {
@@ -108,7 +118,9 @@ public class HealthCheckHandler extends AbstractHttpHandler {
     }
 
     /**
-     * Check if server is ready to accept traffic.
+     * Checks memory utilization and thread count against readiness thresholds.
+     *
+     * @return {@code true} when local resource checks succeed
      */
     private boolean isServerReady() {
         try {
@@ -145,7 +157,11 @@ public class HealthCheckHandler extends AbstractHttpHandler {
     }
 
     /**
-     * Build JSON response.
+     * Creates a small JSON response containing status and message values.
+     *
+     * @param status the JSON health-status value
+     * @param message the message or string to send
+     * @return the JSON response text
      */
     private String buildJsonResponse(String status, String message) {
         return String.format(

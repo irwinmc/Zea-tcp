@@ -20,26 +20,77 @@ import static io.netty.handler.codec.http.HttpResponseStatus.OK;
 import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
 
 /**
+ * Routes full HTTP requests to API, RPC, health, metrics, index or static-file handlers.
+ *
+ * <p>Request paths are normalized before routing. OPTIONS requests receive the
+ * configured cross-origin response.
+ *
  * @author Kelvin
  */
 @Sharable
 public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
 
+    /**
+     * Logger for component lifecycle and diagnostic messages.
+     */
     private static final Logger LOG = LoggerFactory.getLogger(HttpRequestHandler.class);
 
+    /**
+     * Route prefix for root requests.
+     */
     private static final String ROOT = "/";
+    /**
+     * Route prefix for api requests.
+     */
     private static final String API = "/api";
+    /**
+     * Route prefix for rpc requests.
+     */
     private static final String RPC = "/r";
+    /**
+     * Route prefix for health requests.
+     */
     private static final String HEALTH = "/health";
+    /**
+     * Route prefix for metrics requests.
+     */
     private static final String METRICS = "/metrics";
 
+    /**
+     * Route prefix for static file handler requests.
+     */
     private final StaticFileHandler staticFileHandler;
+    /**
+     * Route prefix for index page handler requests.
+     */
     private final IndexPageHandler indexPageHandler;
+    /**
+     * Route prefix for api handler requests.
+     */
     private final ApiHandler apiHandler;
+    /**
+     * Route prefix for rpc handler requests.
+     */
     private final RpcHandler rpcHandler;
+    /**
+     * Route prefix for health check handler requests.
+     */
     private final HealthCheckHandler healthCheckHandler;
+    /**
+     * Route prefix for metrics handler requests.
+     */
     private final MetricsHandler metricsHandler;
 
+    /**
+     * Creates a http request handler instance with the supplied dependencies.
+     *
+     * @param staticFileHandler the static file handler
+     * @param indexPageHandler the index page handler
+     * @param apiHandler the api handler
+     * @param rpcHandler the rpc handler
+     * @param healthCheckHandler the health check handler
+     * @param metricsHandler the metrics handler
+     */
     @Inject
     public HttpRequestHandler(StaticFileHandler staticFileHandler,
                               IndexPageHandler indexPageHandler,
@@ -55,6 +106,9 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
         this.metricsHandler = metricsHandler;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) throws Exception {
         // Handle OPTIONS preflight requests for CORS
@@ -98,6 +152,9 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
         staticFileHandler.handleStaticFile(ctx, request);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
         LOG.warn("Channel {} has thrown exception {}.", ctx.channel(), cause);
@@ -106,9 +163,9 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
     }
 
     /**
-     * Handle CORS preflight OPTIONS request.
+     * Writes the response for a CORS preflight request.
      *
-     * @param ctx     channel handler context
+     * @param ctx channel handler context
      * @param request HTTP OPTIONS request
      */
     private void handleOptionsRequest(ChannelHandlerContext ctx, FullHttpRequest request) {
@@ -124,6 +181,12 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
         ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
     }
 
+    /**
+     * Extracts and normalizes the URI path for endpoint selection.
+     *
+     * @param rawUri the raw request URI
+     * @return the normalized request path
+     */
     private static String normalizePath(String rawUri) {
         // Remove fragment
         int hash = rawUri.indexOf('#');
@@ -155,6 +218,12 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
         return rawUri;
     }
 
+    /**
+     * Extracts the first segment used for handler routing.
+     *
+     * @param path the resource or file path
+     * @return the base path segment
+     */
     private static String baseSegment(String path) {
         if (ROOT.equals(path)) return ROOT;
         int idx = path.indexOf('/', 1);

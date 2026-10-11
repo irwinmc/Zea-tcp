@@ -14,55 +14,7 @@ import org.slf4j.LoggerFactory;
 import javax.inject.Inject;
 
 /**
- * JSON-based protocol implementation for human-readable messaging.
- * <p>
- * This protocol uses JSON encoding for messages, providing excellent cross-platform
- * compatibility and ease of debugging. While slower than binary protocols (SBE),
- * JSON is ideal for development, debugging tools, and integration with web-based clients.
- * </p>
- * <p>
- * <b>Protocol Characteristics:</b>
- * <ul>
- *   <li>Encoding: JSON (UTF-8 text)</li>
- *   <li>Framing: 2-byte length prefix</li>
- *   <li>Performance: 10-50x slower than SBE</li>
- *   <li>Message Size: 2-3x larger than SBE</li>
- *   <li>Human Readable: Yes (excellent for debugging)</li>
- *   <li>Cross-platform: Excellent (any language with JSON support)</li>
- * </ul>
- * </p>
- * <p>
- * <b>Message Format:</b>
- * <pre>
- * +--------+-------------------+
- * | Length | JSON Message Body |
- * | 2 bytes| UTF-8 text        |
- * +--------+-------------------+
- *
- * Example JSON payload:
- * {
- *   "type": "LOGIN",
- *   "username": "player1",
- *   "timestamp": 1234567890
- * }
- * </pre>
- * </p>
- * <p>
- * <b>Pipeline Configuration:</b>
- * <pre>
- * Inbound:  lengthDecoder → jsonDecoder → eventHandler
- * Outbound: eventHandler → jsonEncoder → lengthFieldPrepender
- * </pre>
- * </p>
- * <p>
- * <b>Use Cases:</b>
- * <ul>
- *   <li>Development and debugging (message inspection)</li>
- *   <li>Admin tools and monitoring dashboards</li>
- *   <li>Cross-platform clients (web, mobile)</li>
- *   <li>Integration with third-party systems</li>
- * </ul>
- * </p>
+ * Installs two-byte length framing, JSON event codecs and a session inbound handler.
  *
  * @author Kelvin
  * @see JsonDecoder
@@ -70,10 +22,22 @@ import javax.inject.Inject;
  */
 public class JsonProtocol extends AbstractNettyProtocol {
 
+    /**
+     * Logger for component lifecycle and diagnostic messages.
+     */
     private static final Logger LOG = LoggerFactory.getLogger(JsonProtocol.class);
 
+    /**
+     * Shared decoder for opcode and JSON payload frames.
+     */
     private final JsonDecoder jsonDecoder;
+    /**
+     * Shared encoder for opcode and JSON payload frames.
+     */
     private final JsonEncoder jsonEncoder;
+    /**
+     * Shared outbound TCP frame-length encoder.
+     */
     private final LengthFieldPrepender lengthFieldPrepender;
 
     /**
@@ -82,8 +46,8 @@ public class JsonProtocol extends AbstractNettyProtocol {
      * All dependencies are injected via Dagger 2 and configured in {@code ProtocolModule}.
      * </p>
      *
-     * @param jsonDecoder          decodes incoming JSON messages to Event objects
-     * @param jsonEncoder          encodes outgoing Event objects to JSON format
+     * @param jsonDecoder decodes incoming JSON messages to Event objects
+     * @param jsonEncoder encodes outgoing Event objects to JSON format
      * @param lengthFieldPrepender prepends 2-byte length header to outgoing messages
      */
     @Inject
@@ -97,23 +61,7 @@ public class JsonProtocol extends AbstractNettyProtocol {
     }
 
     /**
-     * Configures the channel pipeline with JSON protocol handlers.
-     * <p>
-     * <b>Handler Order:</b>
-     * <ol>
-     *   <li><b>lengthDecoder</b> - Extracts frames based on 2-byte length prefix (inbound)</li>
-     *   <li><b>jsonDecoder</b> - Decodes JSON to Event objects (inbound)</li>
-     *   <li><b>eventHandler</b> - Processes decoded events (bidirectional)</li>
-     *   <li><b>lengthFieldPrepender</b> - Adds 2-byte length prefix (outbound)</li>
-     *   <li><b>jsonEncoder</b> - Encodes Event objects to JSON (outbound)</li>
-     * </ol>
-     * </p>
-     * <p>
-     * <b>Note:</b> Outbound handlers are executed in reverse order of addition.
-     * Therefore, jsonEncoder runs before lengthFieldPrepender for outgoing messages.
-     * </p>
-     *
-     * @param playerSession the session to configure with JSON protocol
+     * {@inheritDoc}
      */
     @Override
     public void applyProtocol(PlayerSession playerSession) {

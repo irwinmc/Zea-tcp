@@ -4,57 +4,56 @@ import com.akakata.event.Event;
 import com.akakata.protocols.Protocol;
 
 /**
+ * Associates a session with a player, a game and a network protocol.
+ *
  * @author Kelvin
  */
 public interface PlayerSession extends Session {
 
     /**
-     * Each session is associated with a {@link Player}. This is the actual
-     * human or machine using this session.
+     * Returns the player associated with the session.
      *
-     * @return player
+     * @return the player, or {@code null} when no player has been assigned
      */
     Player getPlayer();
 
     /**
-     * Method used to set the player, usually after the actually login.
+     * Updates the player associated with the session.
      *
-     * @param player player
+     * @param player the player associated with the session
      */
     void setPlayer(Player player);
 
     /**
-     * Each user session is attached to a game. This method is used to retrieve that game object.
+     * Returns the game associated with the session.
      *
-     * @return Game
+     * @return the game, or {@code null} when no game has been assigned
      */
     Game getGame();
 
     /**
-     * Method used to set the game for a particular session.
+     * Updates the associated game reference without changing either game's membership set.
      *
-     * @param game Game
+     * @param game the associated game
      */
     void setGame(Game game);
 
     /**
-     * Get the {@link Protocol} associated with this session.
+     * Returns the associated protocol configuration.
      *
-     * @return Protocol of the user session
+     * @return the protocol, or {@code null} when no protocol has been assigned
      */
     Protocol getProtocol();
 
     /**
-     * Set the protocol on the user session.
+     * Updates the protocol reference without installing or removing pipeline handlers.
      *
      * @param protocol the protocol to be used
      */
     void setProtocol(Protocol protocol);
 
     /**
-     * The event to be send to the {@link Game} to which the PlayerSession
-     * belongs. Behavior is unspecified if message is sent when a room change is
-     * taking place.
+     * Submits an event to the associated game dispatcher.
      *
      * @param event The event to send to the {@link Game}
      */

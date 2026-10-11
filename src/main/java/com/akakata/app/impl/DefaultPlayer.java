@@ -3,69 +3,83 @@ package com.akakata.app.impl;
 import com.akakata.app.Player;
 
 /**
- * Default implementation of Player - pure data object.
- * No session references to avoid circular dependencies.
+ * Stores a mutable player identifier and nickname. Equality and hashing use the identifier.
  *
  * @author Kelvin
  */
 public class DefaultPlayer implements Player {
 
     /**
-     * 唯一ID
+     * Identifier used for player identity.
      */
     protected String id;
 
     /**
-     * 玩家昵称
+     * Player display name.
      */
     protected String nickname;
 
     /**
-     * 空构造函数
+     * Creates a default player instance.
      */
     public DefaultPlayer() {
     }
 
     /**
-     * 带ID的构造函数
+     * Creates a default player instance with the supplied dependencies.
      *
-     * @param id 玩家ID
+     * @param id the identifier
      */
     public DefaultPlayer(String id) {
         this.id = id;
     }
 
     /**
-     * 带ID和昵称的构造函数
+     * Creates a default player instance with the supplied dependencies.
      *
-     * @param id       玩家ID
-     * @param nickname 玩家昵称
+     * @param id the identifier
+     * @param nickname the player display name
      */
     public DefaultPlayer(String id, String nickname) {
         this.id = id;
         this.nickname = nickname;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public String getId() {
         return id;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void setId(String id) {
         this.id = id;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public String getNickname() {
         return nickname;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void setNickname(String nickname) {
         this.nickname = nickname;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public int hashCode() {
         final int prime = 31;
@@ -74,6 +88,9 @@ public class DefaultPlayer implements Player {
         return result;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public boolean equals(Object obj) {
         if (this == obj) {
@@ -92,6 +109,9 @@ public class DefaultPlayer implements Player {
         return id.equals(other.id);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public String toString() {
         return "Player[id=" + id + ", nickname=" + nickname + "]";

@@ -1,27 +1,22 @@
 package com.akakata.communication;
 
 /**
- * This interface declares method for sending a message to client. Different
- * implementations would be used by the server for sending based on the connect
- * strategy that is required.
+ * Sends outbound messages and releases the underlying transport when closed.
  *
  * @author Kyia
  */
 public interface MessageSender {
 
     /**
-     * This method delegates to the underlying native session object to send a
-     * message to the client.
+     * Submits a message to the transport for outbound delivery.
      *
-     * @param message message
-     * @return Object been sent
+     * @param message the message or string to send
+     * @return an implementation-specific completion handle or result
      */
     Object sendMessage(Object message);
 
     /**
-     * Since message sender would have a network connection, it would require
-     * some cleanup. This method can be overriden to close underlying channels
-     * and so on.
+     * Releases the sender's transport resources.
      */
     void close();
 }

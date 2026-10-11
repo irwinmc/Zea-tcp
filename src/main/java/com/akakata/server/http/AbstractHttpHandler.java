@@ -14,27 +14,26 @@ import static io.netty.handler.codec.http.HttpResponseStatus.OK;
 import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
 
 /**
- * Abstract base class for HTTP handlers providing common response methods.
- * <p>
- * This base class provides utility methods for sending HTTP error responses and
- * simple content responses. It is designed for handlers that deal with small,
- * in-memory responses using {@link FullHttpResponse} and {@link ByteBuf}.
- * </p>
- * <p>
- * <b>Note:</b> This class is NOT suitable for large file transfers. For file serving,
- * use a dedicated handler with Netty's {@code FileRegion} for zero-copy transmission.
- * </p>
+ * Builds full HTTP success and error responses and writes them through Netty.
+ *
+ * <p>Success responses copy the supplied content into a response buffer. The caller
+ * keeps ownership of the supplied content reference.
  *
  * @author Kelvin
- * @see io.netty.handler.codec.http.FullHttpResponse
- * @see io.netty.buffer.ByteBuf
  */
 public abstract class AbstractHttpHandler {
 
     /**
-     * Send HTTP error response and close connection.
+     * Creates an abstract http handler instance.
+     */
+    public AbstractHttpHandler() {
+    }
+
+    /**
+     * Writes a plain-text error response and closes the channel. The CORS overload adds
+     * cross-origin headers when enabled.
      *
-     * @param ctx    channel handler context
+     * @param ctx channel handler context
      * @param status HTTP response status
      */
     protected void sendError(ChannelHandlerContext ctx, HttpResponseStatus status) {
@@ -42,10 +41,11 @@ public abstract class AbstractHttpHandler {
     }
 
     /**
-     * Send HTTP error response with optional CORS headers.
+     * Writes a plain-text error response and closes the channel. The CORS overload adds
+     * cross-origin headers when enabled.
      *
-     * @param ctx        channel handler context
-     * @param status     HTTP response status
+     * @param ctx channel handler context
+     * @param status HTTP response status
      * @param enableCors whether to add CORS headers
      */
     protected void sendError(ChannelHandlerContext ctx, HttpResponseStatus status, boolean enableCors) {
@@ -64,20 +64,26 @@ public abstract class AbstractHttpHandler {
     }
 
     /**
-     * Send HTTP response with content and CORS headers.
+     * Writes an HTTP success response after copying the supplied content.
      *
-     * @param ctx     channel handler context
-     * @param content response content
+     * <p>Copying advances the supplied buffer's reader index. The caller remains
+     * responsible for releasing its original reference after this method returns.
+     *
+     * @param ctx channel handler context
+     * @param content caller-owned content copied into the response
      */
     protected void sendHttpResponse(ChannelHandlerContext ctx, ByteBuf content) {
         sendHttpResponse(ctx, content, "text/html; charset=UTF-8");
     }
 
     /**
-     * Send HTTP response with content, custom content type, and CORS headers.
+     * Writes an HTTP success response after copying the supplied content.
      *
-     * @param ctx         channel handler context
-     * @param content     response content
+     * <p>Copying advances the supplied buffer's reader index. The caller remains
+     * responsible for releasing its original reference after this method returns.
+     *
+     * @param ctx channel handler context
+     * @param content caller-owned content copied into the response
      * @param contentType content type (e.g., "application/json; charset=UTF-8")
      */
     protected void sendHttpResponse(ChannelHandlerContext ctx, ByteBuf content, String contentType) {

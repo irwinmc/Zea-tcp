@@ -3,42 +3,44 @@ package com.akakata.server;
 import java.net.InetSocketAddress;
 
 /**
+ * Defines bind, start and stop operations for a network server.
+ *
  * @author Kelvin
  */
 public interface Server {
 
     /**
-     * Start server
+     * Binds and starts this server at its configured or supplied address.
      *
-     * @throws Exception e
+     * @throws Exception if the server lifecycle operation fails
      */
     void startServer() throws Exception;
 
     /**
-     * Start server with port
+     * Binds and starts this server at its configured or supplied address.
      *
      * @param port listening port
-     * @throws Exception e
+     * @throws Exception if the server lifecycle operation fails
      */
     void startServer(int port) throws Exception;
 
     /**
-     * Start server with socket address
+     * Binds and starts this server at its configured or supplied address.
      *
      * @param socketAddress socket address
-     * @throws Exception e
+     * @throws Exception if the server lifecycle operation fails
      */
     void startServer(InetSocketAddress socketAddress) throws Exception;
 
     /**
-     * Stop server
+     * Stops this server and releases its listening channel.
      *
-     * @throws Exception e
+     * @throws Exception if the server lifecycle operation fails
      */
     void stopServer() throws Exception;
 
     /**
-     * Get socket address
+     * Get socket address.
      *
      * @return socket address
      */

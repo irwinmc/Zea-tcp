@@ -6,32 +6,7 @@ import io.netty.channel.ChannelPipeline;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 
 /**
- * Abstract base class for Netty-based protocol implementations.
- * <p>
- * This class provides common functionality for protocols that use Netty's channel pipeline
- * architecture, including protocol naming, pipeline clearing, and length-based frame decoding.
- * All protocol implementations that use TCP-based length-prefixed framing should extend this class.
- * </p>
- * <p>
- * <b>Frame Decoding:</b><br>
- * By default, this class provides a length-based frame decoder configured for 2-byte length prefix:
- * <ul>
- *   <li>Max frame length: Integer.MAX_VALUE (2GB)</li>
- *   <li>Length field offset: 0 (length field starts at byte 0)</li>
- *   <li>Length field length: 2 bytes (short)</li>
- *   <li>Length adjustment: 0 (length field contains exact payload size)</li>
- *   <li>Initial bytes to strip: 2 (remove length field from output frame)</li>
- * </ul>
- * </p>
- * <p>
- * <b>Subclass Responsibilities:</b><br>
- * Concrete protocol implementations must:
- * <ul>
- *   <li>Call {@code super(protocolName)} to set the protocol identifier</li>
- *   <li>Implement {@link #applyProtocol(PlayerSession)} to configure pipeline handlers</li>
- *   <li>Add appropriate encoder/decoder handlers in correct order</li>
- * </ul>
- * </p>
+ * Provides a protocol name, two-byte TCP frame decoding and optional pipeline replacement.
  *
  * @author Kelvin
  * @see Protocol
@@ -40,11 +15,7 @@ import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 public abstract class AbstractNettyProtocol implements Protocol {
 
     /**
-     * The unique name identifier for this protocol.
-     * <p>
-     * This is set by the subclass constructor and used for logging and debugging.
-     * Common values include "SBE_PROTOCOL", "JSON_PROTOCOL", "WEB_SOCKET_PROTOCOL", etc.
-     * </p>
+     * Diagnostic name identifying this protocol.
      */
     final String protocolName;
 
@@ -59,44 +30,35 @@ public abstract class AbstractNettyProtocol implements Protocol {
     }
 
     /**
-     * Creates a standard length-based frame decoder for TCP protocols.
-     * <p>
-     * This decoder handles variable-length messages with a 2-byte length prefix.
-     * The length field indicates the size of the payload (excluding the length field itself),
-     * and is automatically stripped from the output frame.
-     * </p>
-     * <p>
-     * <b>Frame Format:</b>
-     * <pre>
-     * +--------+----------------+
-     * | Length | Actual Payload |
-     * | 2 bytes|  N bytes       |
-     * +--------+----------------+
-     * </pre>
-     * </p>
+     * Creates an inbound decoder for a two-byte length prefix, stripping that prefix from decoded
+     * frames.
      *
-     * @return a configured LengthFieldBasedFrameDecoder instance
+     * @return a new frame decoder
      * @see LengthFieldBasedFrameDecoder
      */
     public LengthFieldBasedFrameDecoder createLengthBasedFrameDecoder() {
         return new LengthFieldBasedFrameDecoder(Integer.MAX_VALUE, 0, 2, 0, 2);
     }
 
+    /**
+     * Returns the protocol's diagnostic name.
+     *
+     * @return the protocol name
+     */
     @Override
     public String getProtocolName() {
         return protocolName;
     }
 
     /**
-     * {@inheritDoc}
-     * <p>
-     * This implementation optionally clears the channel pipeline before delegating
-     * to {@link #applyProtocol(PlayerSession)}. Pipeline clearing is useful when
-     * switching protocols mid-session (e.g., after authentication completes).
-     * </p>
+     * Installs protocol handlers on the session's socket pipeline.
      *
-     * @param playerSession                  the player session to configure
-     * @param clearExistingProtocolHandlers  if true, removes all existing handlers before applying protocol
+     * <p>The overload with a clearing flag removes existing handlers first when the
+     * flag is true. Installing a protocol requires a socket-backed sender.
+     *
+     * @param playerSession the player session to configure
+     * @param clearExistingProtocolHandlers if true, removes all existing handlers before applying
+     * protocol
      */
     @Override
     public void applyProtocol(PlayerSession playerSession, boolean clearExistingProtocolHandlers) {

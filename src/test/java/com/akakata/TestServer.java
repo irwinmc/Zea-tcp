@@ -4,25 +4,35 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Test server launcher for development and testing.
- * This class demonstrates how to extend CommandLine for custom server implementations.
- *
- * <p>Usage:
- * <pre>
- * mvn compile
- * java -cp target/Zea-tcp-1.0-SNAPSHOT.jar com.akakata.TestServer
- * </pre>
+ * Runs the default game-server configuration as an executable example.
  *
  * @author Kelvin
  */
 public class TestServer extends CommandLine {
 
+    /**
+     * Creates a test server instance.
+     */
+    public TestServer() {
+    }
+
+    /**
+     * Logger for component lifecycle and diagnostic messages.
+     */
     private static final Logger LOG = LoggerFactory.getLogger(TestServer.class);
 
+    /**
+     * Runs this executable example or isolated regression probe.
+     *
+     * @param args the command-line arguments
+     */
     public static void main(String[] args) {
         new TestServer().run(args);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void beforeServerStartup() throws Exception {
         LOG.info("=================================================");
@@ -34,6 +44,9 @@ public class TestServer extends CommandLine {
         // Example: Load test data, mock services, etc.
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void afterServerStartup() throws Exception {
         LOG.info("Test server is ready for connections");
@@ -46,6 +59,9 @@ public class TestServer extends CommandLine {
         // Example: Start test clients, run health checks, etc.
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void beforeServerShutdown() {
         LOG.info("Cleaning up test environment...");
@@ -54,6 +70,9 @@ public class TestServer extends CommandLine {
         // Example: Save test results, close test connections, etc.
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void afterServerShutdown() {
         LOG.info("Test server shutdown complete");

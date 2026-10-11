@@ -5,27 +5,35 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Example server that only runs WebSocket.
- * Demonstrates selective server startup using configuration.
- *
- * <p>Configuration: src/test/resources/conf-websocket-only.properties
- *
- * <p>Usage:
- * <pre>
- * mvn test-compile
- * java -cp target/classes:target/test-classes com.akakata.WebSocketOnlyServer
- * </pre>
+ * Runs the example application with only the WebSocket server enabled.
  *
  * @author Kelvin
  */
 public class WebSocketOnlyServer extends CommandLine {
 
+    /**
+     * Creates a web socket only server instance.
+     */
+    public WebSocketOnlyServer() {
+    }
+
+    /**
+     * Logger for component lifecycle and diagnostic messages.
+     */
     private static final Logger LOG = LoggerFactory.getLogger(WebSocketOnlyServer.class);
 
+    /**
+     * Runs this executable example or isolated regression probe.
+     *
+     * @param args the command-line arguments
+     */
     public static void main(String[] args) {
         new WebSocketOnlyServer().run(args);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected ServerContext createServerContext() throws Exception {
         // Use custom configuration that only enables WebSocket
@@ -34,6 +42,9 @@ public class WebSocketOnlyServer extends CommandLine {
         return new ServerContext(configPath);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void beforeServerStartup() throws Exception {
         LOG.info("╔═══════════════════════════════════════════════╗");
@@ -44,6 +55,9 @@ public class WebSocketOnlyServer extends CommandLine {
         LOG.info("╚═══════════════════════════════════════════════╝");
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void afterServerStartup() throws Exception {
         LOG.info("WebSocket server ready");

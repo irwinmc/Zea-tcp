@@ -6,73 +6,93 @@ import com.akakata.event.NetworkEvent;
 import java.util.Set;
 
 /**
- * 游戏接口
- * 包含了一个玩家会话列表
+ * Owns a group of player sessions and routes game events and outbound broadcasts.
+ *
+ * <p>A session is created before it is connected. Implementations define the login
+ * callbacks and are responsible for releasing their sessions and dispatcher when closed.
  *
  * @author Kyia
  */
 public interface Game {
 
     /**
-     * 构建玩家会话方法，可以用工厂方法替代
+     * Creates a player session associated with this game without connecting it.
      *
-     * @return 指定玩家会话
+     * @return the newly created player session
+     * @throws IllegalStateException if the default game implementation is closed
      */
     PlayerSession createPlayerSession();
 
     /**
-     * 创建会话之后的登陆方法，给会话增加事件监听器
+     * Installs application event handlers after successful authentication and protocol setup.
      *
-     * @param playerSession 玩家会话
+     * @param playerSession the player session
      */
     void onLogin(PlayerSession playerSession);
 
     /**
-     * 新玩家连接到游戏
+     * Connects a session to the game if both are open and it is not already connected.
      *
-     * @param playerSession 玩家会话
-     * @return true 如果连接成功
+     * <p>The default implementation takes the session monitor before the game monitor.
+     * The connection callback runs after its own synchronized blocks exit; a caller may
+     * still hold the session monitor. A failing callback closes the session.
+     *
+     * @param playerSession the player session
+     * @return {@code true} if accepted; {@code false} if closed or already connected
      */
     boolean connectSession(PlayerSession playerSession);
 
     /**
-     * 会话连接之后触发
+     * Runs the application callback after a session joins the game. The default implementation does
+     * nothing.
      *
-     * @param playerSession 玩家会话
+     * @param playerSession the player session
      */
     void afterSessionConnect(PlayerSession playerSession);
 
     /**
-     * 断开连接，将会话从该游戏的会话集合中删除
+     * Removes a session from this game and releases its event registrations.
      *
-     * @param playerSession 玩家会话
-     * @return true 断开成功
+     * <p>This operation does not itself close the transport. Use the session's
+     * {@code close()} method for complete session cleanup.
+     *
+     * @param playerSession the player session
+     * @return {@code true} if the session was present and removed
      */
     boolean disconnectSession(PlayerSession playerSession);
 
     /**
-     * 获取该游戏中所有玩家会话集合
+     * Returns the game's live session membership set.
      *
-     * @return 会话集合
+     * <p>Use lifecycle methods to coordinate membership changes with session state.
+     *
+     * @return the live set of player sessions
      */
     Set<PlayerSession> getSessions();
 
     /**
-     * 事件处理
+     * Submits an event to the game dispatcher. A closed default game ignores the event.
      *
-     * @param event 消息事件
+     * @param event the event to process
      */
     void send(Event event);
 
     /**
-     * 广播消息，广播消息的处理方式和普通事件处理，区别在于事件类型
+     * Submits the outbound event to each connected session.
      *
-     * @param networkEvent 消息事件
+     * <p>Each accepted delivery retains its own native payload reference. The caller
+     * retains ownership of the original event payload and may release that reference
+     * after this method returns.
+     *
+     * @param networkEvent the outbound event to broadcast
      */
     void sendBroadcast(NetworkEvent networkEvent);
 
     /**
-     * 关闭游戏，断开所有连接到该游戏的玩家会话
+     * Stops accepting sessions, closes connected sessions and releases the game dispatcher.
+     *
+     * <p>The default implementation continues closing remaining sessions when an
+     * individual session fails, and performs cleanup outside the game monitor.
      */
     void close();
 }

@@ -12,18 +12,43 @@ import org.slf4j.LoggerFactory;
 import java.util.List;
 
 /**
- * 基于 SBE 头格式（blockLength/templateId/schemaId/version）的事件解码器。
- * 长度帧由前置的 {@link io.netty.handler.codec.LengthFieldBasedFrameDecoder} 负责拆包。
+ * Decodes the project's eight-byte little-endian SBE-style header and binary payload.
+ *
+ * <p>The header contains block length, template identifier, schema identifier and
+ * version as unsigned 16-bit values. The template identifier supplies the event
+ * opcode. Short headers are discarded and oversized declared payloads are truncated
+ * to the bytes available in the frame.
  */
 @Sharable
 public class SbeEventDecoder extends MessageToMessageDecoder<ByteBuf> {
 
+    /**
+     * Creates a sbe event decoder instance.
+     */
+    public SbeEventDecoder() {
+    }
+
+    /**
+     * Logger for component lifecycle and diagnostic messages.
+     */
     private static final Logger LOG = LoggerFactory.getLogger(SbeEventDecoder.class);
 
+    /**
+     * Size of the SBE-style message header in bytes.
+     */
     private static final int HEADER_SIZE = 8;
+    /**
+     * Schema identifier encoded in the SBE-style header.
+     */
     private static final int SCHEMA_ID = 1;
+    /**
+     * Protocol schema version or application version identifier.
+     */
     private static final int VERSION = 1;
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void decode(ChannelHandlerContext ctx, ByteBuf msg, List<Object> out) {
         if (msg.readableBytes() < HEADER_SIZE) {

@@ -10,27 +10,48 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Advanced test server with custom lifecycle hooks.
- * Demonstrates:
- * - Custom configuration path
- * - Background task management
- * - Metrics collection
- * - Graceful shutdown with state persistence
+ * Demonstrates startup hooks, custom configuration and selective server enablement.
  *
  * @author Kelvin
  */
 public class AdvancedTestServer extends CommandLine {
 
+    /**
+     * Creates an advanced test server instance.
+     */
+    public AdvancedTestServer() {
+    }
+
+    /**
+     * Logger for component lifecycle and diagnostic messages.
+     */
     private static final Logger LOG = LoggerFactory.getLogger(AdvancedTestServer.class);
 
+    /**
+     * Daemon-thread scheduler for periodic metric sampling.
+     */
     private ScheduledExecutorService scheduler;
+    /**
+     * Connection count used by this regression fixture.
+     */
     private final AtomicInteger connectionCount = new AtomicInteger(0);
+    /**
+     * Message count used by this regression fixture.
+     */
     private final AtomicInteger messageCount = new AtomicInteger(0);
 
+    /**
+     * Runs this executable example or isolated regression probe.
+     *
+     * @param args the command-line arguments
+     */
     public static void main(String[] args) {
         new AdvancedTestServer().run(args);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected ServerContext createServerContext() throws Exception {
         // Use custom configuration if needed
@@ -39,12 +60,18 @@ public class AdvancedTestServer extends CommandLine {
         return new ServerContext(configPath);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void printBanner() {
         // Use default banner (can override to customize)
         super.printBanner();
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void beforeServerStartup() throws Exception {
         LOG.info("╔═══════════════════════════════════════════════╗");
@@ -58,6 +85,9 @@ public class AdvancedTestServer extends CommandLine {
         setupMetrics();
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void afterServerStartup() throws Exception {
         LOG.info("Server endpoints:");
@@ -73,6 +103,9 @@ public class AdvancedTestServer extends CommandLine {
         runHealthCheck();
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void beforeServerShutdown() {
         LOG.info("╔═══════════════════════════════════════════════╗");
@@ -86,6 +119,9 @@ public class AdvancedTestServer extends CommandLine {
         stopBackgroundTasks();
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void afterServerShutdown() {
         LOG.info("Final statistics:");
@@ -98,18 +134,27 @@ public class AdvancedTestServer extends CommandLine {
     // Custom Implementation Methods
     // ============================================================
 
+    /**
+     * Verifies the regression scenario: initialize test data.
+     */
     private void initializeTestData() {
         LOG.info("Loading test data...");
         // TODO: Load test users, game state, etc.
         LOG.info("Test data loaded successfully");
     }
 
+    /**
+     * Sets the up metrics.
+     */
     private void setupMetrics() {
         LOG.info("Setting up metrics collection...");
         // TODO: Initialize metrics collectors
         LOG.info("Metrics collection ready");
     }
 
+    /**
+     * Verifies the regression scenario: start background tasks.
+     */
     private void startBackgroundTasks() {
         LOG.info("Starting background tasks...");
 
@@ -130,6 +175,9 @@ public class AdvancedTestServer extends CommandLine {
         LOG.info("Background tasks started");
     }
 
+    /**
+     * Verifies the regression scenario: stop background tasks.
+     */
     private void stopBackgroundTasks() {
         if (scheduler != null && !scheduler.isShutdown()) {
             LOG.info("Stopping background tasks...");
@@ -146,12 +194,18 @@ public class AdvancedTestServer extends CommandLine {
         }
     }
 
+    /**
+     * Verifies the regression scenario: run health check.
+     */
     private void runHealthCheck() {
         LOG.info("Running health check...");
         boolean healthy = serverManager != null && isRunning();
         LOG.info("Health check: {}", healthy ? "PASS" : "FAIL");
     }
 
+    /**
+     * Verifies the regression scenario: save statistics.
+     */
     private void saveStatistics() {
         LOG.info("Saving statistics...");
         // TODO: Persist stats to file or database

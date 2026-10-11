@@ -11,17 +11,30 @@ import io.netty.handler.stream.ChunkedWriteHandler;
 import javax.inject.Inject;
 
 /**
+ * Installs HTTP codecs, request aggregation, chunked transfer support and request routing.
+ *
  * @author Kyia
  */
 public class HttpServerChannelInitializer extends ChannelInitializer<SocketChannel> {
 
+    /**
+     * Router for aggregated HTTP requests.
+     */
     private final HttpRequestHandler httpRequestHandler;
 
+    /**
+     * Creates a http server channel initializer instance with the supplied dependencies.
+     *
+     * @param httpRequestHandler the http request handler
+     */
     @Inject
     public HttpServerChannelInitializer(HttpRequestHandler httpRequestHandler) {
         this.httpRequestHandler = httpRequestHandler;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void initChannel(SocketChannel ch) throws Exception {
         // Create a default pipeline implementation.

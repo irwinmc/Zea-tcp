@@ -1,24 +1,35 @@
 # Zea TCP Transport
 
 [![Maven Central](https://img.shields.io/maven-central/v/com.akakata/zea-tcp.svg)](https://central.sonatype.com/artifact/com.akakata/zea-tcp)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Java](https://img.shields.io/badge/Java-21+-orange.svg)](https://openjdk.java.net/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
+[![Java](https://img.shields.io/badge/Java-21+-orange.svg)](https://openjdk.org/)
 
-High-performance Netty transport and protocol gateway for the Zea platform, providing TCP, HTTP, and WebSocket server support.
+Zea TCP Transport is a Java game-server foundation built on Netty. It provides TCP,
+HTTP and WebSocket listeners, player sessions, asynchronous event dispatch, a
+credential-keyed session cache and HTTP monitoring endpoints.
+
+This documentation describes version **0.7.8** and the implementation in this
+checkout. Dependency versions below come from [pom.xml](pom.xml).
 
 ## Features
 
-- **High Performance**: Asynchronous non-blocking I/O based on Netty
-- **Multi-Protocol Support**: TCP, HTTP, WebSocket
-- **Built-in Monitoring**: Real-time metrics collection and HTTP monitoring endpoints
-- **Flexible Configuration**: Selective server enable/disable support
-- **Dependency Injection**: Dagger 2-based dependency management
-- **Extensible**: Modular architecture, easy to extend
-- **Production Ready**: Enterprise-grade features including caching, logging, and metrics
+- TCP, HTTP and WebSocket listeners sharing Netty NIO event-loop groups.
+- Configurable TCP JSON or SBE-style binary envelopes; binary WebSocket events.
+- Agrona queues with session-based sharding and serial or concurrent callbacks.
+- Session-targeted delivery that isolates player handlers on shared shards.
+- Coordinated session, game, cache, dispatcher and network shutdown.
+- Dagger compile-time dependency injection and Caffeine session caching.
+- Health checks, JSON metrics, Prometheus text output and structured logging.
+
+The default game demonstrates broadcasting. Applications supply their game rules,
+authentication and persistence. The bundled credentials verifier accepts incoming
+login payloads without validating an account, and the default token cipher uses a
+built-in key. Replace these components for application authentication. Automatic
+reconnection and client connection pooling are not implemented.
 
 ## Quick Start
 
-### Maven Dependency
+### Add the Library
 
 ```xml
 <dependency>
@@ -28,398 +39,318 @@ High-performance Netty transport and protocol gateway for the Zea platform, prov
 </dependency>
 ```
 
-### Create Your Server
+Use JDK 21 or later. This repository builds and tests against Java 21.
+
+### Create an Application Entry Point
+
+`CommandLine` is an abstract lifecycle base class. Provide a concrete class with
+`main`; the library itself has no executable JAR entry point.
 
 ```java
-package com.yourcompany.server;
+package com.example;
 
 import com.akakata.CommandLine;
+import com.akakata.app.Game;
+import com.akakata.context.ServerContext;
 
-public class MyServer extends CommandLine {
-
+public final class MyServer extends CommandLine {
     public static void main(String[] args) {
         new MyServer().run(args);
     }
 
     @Override
-    protected void beforeServerStartup() throws Exception {
-        System.out.println("Initializing before server startup...");
-        // Load configuration, connect to database, etc.
+    protected ServerContext createServerContext() throws Exception {
+        // zea.config is interpreted by this example, not by the framework.
+        String resource = System.getProperty("zea.config", "props/conf.properties");
+        return new ServerContext(resource);
     }
 
     @Override
-    protected void afterServerStartup() throws Exception {
-        System.out.println("Server startup completed!");
-        // Start background tasks, etc.
+    protected void afterServerStartup() {
+        Game game = getContext().getBean(Game.class);
+        System.out.println("Connected sessions: " + game.getSessions().size());
     }
 }
 ```
 
-### Run Your Server
+Place your configuration in the application classpath, for example
+`src/main/resources/props/conf.properties`. Configuration names are classpath
+resource names. The framework does not automatically merge system properties or
+environment variables into the properties file.
+
+### Run the Repository Example
+
+From the repository root on macOS or Linux:
 
 ```bash
-java -jar your-server.jar
+mvn test-compile dependency:copy-dependencies -DincludeScope=runtime
+java \
+  --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED \
+  --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED \
+  -cp "target/test-classes:target/classes:target/dependency/*" \
+  com.akakata.TestServer
 ```
 
-Default ports:
-- TCP: 8090
-- HTTP: 8081  
-- WebSocket: 8300
+The JVM options match the access options used by this project's tests and launcher
+for Agrona. On Windows, use `;` as the classpath separator and adapt the shell's line
+continuation syntax. Stop the example with Ctrl+C to invoke the shutdown hook.
 
-## Architecture Overview
+Alternatively, launch through Maven:
 
-```
-Application Layer (Your Application)
-    ↓
-CommandLine (Lifecycle Management)
-    ↓
-ServerContext (Dependency Injection Container)
-    ↓
-ServerManager (Server Manager)
-    ↓
-├─ TCP Server (Netty)
-├─ HTTP Server (Netty) 
-└─ WebSocket Server (Netty)
+```bash
+mvn test-compile exec:java -Dexec.mainClass=com.akakata.TestServer
 ```
 
-## Lifecycle Hooks
+Maven reads the required JVM options from [.mvn/jvm.config](.mvn/jvm.config).
+The `exec:java` goal runs inside that Maven JVM. The `exec.mainClass` property
+selects the entry point while retaining the load-test helper as the default.
 
-`CommandLine` provides 4 lifecycle hooks for customization:
+### Run in IntelliJ IDEA
 
-### 1. beforeServerStartup()
-**Called before servers start**
+Select the shared **TestServer (Agrona)** configuration from
+[.run/TestServer.run.xml](.run/TestServer.run.xml). It includes the required JVM
+options and uses the `zea-tcp` module.
 
-```java
-@Override
-protected void beforeServerStartup() throws Exception {
-    logger.info("Loading application configuration...");
-    AppConfig.load("config/app.json");
+For an existing Application configuration, open **Run > Edit Configurations**,
+select `TestServer`, enable **Modify options > Add VM options**, and enter:
 
-    logger.info("Connecting to database...");
-    database = DatabaseFactory.create();
-
-    logger.info("Initializing cache...");
-    cache = CacheManager.getInstance();
-}
+```text
+--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED
 ```
 
-### 2. afterServerStartup()
-**Called after servers start**
+These are **VM options**, not **Program arguments**. Direct IDE launches do not
+inherit Maven's `.mvn/jvm.config` or Surefire's test `argLine`. Without the access
+options, Agrona 2.6.1 can fail during queue initialization with `IllegalAccessError`
+for `jdk.internal.misc.Unsafe`.
 
-```java
-@Override
-protected void afterServerStartup() throws Exception {
-    logger.info("Starting scheduled tasks...");
-    scheduler = Executors.newScheduledThreadPool(2);
-    scheduler.scheduleAtFixedRate(
-        () -> performHealthCheck(),
-        0, 30, TimeUnit.SECONDS
-    );
+### Example Ports and Packaging
 
-    logger.info("Server ready, waiting for connections...");
-}
-```
+| Listener | Bundled Port | Address or Purpose |
+| --- | --- | --- |
+| TCP | 8090 | Login followed by the selected TCP event protocol |
+| HTTP | 8081 | Health, metrics, index and static-file routes |
+| WebSocket | 8300 | `ws://localhost:8300/`; binary application frames |
 
-### 3. beforeServerShutdown()
-**Called before servers stop**
+Other executable examples are `com.akakata.HttpOnlyServer` (HTTP port 18081),
+`com.akakata.WebSocketOnlyServer` (WebSocket port 18300) and
+`com.akakata.AdvancedTestServer`. They live in
+[src/test/java/com/akakata](src/test/java/com/akakata).
 
-```java
-@Override
-protected void beforeServerShutdown() {
-    logger.info("Saving application state...");
-    stateManager.saveState();
-
-    logger.info("Notifying clients of server shutdown...");
-    clientManager.broadcastShutdownNotice();
-}
-```
-
-### 4. afterServerShutdown()
-**Called after servers stop**
-
-```java
-@Override
-protected void afterServerShutdown() {
-    logger.info("Closing database connections...");
-    if (database != null) {
-        database.close();
-    }
-
-    logger.info("Stopping scheduled tasks...");
-    if (scheduler != null) {
-        scheduler.shutdown();
-    }
-
-    logger.info("Cleanup completed");
-}
-```
+`mvn package` produces the library JAR `target/zea-tcp-0.7.8.jar`. It does not bundle
+runtime dependencies or configure a `Main-Class`. The provided [run.sh](run.sh)
+expects an application-owned executable `server.jar` in the working directory;
+create that application artifact before using the script.
 
 ## Configuration
 
-### Basic Configuration
-
-Configuration file: `src/main/resources/props/conf.properties`
+The bundled [props/conf.properties](src/main/resources/props/conf.properties)
+contains:
 
 ```properties
-# Server enable/disable
 server.tcp.enabled=true
 server.http.enabled=true
 server.websocket.enabled=true
 
-# Port configuration
 tcp.port=8090
 http.port=8081
 web.socket.port=8300
 
-# Thread configuration
 bossThreadCount=2
-workerThreadCount=8
+workerThreadCount=2
 
-# Socket options
-so.backlog=1024
+so.backlog=100
 so.reuseaddr=true
 so.keepalive=true
 tcp.nodelay=true
 
-# Protocol type (JSON/SBE)
+reconnect.delay=300000
 protocol.type=JSON
 ```
 
-### Custom Configuration Path
+`reconnect.delay` is present in the resource but is currently unused. Queue sampling
+can additionally be configured with `metrics.event.interval.seconds`; its fallback
+is 30 seconds, and a nonpositive value disables sampling.
 
-```java
-@Override
-protected ServerContext createServerContext() throws Exception {
-    String configPath = System.getProperty("config.path", "my-config.properties");
-    return new ServerContext(configPath);
-}
-```
+Fallbacks differ from the bundled resource: absent thread counts use one boss
+thread and `Runtime.getRuntime().availableProcessors()` workers; an absent
+`protocol.type` selects SBE. `protocol.type` affects TCP only. WebSocket events use
+the WebSocket JSON codec, and HTTP routing is independent of this property.
 
-### Environment-Specific Configuration
+See the [configuration and wire-format guide](docs/CONFIGURATION.md) for every
+consumed property, loading rules, limits and login formats.
+
+## Lifecycle and Components
+
+Startup initializes `ServerContext`, invokes `beforeServerStartup()`, starts
+enabled listeners, marks the application running and invokes
+`afterServerStartup()`. `run(String[])` currently does not parse its arguments and
+waits indefinitely after startup.
+
+On normal JVM shutdown, `beforeServerShutdown()` runs before listener shutdown,
+and `afterServerShutdown()` runs after listener shutdown but before context
+closure. Hooks should release application-owned resources and handle their own
+cleanup failures. Overriding `awaitTermination()` changes the wait behavior;
+returning from it does not itself invoke shutdown.
+
+`ServerContext.getBean()` exposes `Game`, `SessionService` and `ServerManager`.
+It is not a general-purpose lookup for arbitrary Dagger bindings. Configuration
+is available through `getConfigManager()`.
+
+Closing an initialized context proceeds through these stages:
+
+1. Stop servers.
+2. Close the game, its connected sessions and its dedicated dispatcher.
+3. Close `SessionService`, its cleanup scheduler and all sessions it still owns.
+4. Stop dispatcher-metrics sampling.
+5. Close the process-wide shared dispatcher.
+6. Shut down both shared network groups and wait for termination.
+
+The context logs individual cleanup failures and continues with later stages.
+Closing a player session removes its handlers from a shared shard while preserving
+that shard for other players. Session replacement closes the previous session and
+uses identity checks to prevent an old close callback from removing its successor.
+
+Shared dispatchers and the metrics scheduler have process-wide, terminal
+lifecycles. Start a new JVM after complete shutdown. See
+[event dispatch, concurrency and ownership](docs/EVENT_LOOP.md) for callback
+execution and shutdown details.
+
+## Protocols and Event Handling
+
+TCP packets have a two-byte big-endian frame-length prefix. After login, JSON
+packets contain an opcode and a four-byte length-prefixed UTF-8 JSON object; SBE
+packets contain an eight-byte little-endian header followed by payload bytes.
+The SBE implementation provides an envelope rather than generated schema-specific
+message codecs. WebSocket application messages are binary frames containing the
+opcode and length-prefixed JSON, without the TCP frame-length prefix.
+
+For the default game, TCP clients send `SESSION_MESSAGE` (`0x33`) to request a
+broadcast. The default session handler wraps the message in a `NETWORK_MESSAGE`
+(`0x34`) for outbound delivery. The WebSocket decoder also translates incoming
+`0x34` into `0x33`. TCP JSON and SBE decoders preserve the received opcode.
+
+The default dispatcher mode runs matching handlers on virtual threads, with a
+five-second wait per event. Queue saturation drops submissions; there is no
+reliable-delivery acknowledgment or automatic retry. Callback timeouts do not
+cancel running handlers. Shared payload objects require application-level
+coordination when accessed concurrently.
+
+For native `ByteBuf` or `MessageBuffer` payloads, asynchronous dispatch retains its
+own reference and the caller releases its original reference after submission.
+Handlers that keep a native payload beyond the callback must acquire and release
+an additional reference. See [ownership rules](docs/EVENT_LOOP.md#payload-ownership).
+
+## Monitoring
+
+Enable the HTTP listener to access:
 
 ```bash
-# Development environment
-java -Denv=dev -jar server.jar
-
-# Production environment  
-java -Denv=prod -Dtcp.port=9090 -jar server.jar
-```
-
-## Monitoring and Metrics
-
-### HTTP Monitoring Endpoints
-
-After server startup, you can access real-time metrics via HTTP endpoints:
-
-```bash
-# All metrics
+curl http://localhost:8081/health
+curl http://localhost:8081/health/live
+curl http://localhost:8081/health/ready
 curl http://localhost:8081/metrics
-
-# Connection metrics
 curl http://localhost:8081/metrics/connections
-
-# Traffic metrics
 curl http://localhost:8081/metrics/traffic
-
-# System metrics
 curl http://localhost:8081/metrics/system
-
-# Event dispatcher queue metrics
 curl http://localhost:8081/metrics/event-dispatcher
-
-# Prometheus format
 curl http://localhost:8081/metrics/prometheus
 ```
 
-### Metrics Example
+`ServerMetrics.record*()` methods provide connection, traffic and error counters.
+The current default handlers do not call these methods, so applications must
+instrument their own paths to populate the counters. Heap, CPU, uptime and channel
+group readings are supplied directly; queue depths are sampled separately.
+`/metrics` excludes dispatcher queues, and Prometheus output currently excludes
+them too.
 
-```json
-{
-  "connections": {
-    "total_connections": 1250,
-    "active_connections": 45,
-    "current_channel_count": 45
-  },
-  "traffic": {
-    "total_messages_received": 98765,
-    "total_messages_sent": 87654,
-    "total_bytes_received": 12345678,
-    "total_bytes_sent": 11234567
-  },
-  "system": {
-    "used_memory_mb": 256.5,
-    "max_memory_mb": 1024.0,
-    "thread_count": 24,
-    "cpu_load": 15.6,
-    "uptime_seconds": 3600
-  }
-}
-```
+See the [endpoint reference](docs/MONITORING.md) for exact fields and health checks,
+and the [metrics architecture](docs/METRICS_ARCHITECTURE.md) for integration.
 
-## Advanced Usage
+## Dependencies
 
-### Accessing Server Components
+Direct dependencies declared by the current POM:
 
-```java
-@Override
-protected void afterServerStartup() throws Exception {
-    // Get ServerContext
-    ServerContext ctx = getContext();
+| Dependency | Version | Role |
+| --- | --- | --- |
+| `io.netty:netty-all` | 4.2.19.Final | Network I/O and codecs |
+| `org.agrona:agrona` | 2.6.1 | Concurrent queues and agent runner |
+| `com.google.dagger:dagger` | 2.60.1 | Compile-time injection |
+| `javax.inject:javax.inject` | 1 | Injection annotations |
+| `tools.jackson.core:jackson-databind` | 3.2.3 | JSON serialization |
+| `tools.jackson.dataformat:jackson-dataformat-yaml` | 3.2.3 | YAML dependency; configuration loading uses properties |
+| `com.github.ben-manes.caffeine:caffeine` | 3.3.0 | Session cache |
+| `org.slf4j:slf4j-api` | 2.0.17 | Logging API |
+| `ch.qos.logback:logback-classic` | 1.6.3 | Logging implementation |
+| `net.logstash.logback:logstash-logback-encoder` | 9.0 | Structured log encoding |
+| `org.junit.jupiter:junit-jupiter` | 5.12.2 | Regression tests; test scope |
 
-    // Get ServerManager
-    ServerManager manager = getServerManager();
-
-    // Check running status
-    if (isRunning()) {
-        logger.info("Server is running!");
-    }
-
-    // Get metrics
-    ServerMetrics metrics = ServerMetrics.getInstance();
-    long connections = metrics.getTotalConnections();
-}
-```
-
-### Custom Termination Logic
-
-```java
-@Override
-protected void awaitTermination() throws InterruptedException {
-    // Custom logic, e.g., wait for specific condition
-    while (isRunning() && shouldKeepRunning()) {
-        Thread.sleep(1000);
-    }
-}
-```
-
-## Configuration Examples
-
-### Development Environment
-
-```properties
-# WebSocket only for testing
-server.tcp.enabled=false
-server.http.enabled=false
-server.websocket.enabled=true
-
-# High port to avoid conflicts
-web.socket.port=18300
-
-# Minimal threads
-bossThreadCount=1
-workerThreadCount=2
-
-# JSON for easier debugging
-protocol.type=JSON
-```
-
-### Production Environment
-
-```properties
-# TCP + WebSocket
-server.tcp.enabled=true
-server.http.enabled=false
-server.websocket.enabled=true
-
-# Standard ports
-tcp.port=8090
-web.socket.port=8300
-
-# Optimized thread count (8-core CPU)
-bossThreadCount=2
-workerThreadCount=8
-
-# Binary protocol for performance
-protocol.type=SBE
-
-# High-throughput settings
-so.backlog=1024
-tcp.nodelay=true
-```
-
-### Web Application Server
-
-```properties
-# HTTP + WebSocket
-server.tcp.enabled=false
-server.http.enabled=true
-server.websocket.enabled=true
-
-# Web ports
-http.port=8081
-web.socket.port=8300
-
-# JSON for REST API
-protocol.type=JSON
-```
-
-## Dependencies and Tech Stack
-
-- **Java 21+**: Modern Java features support
-- **Netty 4.2.5**: High-performance asynchronous network framework
-- **Dagger 2.51.1**: Compile-time dependency injection
-- **Jackson 2.18.3**: JSON/YAML processing
-- **Caffeine 3.1.8**: High-performance caching
-- **SLF4J + Logback**: Structured logging
-- **Agrona 2.3.0**: High-performance data structures
-
-## Performance Features
-
-- **Zero Copy**: Efficient memory management based on Netty
-- **Event-Driven**: Asynchronous non-blocking I/O model
-- **Connection Pooling**: Efficient connection reuse
-- **Cache Optimization**: Caffeine high-performance caching
-- **Metrics Collection**: Real-time performance monitoring
-- **Memory Optimization**: Agrona high-performance data structures
+Jackson code uses the `tools.jackson.*` packages from Jackson 3. Dagger's annotation
+processor is `dagger-compiler` 2.60.1. Netty groups use
+`MultiThreadIoEventLoopGroup` with `NioIoHandler.newFactory()`.
 
 ## Development and Build
 
-### Build Project
-
 ```bash
-# Compile
 mvn clean compile
-
-# Run tests
 mvn test
-
-# Package
 mvn clean package
-
-# Install to local repository
 mvn clean install
 ```
 
-### Run Examples
+The regression suite covers player-event isolation, shared-shard preservation,
+session and cache shutdown, replacement and login races, callback-triggered
+closure, and native-buffer ownership. Examples with `main` methods are executable
+helpers rather than JUnit tests.
+
+The POM configures Maven Compiler 3.13.0, Surefire 3.2.5, JavaDoc 3.12.0,
+Exec 3.6.1 and Central Publishing 0.7.0. Its `release` profile adds Sources 3.3.1,
+JavaDoc attachment and GPG 3.2.8 signing. Normal development builds do not require
+signing credentials.
+
+### Generate API Documentation
 
 ```bash
-# Run after compilation
-java -cp target/classes:target/dependency/* com.akakata.CommandLine
-
-# Or use the provided script
-./run.sh
+mvn compile javadoc:javadoc javadoc:test-javadoc
+mvn compile javadoc:jar
 ```
 
-## License
+Open `target/reports/apidocs/index.html` for the framework API and
+`target/reports/testapidocs/index.html` for examples and regression-test helpers.
+The archive is `target/zea-tcp-0.7.8-javadoc.jar`. Compilation generates the Dagger
+component types needed by JavaDoc. Documentation uses English, UTF-8 and strict
+doclint checks; generated Dagger sources are excluded.
 
-This project is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
+### Local Dispatcher Load Test
 
-## Contributing
+After preparing the example classpath above:
 
-Issues and Pull Requests are welcome!
+```bash
+java \
+  --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED \
+  --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED \
+  -cp "target/test-classes:target/classes:target/dependency/*" \
+  com.akakata.benchmark.SimpleLoadTest
+```
 
-## Support
+The current helper has fixed producer counts and waits before measuring completion.
+It can drop events when queues fill, so treat its output as a local diagnostic,
+not a capacity guarantee. `mvn test-compile exec:java` defaults to this helper and
+receives the JVM access options from the repository's `.mvn/jvm.config`.
 
-- **GitHub Issues**: [https://github.com/akakata/zea-tcp/issues](https://github.com/akakata/zea-tcp/issues)
-- **Documentation**: See `docs/` directory for detailed documentation
-- **Examples**: See `src/test/java/com/akakata/` directory for example code
+## Documentation
 
-## Author
+| Guide | Contents |
+| --- | --- |
+| [Configuration](docs/CONFIGURATION.md) | Properties, loading, protocols and fixed limits |
+| [Event loops and lifecycle](docs/EVENT_LOOP.md) | Threads, routing, concurrency, shutdown and payload ownership |
+| [Monitoring](docs/MONITORING.md) | Health responses, JSON fields and Prometheus names |
+| [Metrics architecture](docs/METRICS_ARCHITECTURE.md) | Collectors, instrumentation and sampling lifecycle |
+| [Banner customization](docs/BANNER_CUSTOMIZATION.md) | Classpath banners, overrides and displayed version behavior |
 
-**Kelvin** - *Lead Developer and Maintainer*
-- Email: kyia.x52@gmail.com
-- Organization: Akakata
+## License and Support
 
----
+Licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
+Issues and pull requests are
+welcome at [GitHub](https://github.com/akakata/zea-tcp/issues).
 
-*Zea TCP Transport - High-performance network transport solutions for modern applications*
+Maintainer: **Kelvin**, Akakata — kyia.x52@gmail.com.

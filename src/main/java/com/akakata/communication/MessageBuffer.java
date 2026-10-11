@@ -1,276 +1,295 @@
 package com.akakata.communication;
 
 /**
+ * Reads and writes binary message data through a native buffer.
+ *
+ * <p>Reads advance the reader position and writes advance the writer position.
+ * Multi-byte values follow the native implementation's byte order. String and object
+ * framing are implementation-specific; the Netty implementation uses the utilities
+ * in {@link com.akakata.util.NettyUtils}. Accessing the native buffer does not retain
+ * it or transfer ownership.
+ *
+ * @param <T> the native buffer type
  * @author Kelvin
  */
 public interface MessageBuffer<T> {
 
     /**
-     * @return Returns true if something can be read from this buffer, else false
+     * Tests whether any bytes remain between the reader and writer positions.
+     *
+     * @return {@code true} if at least one byte can be read
      */
     boolean isReadable();
 
     /**
-     * Gets the number of readable bytes left in the buffer.
+     * Returns the number of bytes available from the current reader position.
      *
-     * @return an integer containing the remaining readable bytes.
+     * @return the available byte count
      */
     int readableBytes();
 
     /**
-     * Read a single signed byte from the current {@code readerIndex} position
-     * of the buffer. It will increment the readerIndex after doing this
-     * operation.
+     * Reads a signed 8-bit integer and advances the reader position.
      *
-     * @return Returns the byte that is read
+     * @return the signed byte value
+     * @throws IndexOutOfBoundsException if insufficient bytes remain in the native buffer
      */
     int readByte();
 
     /**
-     * Read signed byte of length from the current {@code readerIndex} position
-     * of the buffer. It will increment the readerIndex after doing this
-     * operation.
+     * Copies bytes from the current reader position and advances it by the copied count.
      *
      * @param length length to read
-     * @return Returns the byte that is read
+     * @return a new array containing the requested bytes
+     * @throws IndexOutOfBoundsException if the requested source or destination range is invalid
      */
     byte[] readBytes(int length);
 
     /**
-     * Transfers this buffer's data to the specified destination starting at the
-     * current {@code readerIndex} and increases the {@code readerIndex} by the
-     * number of the transferred bytes (= {@code dst.length}).
+     * Copies bytes from the current reader position and advances it by the copied count.
      *
-     * @param dst
+     * @param dst the destination byte array
+     * @throws IndexOutOfBoundsException if the requested source or destination range is invalid
      */
     void readBytes(byte[] dst);
 
     /**
-     * Transfers this buffer's data to the specified destination starting at the
-     * current {@code readerIndex} and increases the {@code readerIndex} by the
-     * number of the transferred bytes (= {@code length}).
+     * Copies bytes from the current reader position and advances it by the copied count.
      *
-     * @param dst
-     * @param dstIndex
-     * @param length
+     * @param dst the destination byte array
+     * @param dstIndex the starting index in the destination array
+     * @param length the byte count to copy
+     * @throws IndexOutOfBoundsException if the requested source or destination range is invalid
      */
     void readBytes(byte[] dst, int dstIndex, int length);
 
     /**
-     * Gets an unsigned byte at the current {@code readerIndex} and increases
-     * the {@code readerIndex} by {@code 1} in this buffer.
+     * Reads an unsigned 8-bit integer and advances the reader position.
      *
-     * @return
+     * @return a value from 0 to 255
+     * @throws IndexOutOfBoundsException if insufficient bytes remain in the native buffer
      */
     int readUnsignedByte();
 
     /**
-     * Gets a 2-byte UTF-16 character at the current {@code readerIndex} and
-     * increases the {@code readerIndex} by {@code 2} in this buffer.
+     * Reads a 16-bit character and advances the reader position.
      *
-     * @return
+     * @return the character value
+     * @throws IndexOutOfBoundsException if insufficient bytes remain in the native buffer
      */
     char readChar();
 
     /**
-     * Gets a 16-bit short integer at the current {@code readerIndex} and
-     * increases the {@code readerIndex} by {@code 2} in this buffer.
+     * Reads a signed 16-bit integer and advances the reader position.
      *
-     * @return
+     * @return the signed short value
+     * @throws IndexOutOfBoundsException if insufficient bytes remain in the native buffer
      */
     int readShort();
 
     /**
-     * Gets an unsigned 16-bit short integer at the current {@code readerIndex}
-     * and increases the {@code readerIndex} by {@code 2} in this buffer.
+     * Reads an unsigned 16-bit integer and advances the reader position.
      *
-     * @return
+     * @return a value from 0 to 65,535
+     * @throws IndexOutOfBoundsException if insufficient bytes remain in the native buffer
      */
     int readUnsignedShort();
 
     /**
-     * Gets a 24-bit medium integer at the current {@code readerIndex} and
-     * increases the {@code readerIndex} by {@code 3} in this buffer.
+     * Reads a signed 24-bit integer and advances the reader position.
      *
-     * @return
+     * @return the signed 24-bit value
+     * @throws IndexOutOfBoundsException if insufficient bytes remain in the native buffer
      */
     int readMedium();
 
     /**
-     * Gets an unsigned 24-bit medium integer at the current {@code readerIndex}
-     * and increases the {@code readerIndex} by {@code 3} in this buffer.
+     * Reads an unsigned 24-bit integer and advances the reader position.
      *
-     * @return
+     * @return a value from 0 to 16,777,215
+     * @throws IndexOutOfBoundsException if insufficient bytes remain in the native buffer
      */
     int readUnsignedMedium();
 
     /**
-     * Gets a 32-bit integer at the current {@code readerIndex} and increases
-     * the {@code readerIndex} by {@code 4} in this buffer.
+     * Reads a signed 32-bit integer and advances the reader position.
      *
-     * @return
+     * @return the signed integer value
+     * @throws IndexOutOfBoundsException if insufficient bytes remain in the native buffer
      */
     int readInt();
 
     /**
-     * Gets an unsigned 32-bit integer at the current {@code readerIndex} and
-     * increases the {@code readerIndex} by {@code 4} in this buffer.
+     * Reads an unsigned 32-bit integer and advances the reader position.
      *
-     * @return
+     * @return a value from 0 to 4,294,967,295
+     * @throws IndexOutOfBoundsException if insufficient bytes remain in the native buffer
      */
     long readUnsignedInt();
 
     /**
-     * Gets a 64-bit integer at the current {@code readerIndex} and increases
-     * the {@code readerIndex} by {@code 8} in this buffer.
+     * Reads a signed 64-bit integer and advances the reader position.
      *
-     * @return
+     * @return the signed long value
+     * @throws IndexOutOfBoundsException if insufficient bytes remain in the native buffer
      */
     long readLong();
 
     /**
-     * Gets a 32-bit floating point number at the current {@code readerIndex}
-     * and increases the {@code readerIndex} by {@code 4} in this buffer.
+     * Reads a 32-bit floating-point value and advances the reader position.
      *
-     * @return
+     * @return the decoded float value
+     * @throws IndexOutOfBoundsException if insufficient bytes remain in the native buffer
      */
     float readFloat();
 
     /**
-     * Gets a 64-bit floating point number at the current {@code readerIndex}
-     * and increases the {@code readerIndex} by {@code 8} in this buffer.
+     * Reads a 64-bit floating-point value and advances the reader position.
      *
-     * @return
+     * @return the decoded double value
+     * @throws IndexOutOfBoundsException if insufficient bytes remain in the native buffer
      */
     double readDouble();
 
+    /**
+     * Reads one implementation-framed string and advances the reader position.
+     *
+     * @return the decoded string, or {@code null} when the implementation cannot decode it
+     */
     String readString();
 
+    /**
+     * Reads up to the requested number of framed strings.
+     *
+     * @param numOfStrings the requested number of strings
+     * @return an array of decoded strings; undecoded slots may remain null
+     */
     String[] readStrings(int numOfStrings);
 
     /**
-     * Reads an object from the underlying buffer and transform the bytes using
-     * the supplied transformer to any desired object. This method provide the
-     * flexibility to decode the bytes to any type of object.
+     * Reads a framed object through the supplied converter.
      *
+     * @param <V> the converted value type
      * @param converter The converter which will transform the bytes to relevant object.
-     * @return The object of type V, or null if the underlying buffer is null or empty.
+     * @return the converted value, or {@code null} when decoding fails
      */
     <V> V readObject(Transform<T, V> converter);
 
+    /**
+     * Writes a signed 8-bit value and advances the writer position.
+     *
+     * @param b the byte value
+     * @return this buffer for chaining
+     */
     MessageBuffer<T> writeByte(byte b);
 
     /**
-     * Transfers the specified source array's data to this buffer starting at
-     * the current {@code writerIndex} and increases the {@code writerIndex} by
-     * the number of the transferred bytes (= {@code src.length}).
+     * Writes the supplied byte array and advances the writer position.
      *
-     * @param src
-     * @return
+     * @param src the source byte array
+     * @return this buffer for chaining
      */
     MessageBuffer<T> writeBytes(byte[] src);
 
     /**
-     * Sets the specified 2-byte UTF-16 character at the current
-     * {@code writerIndex} and increases the {@code writerIndex} by {@code 2} in
-     * this buffer. The 16 high-order bits of the specified value are ignored.
+     * Writes a 16-bit character and advances the writer position.
      *
-     * @param value
-     * @return
+     * @param value the value to store or encode
+     * @return this buffer for chaining
      */
     MessageBuffer<T> writeChar(int value);
 
     /**
-     * Sets the specified 16-bit short integer at the current
-     * {@code writerIndex} and increases the {@code writerIndex} by {@code 2} in
-     * this buffer. The 16 high-order bits of the specified value are ignored.
+     * Writes a 16-bit integer and advances the writer position.
      *
-     * @param value
-     * @return
+     * @param value the value to store or encode
+     * @return this buffer for chaining
      */
     MessageBuffer<T> writeShort(int value);
 
     /**
-     * Sets the specified 24-bit medium integer at the current
-     * {@code writerIndex} and increases the {@code writerIndex} by {@code 3} in
-     * this buffer.
+     * Writes a 24-bit integer and advances the writer position.
      *
-     * @param value
-     * @return
+     * @param value the value to store or encode
+     * @return this buffer for chaining
      */
     MessageBuffer<T> writeMedium(int value);
 
     /**
-     * Sets the specified 32-bit integer at the current {@code writerIndex} and
-     * increases the {@code writerIndex} by {@code 4} in this buffer.
+     * Writes a 32-bit integer and advances the writer position.
      *
-     * @param value
-     * @return
+     * @param value the value to store or encode
+     * @return this buffer for chaining
      */
     MessageBuffer<T> writeInt(int value);
 
     /**
-     * Sets the specified 64-bit long integer at the current {@code writerIndex}
-     * and increases the {@code writerIndex} by {@code 8} in this buffer.
+     * Writes a 64-bit integer and advances the writer position.
      *
-     * @param value
-     * @return
+     * @param value the value to store or encode
+     * @return this buffer for chaining
      */
     MessageBuffer<T> writeLong(long value);
 
     /**
-     * Sets the specified 32-bit floating point number at the current
-     * {@code writerIndex} and increases the {@code writerIndex} by {@code 4} in
-     * this buffer.
+     * Writes a 32-bit floating-point value and advances the writer position.
      *
-     * @param value
-     * @return
+     * @param value the value to store or encode
+     * @return this buffer for chaining
      */
     MessageBuffer<T> writeFloat(float value);
 
     /**
-     * Sets the specified 64-bit floating point number at the current
-     * {@code writerIndex} and increases the {@code writerIndex} by {@code 8} in
-     * this buffer.
+     * Writes a 64-bit floating-point value and advances the writer position.
      *
-     * @param value
-     * @return
+     * @param value the value to store or encode
+     * @return this buffer for chaining
      */
     MessageBuffer<T> writeDouble(double value);
 
+    /**
+     * Writes one implementation-framed string.
+     *
+     * @param message the message or string to send
+     * @return this buffer for chaining
+     */
     MessageBuffer<T> writeString(String message);
 
+    /**
+     * Writes framed strings consecutively.
+     *
+     * @param message the message or string to send
+     * @return this buffer for chaining
+     */
     MessageBuffer<T> writeStrings(String... message);
 
     /**
-     * Most implementations will write an object to the underlying buffer after
-     * converting the incoming object using the transformer into a byte array.
-     * This method provides the flexibility to encode any type of object, to a
-     * byte array or buffer(mostly).
+     * Converts an object and writes it using the implementation's object framing.
      *
-     * @param converter
-     * @param object
-     * @return
+     * @param <V> the converted value type
+     * @param converter the converter used to transform the payload
+     * @param object the object to convert or compare
+     * @return this buffer for chaining
      */
     <V> MessageBuffer<T> writeObject(Transform<V, T> converter, V object);
 
     /**
-     * Returns the actual buffer implementation that is wrapped in this
-     * IMessageBuffer instance.
+     * Returns the underlying buffer without retaining it or transferring ownership.
      *
-     * @return
+     * @return the native buffer
      */
     T getNativeBuffer();
 
     /**
-     * Returns the backing byte array of this buffer.
+     * Returns the native backing array when the implementation exposes one.
      *
-     * @return
+     * @return the backing array, which may include bytes outside the readable region
+     * @throws UnsupportedOperationException if the native buffer does not expose an array
      */
     byte[] array();
 
     /**
-     * Clears the contents of this buffer.
+     * Resets reader and writer positions without releasing the native buffer or erasing its bytes.
      */
     void clear();
 }

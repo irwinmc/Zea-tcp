@@ -2,7 +2,7 @@ package com.akakata.server.http;
 
 import com.akakata.metrics.EventDispatcherMetrics;
 import com.akakata.metrics.ServerMetrics;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.http.FullHttpRequest;
@@ -15,32 +15,36 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Metrics endpoint handler.
- * Provides detailed server metrics in JSON or Prometheus format.
- *
- * <p>Endpoints:
- * <ul>
- *   <li>GET /metrics - All metrics in JSON format</li>
- *   <li>GET /metrics/connections - Connection metrics</li>
- *   <li>GET /metrics/traffic - Traffic metrics</li>
- *   <li>GET /metrics/system - System metrics (CPU, memory, threads)</li>
- *   <li>GET /metrics/event-dispatcher - Event dispatcher queue metrics</li>
- *   <li>GET /metrics/prometheus - Prometheus-compatible format</li>
- * </ul>
+ * Serves JSON metric groups and Prometheus text metrics.
  *
  * @author Kelvin
  */
 public class MetricsHandler extends AbstractHttpHandler {
 
+    /**
+     * Creates a metrics handler instance.
+     */
+    public MetricsHandler() {
+    }
+
+    /**
+     * Logger for component lifecycle and diagnostic messages.
+     */
     private static final Logger LOG = LoggerFactory.getLogger(MetricsHandler.class);
+    /**
+     * Shared JSON mapper for payload conversion.
+     */
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
+    /**
+     * Singleton server counter and JVM-resource metrics collector.
+     */
     private final ServerMetrics metrics = ServerMetrics.getInstance();
 
     /**
-     * Handle metrics request.
+     * Routes requests to JSON metric groups or Prometheus output.
      *
-     * @param ctx     channel handler context
+     * @param ctx channel handler context
      * @param request HTTP request
      */
     public void handleMetrics(ChannelHandlerContext ctx, FullHttpRequest request) {
@@ -69,7 +73,9 @@ public class MetricsHandler extends AbstractHttpHandler {
     }
 
     /**
-     * Return all metrics in JSON format.
+     * Writes a combined JSON snapshot of connection, traffic, system and dispatcher metrics.
+     *
+     * @param ctx the Netty pipeline context
      */
     private void handleAllMetrics(ChannelHandlerContext ctx) {
         try {
@@ -124,7 +130,9 @@ public class MetricsHandler extends AbstractHttpHandler {
     }
 
     /**
-     * Return connection metrics only.
+     * Writes connection counts as JSON.
+     *
+     * @param ctx the Netty pipeline context
      */
     private void handleConnectionMetrics(ChannelHandlerContext ctx) {
         try {
@@ -143,7 +151,9 @@ public class MetricsHandler extends AbstractHttpHandler {
     }
 
     /**
-     * Return traffic metrics only.
+     * Writes cumulative message and byte counters as JSON.
+     *
+     * @param ctx the Netty pipeline context
      */
     private void handleTrafficMetrics(ChannelHandlerContext ctx) {
         try {
@@ -165,7 +175,9 @@ public class MetricsHandler extends AbstractHttpHandler {
     }
 
     /**
-     * Return system metrics only.
+     * Writes uptime, memory, thread and CPU values as JSON.
+     *
+     * @param ctx the Netty pipeline context
      */
     private void handleSystemMetrics(ChannelHandlerContext ctx) {
         try {
@@ -187,7 +199,9 @@ public class MetricsHandler extends AbstractHttpHandler {
     }
 
     /**
-     * Return event dispatcher queue metrics.
+     * Writes sampled dispatcher queue metrics as JSON.
+     *
+     * @param ctx the Netty pipeline context
      */
     private void handleEventDispatcherMetrics(ChannelHandlerContext ctx) {
         try {
@@ -213,8 +227,9 @@ public class MetricsHandler extends AbstractHttpHandler {
     }
 
     /**
-     * Return metrics in Prometheus format.
-     * Compatible with Prometheus scraping.
+     * Writes named metrics in Prometheus text exposition format.
+     *
+     * @param ctx the Netty pipeline context
      */
     private void handlePrometheusMetrics(ChannelHandlerContext ctx) {
         StringBuilder prom = new StringBuilder();
@@ -252,12 +267,12 @@ public class MetricsHandler extends AbstractHttpHandler {
     }
 
     /**
-     * Add a Prometheus metric entry.
+     * Appends HELP, TYPE and sample lines for one Prometheus metric.
      *
-     * @param sb    StringBuilder to append to
-     * @param name  metric name
-     * @param type  metric type (counter, gauge, histogram, summary)
-     * @param help  help description
+     * @param sb StringBuilder to append to
+     * @param name metric name
+     * @param type metric type (counter, gauge, histogram, summary)
+     * @param help help description
      * @param value metric value
      */
     private void addPrometheusMetric(StringBuilder sb, String name, String type, String help, Object value) {
@@ -267,7 +282,10 @@ public class MetricsHandler extends AbstractHttpHandler {
     }
 
     /**
-     * Format uptime in human-readable format.
+     * Formats uptime seconds into a readable day, hour, minute and second duration.
+     *
+     * @param seconds the duration in seconds
+     * @return the formatted duration
      */
     private String formatUptime(long seconds) {
         long days = seconds / 86400;

@@ -3,18 +3,18 @@ package com.akakata.app;
 import java.util.Properties;
 
 /**
- * 游戏启动监听器
+ * Receives initialization state and configuration when a game starts.
  *
  * @author Kyia
  */
 public interface GameStartListener {
 
     /**
-     * 用于游戏启动时传入配置
+     * Receives configuration when the game starts.
      *
-     * @param isInitialized 持久化标识
-     *                                           TODO 这个版本不支持持久化
-     * @param properties    环境参数配置文件
+     * @param isInitialized the initialization-state flag supplied by the caller; persistence is not
+     * implemented
+     * @param properties the game configuration properties
      */
     void start(boolean isInitialized, Properties properties);
 }

@@ -1,37 +1,39 @@
 package com.akakata.security;
 
 /**
+ * Provides a credential key and extensible authentication attributes.
+ *
  * @author Kelvin
  */
 public interface Credentials {
 
     /**
-     * Get key from credentials
+     * Returns the credential key used for token generation and cache identity.
      *
-     * @return key
+     * @return the credential key
      */
     String getRandomKey();
 
     /**
-     * Get attribute by key from credentials
+     * Returns the value stored under an attribute key.
      *
-     * @param key key
-     * @return value
+     * @param key the attribute or cache key
+     * @return the stored value, or {@code null} if the key is absent or its value is null
      */
     Object getAttribute(String key);
 
     /**
-     * Set attribute to credentials
+     * Stores an attribute value under the supplied key.
      *
-     * @param key   key
-     * @param value value
+     * @param key the attribute or cache key
+     * @param value the value to store or encode
      */
     void setAttribute(String key, Object value);
 
     /**
-     * Remove attribute from credentials
+     * Removes the value stored under an attribute key.
      *
-     * @param key key
+     * @param key the attribute or cache key
      */
     void removeAttribute(String key);
 }

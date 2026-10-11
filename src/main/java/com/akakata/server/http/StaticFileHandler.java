@@ -23,24 +23,49 @@ import static io.netty.handler.codec.http.HttpResponseStatus.*;
 import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
 
 /**
- * Handles static file serving with zero-copy file transfer.
- * Does not extend AbstractHttpHandler because it uses Netty's FileRegion
- * for efficient large file transmission instead of in-memory ByteBuf.
+ * Serves files under the configured static root with MIME types and HTTP cache headers.
+ *
+ * <p>Paths are decoded and normalized before use. File-transfer listeners report
+ * progress and close open files when the asynchronous transfer completes.
  *
  * @author Kelvin
  */
 public class StaticFileHandler {
 
+    /**
+     * Creates a static file handler instance.
+     */
+    public StaticFileHandler() {
+    }
+
+    /**
+     * HTTP date pattern used for cache response headers.
+     */
     public static final String HTTP_DATE_FORMAT = "EEE, dd MMM yyyy HH:mm:ss zzz";
+    /**
+     * Time-zone identifier used for HTTP date formatting.
+     */
     public static final String HTTP_DATE_GMT_TIMEZONE = "GMT";
+    /**
+     * Static-resource cache lifetime in seconds.
+     */
     public static final int HTTP_CACHE_SECONDS = 60;
+    /**
+     * Static-resource directory relative to the working directory.
+     */
     public static final String HTML_FILE_DIR = "html";
+    /**
+     * Logger for component lifecycle and diagnostic messages.
+     */
     private static final Logger LOG = LoggerFactory.getLogger(StaticFileHandler.class);
+    /**
+     * Normalized static-resource root path.
+     */
     private static final Path HTML_BASE_PATH =
             Paths.get(System.getProperty("user.dir")).resolve(HTML_FILE_DIR).normalize();
 
     /**
-     * Thread-local SimpleDateFormat to avoid repeated creation and ensure thread safety.
+     * Per-thread HTTP date formatter.
      */
     private static final ThreadLocal<SimpleDateFormat> DATE_FORMATTER = ThreadLocal.withInitial(() -> {
         SimpleDateFormat sdf = new SimpleDateFormat(HTTP_DATE_FORMAT, Locale.US);
@@ -49,21 +74,11 @@ public class StaticFileHandler {
     });
 
     /**
-     * Handles static file serving requests with zero-copy file transfer.
-     * <p>
-     * This method processes HTTP GET requests for static files, supporting:
-     * <ul>
-     *   <li>Path validation and security checks (prevents directory traversal)</li>
-     *   <li>HTTP cache validation (If-Modified-Since header)</li>
-     *   <li>MIME type detection</li>
-     *   <li>Zero-copy file transfer using Netty's FileRegion</li>
-     *   <li>Progress monitoring for large file transfers</li>
-     * </ul>
-     * </p>
+     * Validates a static-file request, applies cache headers and starts an asynchronous transfer.
      *
-     * @param ctx     the channel handler context
+     * @param ctx the channel handler context
      * @param request the full HTTP request
-     * @throws Exception if an error occurs during file serving
+     * @throws Exception if file access or transfer setup fails
      */
     public void handleStaticFile(ChannelHandlerContext ctx, FullHttpRequest request) throws Exception {
         if (!request.decoderResult().isSuccess()) {
@@ -148,19 +163,10 @@ public class StaticFileHandler {
     }
 
     /**
-     * Sanitizes and validates the request URI to prevent security vulnerabilities.
-     * <p>
-     * This method performs the following security checks:
-     * <ul>
-     *   <li>URL decoding</li>
-     *   <li>Path normalization</li>
-     *   <li>Directory traversal prevention (ensures path stays within HTML_BASE_PATH)</li>
-     *   <li>Root path rejection</li>
-     * </ul>
-     * </p>
+     * Decodes and resolves a URI path within the configured static root.
      *
      * @param uri the request URI to sanitize
-     * @return the validated Path, or null if the URI is invalid or unsafe
+     * @return the resolved path, or {@code null} if the URI is rejected
      */
     private Path sanitizeUri(String uri) {
         // Decode the path.
@@ -186,9 +192,9 @@ public class StaticFileHandler {
     }
 
     /**
-     * Send HTTP error response for static file requests.
+     * Writes a plain-text file-serving error response and closes the channel.
      *
-     * @param ctx    channel handler context
+     * @param ctx channel handler context
      * @param status HTTP response status
      */
     private void sendError(ChannelHandlerContext ctx, HttpResponseStatus status) {
@@ -198,7 +204,7 @@ public class StaticFileHandler {
     }
 
     /**
-     * When file timestamp is the same as what the browser is sending up, send a "304 Not Modified"
+     * Writes an HTTP 304 response for a cached resource.
      *
      * @param ctx channel handler context
      */
@@ -209,10 +215,11 @@ public class StaticFileHandler {
     }
 
     /**
-     * Set the Date and Cache headers for the HTTP response.
+     * Adds date, expiration, cache-control and last-modified headers for a file.
      *
-     * @param response    HTTP response
+     * @param response HTTP response
      * @param fileToCache file to cache
+     * @throws IOException if a required resource cannot be read or decoded
      */
     private void setDateAndCacheHeader(HttpResponse response, Path fileToCache) throws IOException {
         SimpleDateFormat dateFormatter = DATE_FORMATTER.get();
@@ -232,13 +239,9 @@ public class StaticFileHandler {
     }
 
     /**
-     * Sets the Content-Type header based on file extension.
-     * <p>
-     * Uses Java NIO's {@link Files#probeContentType} to automatically detect
-     * the MIME type. Falls back to "application/octet-stream" if detection fails.
-     * </p>
+     * Sets the response content type from the file name and MIME mapping.
      *
-     * @param res  the HTTP response
+     * @param res the HTTP response
      * @param file the file to determine content type for
      */
     private void setContentTypeHeader(HttpResponse res, Path file) {
@@ -255,12 +258,18 @@ public class StaticFileHandler {
     }
 
     /**
-     * Progress listener for monitoring file transfer operations.
-     * <p>
-     * Logs transfer progress at DEBUG level. Useful for monitoring large file downloads.
-     * </p>
+     * Logs asynchronous file-transfer progress and completion.
      */
     private static class FileTransferProgressListener implements ChannelProgressiveFutureListener {
+        /**
+         * Creates a file transfer progress listener instance.
+         */
+        private FileTransferProgressListener() {
+        }
+
+        /**
+         * {@inheritDoc}
+         */
         @Override
         public void operationProgressed(ChannelProgressiveFuture future, long progress, long total) {
             if (total < 0) {
@@ -270,6 +279,9 @@ public class StaticFileHandler {
             }
         }
 
+        /**
+         * {@inheritDoc}
+         */
         @Override
         public void operationComplete(ChannelProgressiveFuture future) {
             LOG.debug("{} Transfer complete.", future.channel());
@@ -277,13 +289,16 @@ public class StaticFileHandler {
     }
 
     /**
-     * Listener to ensure file resources are properly closed after transfer completes.
-     * <p>
-     * Automatically closes the RandomAccessFile to prevent resource leaks.
-     * </p>
+     * Closes the file handle after its asynchronous channel transfer completes.
+     *
+     * @param raf the open file handle
+     * @param path the transferred file path
      */
     private record FileCloseListener(RandomAccessFile raf, Path path) implements ChannelFutureListener {
 
+        /**
+         * {@inheritDoc}
+         */
         @Override
         public void operationComplete(ChannelFuture future) {
             try {

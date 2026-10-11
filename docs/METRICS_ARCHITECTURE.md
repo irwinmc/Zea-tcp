@@ -1,386 +1,210 @@
 # Metrics Architecture
 
-## Architecture Overview
+Zea TCP Transport 0.7.8 exposes two process-wide collectors:
+`ServerMetrics` for explicit counters and direct runtime readings, and
+`EventDispatcherMetrics` for sampled shared-dispatcher queue depths.
+[Monitoring](MONITORING.md) describes their HTTP output.
 
-Zea-tcp's metrics system adopts a **modular design**, providing two independent metrics collectors.
+## Data Flow
 
-```
-Metrics System
-    ├── ServerMetrics (Server Metrics)
-    │   ├── Connection Metrics
-    │   ├── Traffic Metrics
-    │   ├── System Metrics
-    │   └── Error Metrics
-    │
-    └── EventDispatcherMetrics (Event Dispatcher Metrics)
-        └── Queue Status Monitoring
-```
+```text
+Application instrumentation -- record*() --> ServerMetrics atomic counters
+JVM management beans ---------------------> ServerMetrics runtime getters
+AbstractNettyServer.ALL_CHANNELS ----------> ServerMetrics channel count
 
-## Design Principles
+EventDispatchers shared queues -- scheduled sampling --> EventDispatcherMetrics
 
-### 1. **Single Responsibility Principle (SRP)**
-Each metrics collector is responsible for only one type of metrics:
-- `ServerMetrics` → Server-level metrics
-- `EventDispatcherMetrics` → Event dispatcher queue metrics
-
-### 2. **Singleton Pattern**
-All metrics collectors adopt the singleton pattern:
-- `ServerMetrics.getInstance()` - Get server metrics singleton
-- `EventDispatcherMetrics.getInstance()` - Get event dispatcher metrics singleton
-- Ensures globally unique instances, avoiding duplicate creation
-
-### 3. **Thread Safety**
-- `ServerMetrics`: Uses `AtomicLong` to ensure thread safety
-- `EventDispatcherMetrics`: Uses `AtomicBoolean`, `AtomicInteger`, `AtomicReference` to ensure thread safety
-
-## Core Components
-
-### 1. ServerMetrics
-
-**Collected Metrics:**
-
-| Category | Metric | Description |
-|----------|--------|-------------|
-| **Connections** | `totalConnections` | Total connection count |
-| | `activeConnections` | Current active connections |
-| | `currentChannelCount` | Current channel count |
-| **Traffic** | `totalMessagesReceived` | Total messages received |
-| | `totalMessagesSent` | Total messages sent |
-| | `totalBytesReceived` | Total bytes received |
-| | `totalBytesSent` | Total bytes sent |
-| **System** | `usedMemoryMB` | Used memory (MB) |
-| | `maxMemoryMB` | Maximum memory (MB) |
-| | `threadCount` | Thread count |
-| | `cpuLoad` | CPU load |
-| | `uptimeSeconds` | Uptime (seconds) |
-| **Errors** | `totalErrors` | Total error count |
-
-**Usage Example:**
-```java
-// Direct access to singleton
-ServerMetrics serverMetrics = ServerMetrics.getInstance();
-
-// Record metrics
-serverMetrics.recordConnection();
-serverMetrics.recordDisconnection();
-serverMetrics.recordMessageReceived();
-serverMetrics.recordBytesReceived(1024);
-
-// Read metrics
-long total = serverMetrics.getTotalConnections();
-long active = serverMetrics.getActiveConnections();
-double cpuLoad = serverMetrics.getCpuLoad();
+ServerMetrics -----------+--> MetricsHandler --> JSON / Prometheus text
+EventDispatcherMetrics --+                    --> queue JSON endpoint
+ServerMetrics --------------> HealthCheckHandler --> local health checks
 ```
 
-### 2. EventDispatcherMetrics
+Both collectors use static singleton instances accessed by `getInstance()`, rather
+than context-specific Dagger scopes. Metrics from multiple applications in the
+same JVM are not isolated.
 
-**Features:**
-- Periodically monitors event dispatcher queue status
-- Outputs total queue size and per-shard queue sizes
-- Helps identify performance bottlenecks and hot shards
+## ServerMetrics
 
-**Use Cases:**
-- Load testing
-- Load balancing verification
-- Performance tuning
-- Production environment monitoring
+Counters use `AtomicLong`. Recording operations are thread-safe individually,
+but reading several getters does not create a transactional snapshot.
 
-**Usage Example:**
-```java
-// Direct use of singleton
-EventDispatcherMetrics metrics = EventDispatcherMetrics.getInstance();
-metrics.start(5); // Collect every 5 seconds
+| Recording Method | Counter Effect |
+| --- | --- |
+| `recordConnection()` | Increment total and active connections |
+| `recordDisconnection()` | Decrement active connections |
+| `recordMessageReceived()` | Increment received messages |
+| `recordMessageSent()` | Increment sent messages |
+| `recordBytesReceived(long)` | Add supplied received-byte count |
+| `recordBytesSent(long)` | Add supplied sent-byte count |
+| `recordError()` | Increment errors |
 
-// Get metrics data
-int totalQueueSize = metrics.getTotalQueueSize();
-int[] perShardSizes = metrics.getPerShardQueueSizes();
-int maxShardSize = metrics.getMaxShardQueueSize();
+The current default network handlers and senders do not call these methods.
+Applications must add instrumentation at appropriate boundaries; otherwise the
+connection, traffic and error counters remain zero. A disconnection decrements
+without clamping at zero, so pair it with exactly one recorded connection.
+Decide whether bytes describe transport frames or application payloads and keep
+that definition consistent. Count successful sends at write completion when that
+is the intended meaning of the sent counters.
 
-// Stop monitoring
-metrics.stop();
-```
+`reset()` zeros all counters, including active connections, without changing the
+collector's start time. Use it only when instrumentation is coordinated; resetting
+while live connections later disconnect can produce negative active counts.
 
-**HTTP Access Example:**
-```bash
-# Get event dispatcher queue metrics
-curl http://localhost:8081/metrics/event-dispatcher
+### Direct Runtime Readings
 
-# Response example
-{
-  "total_queue_size": 1234,
-  "per_shard_queue_sizes": [150, 148, 162, 155, 149, 153, 158, 159],
-  "shard_count": 8,
-  "max_shard_queue_size": 162,
-  "min_shard_queue_size": 148,
-  "average_shard_queue_size": 154,
-  "last_update_timestamp": 1698765432100,
-  "is_started": true,
-  "timestamp": 1698765432500
-}
-```
+| Getter | Source and Meaning |
+| --- | --- |
+| `getCurrentChannelCount()` | Size of the static `ALL_CHANNELS` group |
+| `getUptimeMillis()` / `getUptimeSeconds()` | Time since singleton construction, not listener bind time |
+| `getUsedMemoryMB()` / `getMaxMemoryMB()` | Heap usage and maximum from `MemoryMXBean`, truncated to MiB |
+| `getThreadCount()` | `ThreadMXBean` live platform-thread count; excludes virtual threads |
+| `getCpuLoad()` | `com.sun.management.OperatingSystemMXBean.getCpuLoad()`, system CPU fraction |
 
-## Integration Methods
+The channel group contains listener channels and TCP channels explicitly added by
+`LoginHandler.channelActive()`. It does not track all HTTP or WebSocket client
+channels and is not interchangeable with the instrumented active-connection
+counter. CPU can be negative when unavailable; the implementation requires the
+JVM's management bean to implement the `com.sun.management` interface.
 
-### Method 1: Use ServerMetrics in Handler
+### Add Inbound Instrumentation
+
+This complete handler demonstrates an application-owned instrumentation point;
+it is not installed by the default initializer:
 
 ```java
-public class MyHandler {
+package com.example;
+
+import com.akakata.metrics.ServerMetrics;
+import io.netty.buffer.ByteBuf;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
+
+public final class InboundMetricsHandler extends ChannelInboundHandlerAdapter {
     private final ServerMetrics metrics = ServerMetrics.getInstance();
 
-    public void channelActive(ChannelHandlerContext ctx) {
+    @Override
+    public void channelActive(ChannelHandlerContext ctx) throws Exception {
         metrics.recordConnection();
+        super.channelActive(ctx);
     }
 
-    public void channelRead(ChannelHandlerContext ctx, Object msg) {
+    @Override
+    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+        metrics.recordDisconnection();
+        super.channelInactive(ctx);
+    }
+
+    @Override
+    public void channelRead(ChannelHandlerContext ctx, Object message) throws Exception {
         metrics.recordMessageReceived();
-        if (msg instanceof ByteBuf buf) {
-            metrics.recordBytesReceived(buf.readableBytes());
+        if (message instanceof ByteBuf buffer) {
+            metrics.recordBytesReceived(buffer.readableBytes());
         }
+        super.channelRead(ctx, message);
+    }
+
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+        metrics.recordError();
+        super.exceptionCaught(ctx, cause);
     }
 }
 ```
 
-### Method 2: Configure EventDispatcherMetrics at Startup
+Placement determines whether a received object represents a socket read, a frame
+or an application event. Place byte accounting where bytes are visible, and
+message accounting after the appropriate decoder. This handler forwards messages
+and leaves their ownership unchanged. Account for pipeline replacement after TCP
+login if installing custom handlers there.
 
-```java
-public class MyServer {
-    public void start() {
-        // Start event dispatcher monitoring (optional)
-        EventDispatcherMetrics edMetrics = EventDispatcherMetrics.getInstance();
-        long interval = configManager.getLong("metrics.event.dispatcher.interval", 0);
-        if (interval > 0) {
-            edMetrics.start(interval);
-        }
-    }
+## EventDispatcherMetrics
 
-    public void shutdown() {
-        EventDispatcherMetrics.getInstance().stop();
-    }
-}
-```
+The collector owns a one-thread `ScheduledThreadPoolExecutor` whose thread is a
+**daemon platform thread** named `event-dispatcher-metrics`.
 
-## HTTP API Integration
+`ServerContext.initialize()` reads `metrics.event.interval.seconds` with fallback
+30 and calls `start(intervalSeconds)`. A positive interval schedules a fixed-rate
+task with zero initial delay. A nonpositive interval leaves sampling disabled.
+The sampler reads:
 
-`MetricsHandler` automatically uses `ServerMetrics` and `EventDispatcherMetrics`:
+- Aggregate shared queue size from `EventDispatchers.sharedQueueSize()`.
+- Individual depths from `EventDispatchers.sharedShardQueueSizes()`.
+- The successful sampling timestamp in epoch milliseconds.
 
-```java
-// Inside MetricsHandler
-private final ServerMetrics metrics = ServerMetrics.getInstance();
+The shared shard count is `max(2, highestOneBit(availableProcessors))`. Sampling
+excludes game-owned or other dedicated dispatchers. Queue values count waiting
+deliveries, not callback tasks or execution time.
 
-private void handleAllMetrics(ChannelHandlerContext ctx) {
-    // Use ServerMetrics to get data and return JSON
-}
+| Getter | Behavior |
+| --- | --- |
+| `getTotalQueueSize()` | Cached aggregate; zero before a successful sample |
+| `getPerShardQueueSizes()` | Defensive copy of cached array; empty before sampling |
+| `getShardCount()` | Live shared dispatcher shard count |
+| `getMaxShardQueueSize()` | Maximum cached depth; zero for an empty array |
+| `getMinShardQueueSize()` | Minimum cached depth; zero for an empty array |
+| `getAverageShardQueueSize()` | Integer mean, truncated; zero for an empty array |
+| `getLastUpdateTimestamp()` | Successful sample time; zero before sampling |
+| `isStarted()` | Whether start was requested with a positive interval; remains true after stop |
 
-private void handleEventDispatcherMetrics(ChannelHandlerContext ctx) {
-    EventDispatcherMetrics edMetrics = EventDispatcherMetrics.getInstance();
-    // Get event dispatcher queue data and return JSON
-}
-```
+Total depth and the array are sampled and published separately. HTTP serialization
+also calls getters independently, so the fields can briefly reflect different
+observations. Check freshness and trends instead of assuming a single atomic queue
+snapshot. A stale sample can miss a short queue spike.
 
-**Available HTTP Endpoints:**
-- `GET /metrics` - All metrics
-- `GET /metrics/connections` - Connection metrics
-- `GET /metrics/traffic` - Traffic metrics
-- `GET /metrics/system` - System metrics
-- `GET /metrics/event-dispatcher` - Event dispatcher queue metrics
-- `GET /metrics/prometheus` - Prometheus format
-
-## Extending New Metrics Collectors
-
-### Step 1: Create New Metrics Collector
-
-```java
-public class DatabaseMetrics {
-    private final AtomicLong queryCount = new AtomicLong(0);
-    private final AtomicLong slowQueryCount = new AtomicLong(0);
-
-    public void recordQuery() {
-        queryCount.incrementAndGet();
-    }
-
-    public void recordSlowQuery() {
-        slowQueryCount.incrementAndGet();
-    }
-
-    public long getQueryCount() {
-        return queryCount.get();
-    }
-
-    public long getSlowQueryCount() {
-        return slowQueryCount.get();
-    }
-}
-```
-
-### Step 2: Expose Endpoint in MetricsHandler
-
-```java
-public class MetricsHandler extends AbstractHttpHandler {
-    public void handleMetrics(ChannelHandlerContext ctx, FullHttpRequest request) {
-        String uri = request.uri();
-
-        if (uri.startsWith("/metrics/database")) {
-            handleDatabaseMetrics(ctx);
-            return;
-        }
-        // ... other endpoints ...
-    }
-
-    private void handleDatabaseMetrics(ChannelHandlerContext ctx) {
-        DatabaseMetrics db = DatabaseMetrics.getInstance();
-        Map<String, Object> response = new LinkedHashMap<>();
-        response.put("query_count", db.getQueryCount());
-        response.put("slow_query_count", db.getSlowQueryCount());
-        response.put("timestamp", System.currentTimeMillis());
-
-        String json = MAPPER.writeValueAsString(response);
-        sendHttpResponse(ctx, Unpooled.copiedBuffer(json, CharsetUtil.UTF_8),
-                        "application/json; charset=UTF-8");
-    }
-}
-```
-
-## UML Class Diagram
-
-```
-┌─────────────────────┐     ┌──────────────────────┐
-│   ServerMetrics     │     │EventDispatcherMetrics│
-│    (Singleton)      │     │     (Singleton)      │
-├─────────────────────┤     ├──────────────────────┤
-│ - connections       │     │ - scheduler          │
-│ - traffic           │     │ - totalQueueSize     │
-│ - system            │     │ - perShardQueueSizes │
-│ - errors            │     │ - started            │
-├─────────────────────┤     ├──────────────────────┤
-│ + getInstance()     │     │ + getInstance()      │
-│ + record*()         │     │ + start(interval)    │
-│ + get*()            │     │ + stop()             │
-│                     │     │ + getTotalQueueSize()│
-│                     │     │ + getPerShardSizes() │
-└─────────────────────┘     └──────────────────────┘
-           ▲                           ▲
-           │                           │
-           │                           │
-           └───────────┬───────────────┘
-                       │
-                       │ uses
-                       ▼
-           ┌───────────────────────┐
-           │   MetricsHandler      │
-           ├───────────────────────┤
-           │ - metrics             │
-           ├───────────────────────┤
-           │ + handleMetrics()     │
-           │ + handleAllMetrics()  │
-           │ + handleEventDisp...()│
-           └───────────────────────┘
-```
-
-## Configuration Example
+### Configuration and Lifecycle
 
 ```properties
-# conf.properties
-
-# Event dispatcher metrics monitoring interval (seconds)
-# Set to 0 or negative to disable
-metrics.event.dispatcher.interval=5
-
-# HTTP metrics endpoint port
+server.http.enabled=true
 http.port=8081
+metrics.event.interval.seconds=5
 ```
 
-## Test Usage
+Configure the interval before context initialization. Starting again does not
+replace the initial positive interval. `stop()` calls `shutdownNow()` on the
+scheduler; it does not reset the started flag or cached values. The singleton
+scheduler cannot be restarted after shutdown.
 
-```java
-public class MetricsTest {
-    @Test
-    public void testServerMetrics() {
-        ServerMetrics metrics = ServerMetrics.getInstance();
+`ServerContext.close()` stops sampling after game and session-service cleanup and
+before shared-dispatcher shutdown. Applications using a standalone collector are
+responsible for calling `stop()` at the end of their process lifecycle. Merely
+reading `getShardCount()` can initialize the process-wide shared dispatcher if it
+has not already been initialized.
 
-        // Record some metrics
-        metrics.recordConnection();
-        metrics.recordMessageReceived();
-        metrics.recordBytesReceived(1024);
+## HTTP Serialization
 
-        // Verify
-        assertEquals(1, metrics.getTotalConnections());
-        assertEquals(1, metrics.getTotalMessagesReceived());
-        assertEquals(1024, metrics.getTotalBytesReceived());
+`MetricsHandler` uses Jackson 3.2.3's `tools.jackson.databind.ObjectMapper`.
+Its `/metrics` response includes server, connection, traffic, system and error
+groups. Queue metrics are exposed only through `/metrics/event-dispatcher` and
+currently have no Prometheus entries.
 
-        // Cleanup
-        metrics.reset();
-    }
+Heap and traffic fields with the `_mb` suffix use integer division by 1,024 squared.
+CPU output is rounded to two decimal places. Prometheus heap-byte values are
+reconstructed from these truncated heap MiB getters, so they have MiB precision.
+See the [endpoint reference](MONITORING.md) for exact field names and metric types.
 
-    @Test
-    public void testEventDispatcherMetrics() {
-        EventDispatcherMetrics metrics = EventDispatcherMetrics.getInstance();
+## Extending Monitoring
 
-        // Start monitoring
-        metrics.start(1);
+There is no dynamic collector registry or per-application metric namespace in the
+current implementation. To expose an application metric, maintain its counter in
+application code, add a route and serialization path, and wire the handler through
+the server module or an application-owned initializer. Preserve the existing
+endpoints when replacing a handler.
 
-        // Wait for collection
-        Thread.sleep(1500);
+When using `AbstractHttpHandler.sendHttpResponse()` for a custom endpoint, release
+a temporary source `ByteBuf` after the helper returns: it copies readable bytes
+into the response and does not release the supplied source reference. If forwarding
+a native message through Netty instead, follow that write path's ownership rules.
 
-        // Verify data has been collected
-        assertTrue(metrics.getLastUpdateTimestamp() > 0);
-        assertTrue(metrics.getShardCount() > 0);
+For collector tests, isolate process-wide shutdown in a separate JVM. Do not stop
+the singleton sampler and then expect a later test or context to restart it.
+Likewise, resetting global counters in concurrently running tests requires
+coordination.
 
-        // Stop monitoring
-        metrics.stop();
-    }
-}
-```
+## Source References
 
-## Best Practices
-
-### 1. Use Singleton Pattern Directly
-```java
-// Recommended - Use singleton directly
-ServerMetrics.getInstance().recordConnection();
-EventDispatcherMetrics.getInstance().start(5);
-```
-
-### 2. Configure Monitoring at Application Startup
-```java
-public void startServer() {
-    // Start event dispatcher monitoring based on configuration
-    long interval = config.getLong("metrics.event.dispatcher.interval", 0);
-    if (interval > 0) {
-        EventDispatcherMetrics.getInstance().start(interval);
-    }
-}
-```
-
-### 3. Clean Up Resources at Application Shutdown
-```java
-public void stopServer() {
-    EventDispatcherMetrics.getInstance().stop();
-}
-```
-
-### 4. Access Metrics via HTTP API
-```bash
-# Server metrics
-curl http://localhost:8081/metrics
-
-# Event dispatcher queue metrics
-curl http://localhost:8081/metrics/event-dispatcher
-
-# Prometheus format
-curl http://localhost:8081/metrics/prometheus
-```
-
-## Future Extension Directions
-
-- [ ] JMX integration (expose metrics through MBeans)
-- [ ] Metrics persistence (store to time-series database)
-- [ ] Alerting system (threshold monitoring)
-- [ ] More dimensional metrics (by protocol, by port, etc.)
-- [ ] Custom metrics registration mechanism
-
-## Related Documentation
-
-- [MONITORING.md](MONITORING.md) - HTTP monitoring endpoints documentation
-- [ServerMetrics.java](../src/main/java/com/akakata/metrics/ServerMetrics.java) - Server metrics source code
-- [EventDispatcherMetrics.java](../src/main/java/com/akakata/metrics/EventDispatcherMetrics.java) - Event dispatcher metrics source code
-- [MetricsHandler.java](../src/main/java/com/akakata/server/http/MetricsHandler.java) - HTTP metrics handler source code
+- [ServerMetrics](../src/main/java/com/akakata/metrics/ServerMetrics.java)
+- [EventDispatcherMetrics](../src/main/java/com/akakata/metrics/EventDispatcherMetrics.java)
+- [MetricsHandler](../src/main/java/com/akakata/server/http/MetricsHandler.java)
+- [HealthCheckHandler](../src/main/java/com/akakata/server/http/HealthCheckHandler.java)
+- [ServerContext](../src/main/java/com/akakata/context/ServerContext.java)
+- [Event loops and lifecycle](EVENT_LOOP.md)

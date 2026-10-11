@@ -7,45 +7,47 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Abstract base class for launching Zea-tcp game server.
- * Provides lifecycle hooks for custom initialization and cleanup.
+ * Provides the command-line server lifecycle and extension hooks.
  *
- * <p>Subclasses should override the hook methods to add custom behavior:
- * <ul>
- *   <li>{@link #beforeServerStartup()} - Initialize resources before servers start</li>
- *   <li>{@link #afterServerStartup()} - Post-startup tasks (e.g., background jobs)</li>
- *   <li>{@link #beforeServerShutdown()} - Pre-shutdown cleanup (e.g., save state)</li>
- *   <li>{@link #afterServerShutdown()} - Final cleanup (e.g., close connections)</li>
- * </ul>
- *
- * <p>Example usage:
- * <pre>{@code
- * public class GameServer extends CommandLine {
- *     public static void main(String[] args) {
- *         new GameServer().run(args);
- *     }
- *
- *     @Override
- *     protected void beforeServerStartup() {
- *         // Load game data
- *     }
- * }
- * }</pre>
+ * <p>{@link #run(String[])} starts the configured servers, registers a JVM shutdown
+ * hook and waits for termination. Subclasses can customize startup and shutdown
+ * through the protected hook methods.
  *
  * @author Kelvin
  */
 public abstract class CommandLine {
 
+    /**
+     * Creates a command line instance.
+     */
+    public CommandLine() {
+    }
+
+    /**
+     * Logger for component lifecycle and diagnostic messages.
+     */
     private static final Logger LOG = LoggerFactory.getLogger(CommandLine.class);
 
+    /**
+     * Application context owning configuration and server resources.
+     */
     protected ServerContext context;
+    /**
+     * Manager coordinating startup and shutdown of the configured servers.
+     */
     protected ServerManager serverManager;
+    /**
+     * Flag recording completion of server startup.
+     */
     private volatile boolean running = false;
 
     /**
-     * Run the server with the given command line arguments.
+     * Starts the server lifecycle, registers a shutdown hook and waits for termination.
      *
-     * @param args command line arguments
+     * <p>Startup failures are logged, trigger cleanup and exit the process with status 1.
+     * The current implementation does not parse command-line arguments.
+     *
+     * @param args the command-line arguments, currently unused
      */
     public final void run(String[] args) {
         // Print banner
@@ -73,16 +75,16 @@ public abstract class CommandLine {
     }
 
     /**
-     * Print the startup banner.
-     * Override this method to customize the banner.
+     * Logs the configured banner and runtime identification.
      */
     protected void printBanner() {
         Banner.printBanner(LOG);
     }
 
     /**
-     * Startup sequence: initialize context and start all servers.
-     * This method is final to ensure consistent startup flow.
+     * Creates and initializes the context, runs startup hooks and starts enabled servers.
+     *
+     * @throws Exception if context creation, server startup or a startup hook fails
      */
     private void start() throws Exception {
         // 1. Initialize context
@@ -105,8 +107,7 @@ public abstract class CommandLine {
     }
 
     /**
-     * Shutdown sequence: stop servers and clean up resources.
-     * This method is final to ensure consistent shutdown flow.
+     * Runs shutdown hooks, stops servers and closes the context when marked running.
      */
     private void shutdown() {
         if (!running) {
@@ -141,18 +142,17 @@ public abstract class CommandLine {
     }
 
     /**
-     * Create the ServerContext instance.
-     * Override this method to provide a custom configuration path.
+     * Creates the server context. Subclasses may select a different configuration resource.
      *
-     * @return ServerContext instance
-     * @throws Exception if context creation fails
+     * @return the new context
+     * @throws Exception if configuration or context creation fails
      */
     protected ServerContext createServerContext() throws Exception {
         return new ServerContext();
     }
 
     /**
-     * Register shutdown hook for graceful termination.
+     * Registers a named JVM hook that invokes the shutdown sequence.
      */
     private void registerShutdownHook() {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -162,8 +162,9 @@ public abstract class CommandLine {
     }
 
     /**
-     * Keep main thread alive until interrupted.
-     * Override this method to implement custom termination logic.
+     * Waits indefinitely by joining the current thread.
+     *
+     * @throws InterruptedException if the waiting thread is interrupted
      */
     protected void awaitTermination() throws InterruptedException {
         Thread.currentThread().join();
@@ -174,59 +175,61 @@ public abstract class CommandLine {
     // ============================================================
 
     /**
-     * Hook called before servers start.
-     * Override to add custom initialization logic (e.g., load game data, connect to database).
+     * Provides a hook after context initialization and before server startup. The default
+     * implementation does nothing.
+     *
+     * @throws Exception if subclass initialization fails
      */
     protected void beforeServerStartup() throws Exception {
         // Default: do nothing
     }
 
     /**
-     * Hook called after servers start.
-     * Override to add custom post-startup logic (e.g., start background tasks).
+     * Provides a hook after enabled servers start. The default implementation does nothing.
+     *
+     * @throws Exception if subclass post-startup work fails
      */
     protected void afterServerStartup() throws Exception {
         // Default: do nothing
     }
 
     /**
-     * Hook called before servers stop.
-     * Override to add custom cleanup logic (e.g., save game state).
+     * Provides a hook before servers stop. The default implementation does nothing.
      */
     protected void beforeServerShutdown() {
         // Default: do nothing
     }
 
     /**
-     * Hook called after servers stop.
-     * Override to add custom cleanup logic (e.g., close database connections).
+     * Provides a hook after servers stop and before context closure. The default implementation
+     * does nothing.
      */
     protected void afterServerShutdown() {
         // Default: do nothing
     }
 
     /**
-     * Check if the server is currently running.
+     * Tests whether startup has marked this application as running.
      *
-     * @return true if running, false otherwise
+     * @return {@code true} if the application is marked running
      */
     public final boolean isRunning() {
         return running;
     }
 
     /**
-     * Get the server context.
+     * Returns the context created during startup.
      *
-     * @return ServerContext instance, or null if not initialized
+     * @return the context, or {@code null} before it is created
      */
     public final ServerContext getContext() {
         return context;
     }
 
     /**
-     * Get the server manager.
+     * Returns the server manager resolved during startup.
      *
-     * @return ServerManager instance, or null if not initialized
+     * @return the manager, or {@code null} before it is resolved
      */
     public final ServerManager getServerManager() {
         return serverManager;

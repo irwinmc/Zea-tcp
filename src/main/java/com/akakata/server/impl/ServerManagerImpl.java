@@ -13,21 +13,46 @@ import java.util.HashSet;
 import java.util.Set;
 
 /**
- * Implementation of ServerManager that manages multiple server instances.
- * Supports selective server startup based on configuration.
+ * Controls enabled server instances using classpath configuration switches and ports.
  *
  * @author Kelvin
  */
 public class ServerManagerImpl implements ServerManager {
 
+    /**
+     * Logger for component lifecycle and diagnostic messages.
+     */
     private static final Logger LOG = LoggerFactory.getLogger(ServerManagerImpl.class);
 
+    /**
+     * Configured TCP server instance.
+     */
     private final Server tcpServer;
+    /**
+     * Configured HTTP server instance.
+     */
     private final Server httpServer;
+    /**
+     * Configured WebSocket server instance.
+     */
     private final Server webSocketServer;
+    /**
+     * Configuration manager supplying server ports, switches and sampling intervals.
+     */
     private final ConfigurationManager configManager;
+    /**
+     * Server instances successfully started by this manager.
+     */
     private final Set<Server> servers = new HashSet<>();
 
+    /**
+     * Creates a server manager impl instance with the supplied dependencies.
+     *
+     * @param tcpServer the TCP server instance
+     * @param httpServer the HTTP server instance
+     * @param webSocketServer the WebSocket server instance
+     * @param configManager the loaded configuration manager
+     */
     @Inject
     public ServerManagerImpl(@Named(AppContext.TCP_SERVER) Server tcpServer,
                              @Named(AppContext.HTTP_SERVER) Server httpServer,
@@ -39,6 +64,18 @@ public class ServerManagerImpl implements ServerManager {
         this.configManager = configManager;
     }
 
+    /**
+     * Starts configured enabled servers, or positive-port servers when explicit ports are supplied.
+     *
+     * <p>The explicit-port overload ignores enable switches and the legacy Flash port.
+     * Repeated calls are skipped while the started-server set is nonempty.
+     *
+     * @param flashPort the legacy Flash port, unused by the default manager
+     * @param tcpPort the TCP override port; nonpositive values skip the server
+     * @param httpPort the HTTP override port; nonpositive values skip the server
+     * @param webSocketPort the WebSocket override port; nonpositive values skip the server
+     * @throws Exception if a selected server cannot start
+     */
     @Override
     public void startServers(int flashPort, int tcpPort, int httpPort, int webSocketPort) throws Exception {
         if (!servers.isEmpty()) {
@@ -62,6 +99,14 @@ public class ServerManagerImpl implements ServerManager {
         }
     }
 
+    /**
+     * Starts configured enabled servers, or positive-port servers when explicit ports are supplied.
+     *
+     * <p>The explicit-port overload ignores enable switches and the legacy Flash port.
+     * Repeated calls are skipped while the started-server set is nonempty.
+     *
+     * @throws Exception if a selected server cannot start
+     */
     @Override
     public void startServers() throws Exception {
         if (!servers.isEmpty()) {
@@ -109,15 +154,18 @@ public class ServerManagerImpl implements ServerManager {
     }
 
     /**
-     * Check if a server is enabled in configuration.
+     * Reads a server-enable switch, treating absent switches as enabled.
      *
      * @param configKey the configuration key
-     * @return true if enabled (default), false otherwise
+     * @return {@code true} if the configured server is enabled
      */
     private boolean isServerEnabled(String configKey) {
         return configManager.getBoolean(configKey, true);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void stopServers() throws Exception {
         for (Server nettyServer : servers) {

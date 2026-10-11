@@ -1,38 +1,37 @@
 package com.akakata.app;
 
 /**
- * Player data entity - represents player information.
- * This is a pure data object without session references to avoid circular dependencies.
+ * Stores player identity and display information independently of a session.
  *
  * @author Kelvin
  */
 public interface Player {
 
     /**
-     * 获取玩家ID
+     * Returns the identifier.
      *
-     * @return 玩家ID
+     * @return the identifier
      */
     String getId();
 
     /**
-     * 设置玩家ID
+     * Sets the identifier.
      *
-     * @param id 玩家ID
+     * @param id the identifier
      */
     void setId(String id);
 
     /**
-     * 获取玩家昵称
+     * Returns the player display name.
      *
-     * @return 玩家昵称
+     * @return the player display name
      */
     String getNickname();
 
     /**
-     * 设置玩家昵称
+     * Sets the player display name.
      *
-     * @param nickname 玩家昵称
+     * @param nickname the player display name
      */
     void setNickname(String nickname);
 }

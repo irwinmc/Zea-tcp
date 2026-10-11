@@ -12,61 +12,56 @@ import javax.inject.Inject;
 import java.util.Objects;
 
 /**
- * 登录服务
- * <p>
- * 从 {@link com.akakata.handlers.LoginHandler} 中分离出来的业务逻辑层。
- * <p>
- * <b>职责边界：</b>
- * <pre>
- * LoginHandler (网络层)
- *   ↓ 接收 ByteBuf
- * LoginService (业务层)
- *   ↓ 验证凭证、踢出旧会话、创建新会话、生成 token
- * LoginHandler (网络层)
- *   ↓ 发送 LOG_IN_SUCCESS / LOG_IN_FAILURE
- * </pre>
- * <p>
- * <b>使用示例：</b>
- * <pre>{@code
- * // 在 LoginHandler 中
- * try (var holder = new ByteBufHolder(event.getSource())) {
- *     LoginResult result = loginService.login(holder.buffer(), game);
- *     handleLoginSuccess(channel, result.session(), result.token());
- * } catch (LoginException e) {
- *     handleLoginFailure(channel, e.getReason());
- * }
- * }</pre>
+ * Coordinates credential verification, player-session creation, token generation and session
+ * replacement.
+ *
+ * <p>A token is generated before publishing a replacement. Failures release the
+ * new session, and token failures leave an existing cached session in place.
  *
  * @author Kelvin
  * @since 0.7.8
  */
 public class LoginService {
 
+    /**
+     * Logger for component lifecycle and diagnostic messages.
+     */
     private static final Logger LOG = LoggerFactory.getLogger(LoginService.class);
 
     /**
-     * 登录结果
-     * <p>
-     * 封装登录成功后的会话和 token。
+     * Returns an authenticated player session and its encrypted token.
      *
-     * @param session 玩家会话
-     * @param token   加密后的 token
+     * @param session the authenticated or targeted session
+     * @param token the encrypted credential token
      */
     public record LoginResult(PlayerSession session, String token) {
+        /**
+         * Validates that the authenticated session and token are both nonnull.
+         *
+         * @param session the session associated with the operation
+         * @param token the encrypted login token
+         * @throws NullPointerException if the session or token is null
+         */
         public LoginResult {
             Objects.requireNonNull(session, "session cannot be null");
             Objects.requireNonNull(token, "token cannot be null");
         }
     }
 
+    /**
+     * Credential-keyed session registry and session resource owner.
+     */
     private final SessionService sessionService;
+    /**
+     * Service for encrypting and verifying credential tokens.
+     */
     private final SecurityService securityService;
 
     /**
-     * 构造函数（依赖注入）
+     * Creates the authentication coordinator using the session and token services.
      *
-     * @param sessionService  会话管理服务
-     * @param securityService 安全服务（Token 生成）
+     * @param sessionService the session registry and resource owner
+     * @param securityService the token generation and verification service
      */
     @Inject
     public LoginService(SessionService sessionService, SecurityService securityService) {
@@ -76,34 +71,17 @@ public class LoginService {
     }
 
     /**
-     * 完整的登录流程（改进版）
-     * <p>
-     * 工作流程：
-     * <ol>
-     *   <li>验证凭证 ({@link #verify(ByteBuf)})</li>
-     *   <li>创建新会话 ({@link #createSession(Credentials, Game)})</li>
-     *   <li>替换旧会话 </li>
-     *   <li>生成 token ({@link SecurityService#generateToken(Credentials)})</li>
-     * </ol>
-     * <p>
-     * <b>使用示例：</b>
-     * <pre>{@code
-     * try {
-     *     LoginResult result = loginService.login(buffer, game);
-     *     sendLoginSuccess(channel, result.session(), result.token());
-     * } catch (LoginException e) {
-     *     switch (e.getReason()) {
-     *         case INVALID_CREDENTIALS -> sendLoginFailure(channel, "Invalid credentials");
-     *         case SYSTEM_ERROR -> sendLoginFailure(channel, "Internal server error");
-     *     }
-     * }
-     * }</pre>
+     * Authenticates a login, creates a session and publishes it after token generation.
      *
-     * @param buffer 客户端发送的认证数据
-     * @param game   游戏实例
-     * @return 登录成功返回 {@link LoginResult}
+     * <p>Replacing an existing session closes it synchronously. Failures release the
+     * new session and return null. The input buffer remains owned by the caller.
+     *
+     * @param buffer the source native buffer
+     * @param game the associated game
+     * @return the authenticated session and token, or {@code null} if login fails
      */
     public LoginResult login(ByteBuf buffer, Game game) {
+        PlayerSession newSession = null;
         try {
             // 1. 验证凭证
             Credentials credentials = verify(buffer);
@@ -113,11 +91,17 @@ public class LoginService {
             }
 
             // 2. 创建新会话
-            PlayerSession newSession = createSession(credentials, game);
+            newSession = createSession(credentials, game);
             if (newSession == null || newSession.getId() == null) {
                 LOG.error("Login failed: session creation returned null or missing ID, credentials={}", credentials);
+                if (newSession != null) {
+                    newSession.close();
+                }
                 return null;
             }
+
+            // Generate and validate the response before kicking an existing connection.
+            String token = Objects.requireNonNull(securityService.generateToken(credentials), "token cannot be null");
 
             // 3. 替换旧会话
             PlayerSession oldSession = sessionService.replaceSession(credentials, newSession);
@@ -128,24 +112,26 @@ public class LoginService {
                         newSession.getId());
             }
 
-            // 4. 生成 token（委托给 SecurityService）
-            String token = securityService.generateToken(credentials);
-
             LOG.info("Login successful: sessionId={}, credentials={}", newSession.getId(), credentials);
             return new LoginResult(newSession, token);
         } catch (Exception e) {
+            if (newSession != null) {
+                try {
+                    newSession.close();
+                } catch (Exception closeFailure) {
+                    e.addSuppressed(closeFailure);
+                }
+            }
             LOG.error("Login failed due to exception", e);
             return null;
         }
     }
 
     /**
-     * 验证凭证
-     * <p>
-     * 从客户端发送的 ByteBuf 中解析并验证凭证。
+     * Delegates credential verification and logs failures without taking buffer ownership.
      *
-     * @param buffer 客户端发送的认证数据
-     * @return 验证通过返回 Credentials，失败返回 null
+     * @param buffer the source native buffer
+     * @return verified credentials, or {@code null} if verification fails
      */
     public Credentials verify(ByteBuf buffer) {
         try {
@@ -161,46 +147,48 @@ public class LoginService {
     }
 
     /**
-     * 创建新会话
-     * <p>
-     * 创建新的玩家会话并设置凭证属性。
-     * <p>
-     * <b>注意：</b>此方法只创建会话，不处理旧会话的替换。
-     * 替换逻辑由 {@link SessionService#replaceSession} 处理。
+     * Creates a game session and stores its credentials attribute. Closes a partially created
+     * session on failure.
      *
-     * @param credentials 凭证
-     * @param game        游戏实例
-     * @return 新创建的会话
+     * @param credentials the verified credential identity
+     * @param game the associated game
+     * @return the new session, or {@code null} if creation fails
      */
     private PlayerSession createSession(Credentials credentials, Game game) {
+        PlayerSession newSession = null;
         try {
             // 创建新会话
-            PlayerSession newSession = game.createPlayerSession();
+            newSession = game.createPlayerSession();
             newSession.setAttribute("credentials", credentials);
 
             LOG.info("Session created: credentials={}, sessionId={}", credentials, newSession.getId());
             return newSession;
         } catch (Exception e) {
+            if (newSession != null) {
+                try {
+                    newSession.close();
+                } catch (Exception closeFailure) {
+                    e.addSuppressed(closeFailure);
+                }
+            }
             LOG.error("Failed to create session for credentials: {}", credentials, e);
             return null;
         }
     }
 
     /**
-     * 获取会话管理器的统计信息
-     * <p>
-     * 用于监控和调试。
+     * Returns the session cache's cumulative statistics.
      *
-     * @return 缓存统计
+     * @return the cache statistics snapshot
      */
     public CacheStats getSessionStats() {
         return sessionService.getStats();
     }
 
     /**
-     * 获取当前会话数量
+     * Returns the cache's estimated session count.
      *
-     * @return 会话总数
+     * @return the estimated cached session count
      */
     public long getSessionCount() {
         return sessionService.size();

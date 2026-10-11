@@ -10,11 +10,22 @@ import io.netty.handler.codec.MessageToMessageEncoder;
 import java.util.List;
 
 /**
+ * Encodes an event opcode followed by an optional binary payload.
+ *
  * @author Kelvin
  */
 @Sharable
 public class EventEncoder extends MessageToMessageEncoder<Event> {
 
+    /**
+     * Creates an event encoder instance.
+     */
+    public EventEncoder() {
+    }
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void encode(ChannelHandlerContext ctx, Event event, List<Object> out) throws Exception {
         ByteBuf opcode = ctx.alloc().buffer(1);

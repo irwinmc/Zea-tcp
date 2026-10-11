@@ -55,9 +55,10 @@
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-        <io.netty.version>4.2.5.Final</io.netty.version>
-        <org.agrona.version>2.3.0</org.agrona.version>
-        <dagger.version>2.51.1</dagger.version>
+        <io.netty.version>4.2.19.Final</io.netty.version>
+        <org.agrona.version>2.6.1</org.agrona.version>
+        <dagger.version>2.60.1</dagger.version>
+        <exec.mainClass>com.akakata.benchmark.SimpleLoadTest</exec.mainClass>
     </properties>
 
     <dependencies>
@@ -75,14 +76,16 @@
 
         <!-- Jackson -->
         <dependency>
-            <groupId>com.fasterxml.jackson.core</groupId>
+            <groupId>tools.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <version>2.18.3</version>
+            <version>3.2.3</version>
+            <scope>compile</scope>
         </dependency>
         <dependency>
-            <groupId>com.fasterxml.jackson.dataformat</groupId>
+            <groupId>tools.jackson.dataformat</groupId>
             <artifactId>jackson-dataformat-yaml</artifactId>
-            <version>2.18.3</version>
+            <version>3.2.3</version>
+            <scope>compile</scope>
         </dependency>
 
         <!-- Logging -->
@@ -94,7 +97,7 @@
         <dependency>
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-classic</artifactId>
-            <version>1.5.19</version>
+            <version>1.6.3</version>
         </dependency>
 
         <dependency>
@@ -108,18 +111,25 @@
             <version>1</version>
         </dependency>
 
-        <!-- Caffeine Cache - 高性能缓存，替代 ConcurrentHashMap -->
+        <!-- Caffeine Cache - High-performance cache, replacing ConcurrentHashMap -->
         <dependency>
             <groupId>com.github.ben-manes.caffeine</groupId>
             <artifactId>caffeine</artifactId>
-            <version>3.1.8</version>
+            <version>3.3.0</version>
         </dependency>
 
-        <!-- Logstash Logback Encoder - 结构化日志 -->
+        <!-- Logstash Logback Encoder - Structured logging -->
         <dependency>
             <groupId>net.logstash.logback</groupId>
             <artifactId>logstash-logback-encoder</artifactId>
-            <version>7.4</version>
+            <version>9.0</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.12.2</version>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 
@@ -149,11 +159,32 @@
                 </configuration>
             </plugin>
             <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+                <version>3.12.0</version>
+                <configuration>
+                    <encoding>${project.build.sourceEncoding}</encoding>
+                    <docencoding>UTF-8</docencoding>
+                    <charset>UTF-8</charset>
+                    <locale>en</locale>
+                    <doclint>all</doclint>
+                    <show>private</show>
+                    <failOnError>true</failOnError>
+                    <failOnWarnings>true</failOnWarnings>
+                    <sourceFileExcludes>
+                        <sourceFileExclude>**/Dagger*.java</sourceFileExclude>
+                        <sourceFileExclude>**/*_Factory.java</sourceFileExclude>
+                        <sourceFileExclude>**/*_Provide*Factory.java</sourceFileExclude>
+                        <sourceFileExclude>**/*_MembersInjector.java</sourceFileExclude>
+                    </sourceFileExcludes>
+                </configuration>
+            </plugin>
+            <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>exec-maven-plugin</artifactId>
                 <version>3.6.1</version>
                 <configuration>
-                    <mainClass>com.akakata.benchmark.SimpleLoadTest</mainClass>
+                    <mainClass>${exec.mainClass}</mainClass>
                     <classpathScope>test</classpathScope>
                     <executableDependency>
                         <groupId>com.akakata</groupId>
@@ -208,11 +239,6 @@
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-javadoc-plugin</artifactId>
-                        <version>3.12.0</version>
-                        <configuration>
-                            <doclint>none</doclint>
-                            <failOnError>false</failOnError>
-                        </configuration>
                         <executions>
                             <execution>
                                 <id>attach-javadocs</id>

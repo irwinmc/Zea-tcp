@@ -14,34 +14,23 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Event dispatcher metrics collector.
- * <p>
- * Periodically collects {@link ShardedEventDispatcher} queue statistics for monitoring and analysis.
- * Tracks:
- * <ul>
- *   <li>Total queue backlog (sum of all shard queues)</li>
- *   <li>Per-shard queue sizes (for load balancing observation)</li>
- *   <li>Hot shard identification (whether any shard is overloaded)</li>
- * </ul>
- * <p>
- * <b>Usage:</b>
- * <pre>{@code
- * EventDispatcherMetrics metrics = EventDispatcherMetrics.getInstance();
+ * Periodically samples queue depths of the process-wide shared dispatcher.
  *
- * // Start periodic collection (every 5 seconds)
- * metrics.start(5);
- *
- * // Access metrics via HTTP endpoint /metrics/event-dispatcher
- *
- * // Stop monitoring
- * metrics.stop();
- * }</pre>
+ * <p>A daemon-thread scheduler updates the singleton's cached values. A nonpositive
+ * sampling interval disables scheduling. Stopping shuts down the scheduler; the
+ * singleton is not designed to restart after shutdown.
  *
  * @author Kelvin
  */
 public final class EventDispatcherMetrics {
 
+    /**
+     * Logger for component lifecycle and diagnostic messages.
+     */
     private static final Logger LOG = LoggerFactory.getLogger(EventDispatcherMetrics.class);
+    /**
+     * Process-wide singleton instance.
+     */
     private static final EventDispatcherMetrics INSTANCE = new EventDispatcherMetrics();
 
     // ============================================================
@@ -49,15 +38,12 @@ public final class EventDispatcherMetrics {
     // ============================================================
 
     /**
-     * Scheduled task executor.
-     * Single-threaded scheduler for periodic metric collection.
-     * Thread is daemon to not prevent JVM shutdown.
+     * Daemon-thread scheduler for periodic metric sampling.
      */
     private final ScheduledExecutorService scheduler;
 
     /**
-     * Start state flag.
-     * Ensures start() can only be called successfully once.
+     * Atomic marker recording whether periodic sampling has been started.
      */
     private final AtomicBoolean started = new AtomicBoolean(false);
 
@@ -74,13 +60,12 @@ public final class EventDispatcherMetrics {
     private final AtomicReference<int[]> perShardQueueSizes = new AtomicReference<>(new int[0]);
 
     /**
-     * Last update timestamp.
+     * Time of the latest successful sample in epoch milliseconds.
      */
     private volatile long lastUpdateTimestamp = 0;
 
     /**
-     * Monitoring task.
-     * Periodically collects and stores EventDispatcher queue state.
+     * Periodic task that updates cached shared-dispatcher queue metrics.
      */
     private final Runnable task = () -> {
         try {
@@ -104,8 +89,7 @@ public final class EventDispatcherMetrics {
     // ============================================================
 
     /**
-     * Private constructor for singleton pattern.
-     * Creates a single-threaded scheduled executor with daemon thread.
+     * Prevents direct construction of this utility or singleton component.
      */
     private EventDispatcherMetrics() {
         ThreadFactory factory = r -> {
@@ -117,9 +101,9 @@ public final class EventDispatcherMetrics {
     }
 
     /**
-     * Get the singleton instance.
+     * Returns the process-wide singleton metrics collector.
      *
-     * @return EventDispatcherMetrics instance
+     * @return the singleton collector
      */
     public static EventDispatcherMetrics getInstance() {
         return INSTANCE;
@@ -130,18 +114,12 @@ public final class EventDispatcherMetrics {
     // ============================================================
 
     /**
-     * Start periodic metric collection.
-     * <p>
-     * This method can only be called successfully once. Repeated calls are ignored.
-     * <p>
-     * <b>Notes:</b>
-     * <ul>
-     *   <li>If intervalSeconds <= 0, monitoring is disabled</li>
-     *   <li>First collection happens after intervalSeconds</li>
-     *   <li>Subsequent collections happen every intervalSeconds</li>
-     * </ul>
+     * Schedules fixed-rate queue sampling once when the interval is positive.
      *
-     * @param intervalSeconds collection interval in seconds (must be > 0 to enable)
+     * <p>A nonpositive interval disables sampling. Calling stop terminates the scheduler
+     * permanently; started records whether scheduling has ever been requested successfully.
+     *
+     * @param intervalSeconds the sampling period in seconds; nonpositive values disable sampling
      */
     public void start(long intervalSeconds) {
         if (intervalSeconds <= 0) {
@@ -165,10 +143,7 @@ public final class EventDispatcherMetrics {
     }
 
     /**
-     * Stop metric collection.
-     * <p>
-     * Shuts down the scheduler immediately, stopping all monitoring tasks.
-     * If a task is running, it will be interrupted.
+     * Interrupts the metric scheduler and cancels pending sampling tasks.
      */
     public void stop() {
         scheduler.shutdownNow();
@@ -189,9 +164,9 @@ public final class EventDispatcherMetrics {
     }
 
     /**
-     * Get per-shard queue sizes.
+     * Returns a defensive copy of the latest sampled queue depths.
      *
-     * @return array of queue sizes per shard (defensive copy)
+     * @return the cached per-shard queue depths
      */
     public int[] getPerShardQueueSizes() {
         int[] sizes = perShardQueueSizes.get();
@@ -208,18 +183,18 @@ public final class EventDispatcherMetrics {
     }
 
     /**
-     * Get the timestamp of the last metric update.
+     * Returns the time of the last successful sample in epoch milliseconds.
      *
-     * @return last update timestamp in milliseconds, or 0 if never updated
+     * @return the last sampling timestamp, or zero before any successful sample
      */
     public long getLastUpdateTimestamp() {
         return lastUpdateTimestamp;
     }
 
     /**
-     * Check if the monitoring is currently running.
+     * Tests whether periodic sampling has been started at least once.
      *
-     * @return true if started, false otherwise
+     * @return {@code true} if scheduling was started, including after stop
      */
     public boolean isStarted() {
         return started.get();
@@ -262,9 +237,9 @@ public final class EventDispatcherMetrics {
     }
 
     /**
-     * Get the average queue size per shard.
+     * Returns the integer mean of cached shard depths.
      *
-     * @return average shard queue size (rounded down)
+     * @return the truncated average queue depth, or zero before sampling
      */
     public int getAverageShardQueueSize() {
         int[] sizes = perShardQueueSizes.get();

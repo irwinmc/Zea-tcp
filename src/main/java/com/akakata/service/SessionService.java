@@ -2,8 +2,8 @@ package com.akakata.service;
 
 import com.akakata.app.PlayerSession;
 import com.akakata.app.Session;
+import com.akakata.app.impl.DefaultSession;
 import com.akakata.communication.impl.SocketMessageSender;
-import com.akakata.event.Events;
 import com.akakata.security.Credentials;
 import com.akakata.security.CredentialsVerifier;
 import com.github.benmanes.caffeine.cache.Cache;
@@ -15,74 +15,70 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 会话管理服务
- * <p>
- * <b>核心特性：</b>
- * <ul>
- *   <li><b>自动过期</b>：2小时无活动或24小时绝对过期</li>
- *   <li><b>原子替换</b>：{@link #replaceSession} 确保线程安全</li>
- *   <li><b>智能清理</b>：根据移除原因选择同步/异步清理</li>
- *   <li><b>容量限制</b>：最大10K会话，防止OOM</li>
- *   <li><b>监控统计</b>：内置缓存命中率等指标</li>
- * </ul>
- * <p>
- * <b>使用示例：</b>
- * <pre>{@code
- * // 1. 创建 SessionService
- * SessionService service = new SessionService(
- *     buffer -> new SimpleCredentials(NettyUtils.readString(buffer)),
- *     true  // 启用定期清理
- * );
+ * Owns cached player sessions and releases them on replacement, removal, eviction and shutdown.
  *
- * // 2. 登录时替换旧会话
- * PlayerSession newSession = game.createPlayerSession();
- * PlayerSession oldSession = service.replaceSession(credentials, newSession);
- * if (oldSession != null) {
- *     LOG.warn("Kicked old session for {}", credentials);
- * }
+ * <p>The cache expires entries after two hours of inactivity or 24 hours of age
+ * and holds at most 10,000 entries. Cache statistics are recorded. An optional
+ * periodic cleanup task drives expiration when traffic is idle.
  *
- * // 3. 获取统计信息
- * CacheStats stats = service.getStats();
- * LOG.info("Hit rate: {}, Size: {}", stats.hitRate(), service.size());
- * }</pre>
+ * <p>Registration takes the session monitor before the service monitor. Resource
+ * cleanup runs outside the service monitor. Identity-based ownership tracks sessions
+ * awaiting asynchronous eviction callbacks, and close listeners remove default
+ * sessions without deleting newer replacements for the same credential key.
  *
  * @author Kelvin
  * @since 0.7.8
  */
 public class SessionService {
 
+    /**
+     * Logger for component lifecycle and diagnostic messages.
+     */
     private static final Logger LOG = LoggerFactory.getLogger(SessionService.class);
 
     /**
-     * Caffeine 缓存实例
+     * Credential-keyed session cache with expiration, capacity and removal notifications.
      */
     private final Cache<Credentials, PlayerSession> sessions;
 
     /**
-     * 凭证验证器
+     * Credential verifier supplied by the application.
      */
     private final CredentialsVerifier verifier;
 
     /**
-     * 定期清理任务的调度器（可选）
+     * Optional scheduler that drives cache expiration during idle periods.
      */
     private final ScheduledExecutorService cleanupExecutor;
 
     /**
-     * 是否已关闭
+     * Terminal lifecycle flag, published when shutdown begins.
      */
     private volatile boolean closed = false;
 
+    // Include removed sessions whose asynchronous Caffeine cleanup has not completed yet.
+    // Guarded by this, with identity semantics matching each resource's lifecycle.
     /**
-     * 构造函数（完整配置）
+     * Identity-based ownership set including entries awaiting asynchronous removal cleanup; guarded
+     * by this service.
+     */
+    private final Set<PlayerSession> ownedSessions = Collections.newSetFromMap(new IdentityHashMap<>());
+
+    /**
+     * Creates the session cache with optional periodic cleanup. The one-argument overload enables
+     * cleanup.
      *
-     * @param verifier              凭证验证器
-     * @param enablePeriodicCleanup 是否启用定期清理（推荐低流量系统启用）
+     * @param verifier the credential verifier
+     * @param enablePeriodicCleanup whether to schedule cache cleanup every minute
      */
     public SessionService(CredentialsVerifier verifier, boolean enablePeriodicCleanup) {
         this.verifier = verifier;
@@ -116,30 +112,25 @@ public class SessionService {
     }
 
     /**
-     * 简化构造函数（默认启用定期清理）
+     * Creates the session cache with optional periodic cleanup. The one-argument overload enables
+     * cleanup.
      *
-     * @param verifier 凭证验证器
+     * @param verifier the credential verifier
      */
     public SessionService(CredentialsVerifier verifier) {
         this(verifier, true);
     }
 
     /**
-     * 会话移除监听器（改进版）
-     * <p>
-     * 根据移除原因选择不同的清理策略：
-     * <ul>
-     *   <li>EXPIRED/SIZE - 异步清理，不阻塞缓存操作</li>
-     *   <li>REPLACED - 不清理，由 {@link #replaceSession} 同步处理</li>
-     *   <li>EXPLICIT - 同步清理，立即生效</li>
-     * </ul>
+     * Handles cache eviction notifications. Expiration and size eviction clean up on the callback
+     * thread; replacement cleanup is handled by registration.
      *
-     * @param credentials 会话凭证
-     * @param session     被移除的会话
-     * @param cause       移除原因
+     * @param credentials the verified credential identity
+     * @param session the session associated with the operation
+     * @param cause the failure or cache-removal cause
      */
     private void onSessionRemoved(Credentials credentials, PlayerSession session, RemovalCause cause) {
-        if (session == null) {
+        if (session == null || session.isShuttingDown()) {
             return;
         }
 
@@ -147,11 +138,7 @@ public class SessionService {
                 credentials, cause, session.getId());
 
         switch (cause) {
-            case EXPIRED, SIZE -> {
-                // 过期或容量淘汰：异步清理（不影响缓存性能）
-                LOG.debug("Scheduling async cleanup for session: {}", session.getId());
-                cleanupAsync(session);
-            }
+            case EXPIRED, SIZE -> cleanupSync(session);
             case REPLACED -> {
                 // 避免双重清理问题
                 LOG.debug("Session replaced, cleanup handled by replaceSession()");
@@ -165,70 +152,56 @@ public class SessionService {
     }
 
     /**
-     * 同步清理会话
-     * <p>
-     * 在当前线程中执行清理，阻塞调用者直到完成。
+     * Closes a session, closes an active socket transport as a fallback and removes its ownership
+     * record. Cleanup failures are logged.
      *
-     * @param session 待清理的会话
+     * @param session the session associated with the operation
      */
     private void cleanupSync(PlayerSession session) {
+        var sender = session.getSender();
         try {
             // 1. 关闭会话（清理 EventHandler、释放资源等）
             session.close();
 
-            // 2. 关闭 Channel（断开网络连接）
-            closeChannelIfActive(session);
-
             LOG.debug("Session cleaned up synchronously: sessionId={}", session.getId());
         } catch (Exception e) {
             LOG.error("Failed to cleanup session synchronously: sessionId={}", session.getId(), e);
+        } finally {
+            // Keep the original sender: close() may detach it even when cleanup throws.
+            if (sender instanceof SocketMessageSender socketSender) {
+                var channel = socketSender.getChannel();
+                if (channel != null && channel.isActive()) {
+                    channel.close();
+                }
+            }
+            synchronized (this) {
+                ownedSessions.remove(session);
+            }
         }
     }
 
     /**
-     * 异步清理会话（使用虚拟线程 - Java 21）
-     * <p>
-     * 在虚拟线程中执行清理，不阻塞调用者。
+     * Removes a closed session from ownership and deletes its cache entry only if it still refers
+     * to that instance.
      *
-     * @param session 待清理的会话
+     * @param credentials the verified credential identity
+     * @param session the session associated with the operation
      */
-    private void cleanupAsync(PlayerSession session) {
-        Thread.startVirtualThread(() -> {
-            try {
-                session.close();
-                closeChannelIfActive(session);
-                LOG.debug("Session cleaned up asynchronously: sessionId={}", session.getId());
-            } catch (Exception e) {
-                LOG.error("Failed to cleanup session asynchronously: sessionId={}", session.getId(), e);
-            }
-        });
-    }
-
-    /**
-     * 关闭 Channel（如果活跃）
-     *
-     * @param session 会话
-     */
-    private void closeChannelIfActive(PlayerSession session) {
-        var sender = session.getSender();
-        if (sender instanceof SocketMessageSender socketSender) {
-            var channel = socketSender.getChannel();
-            if (channel != null && channel.isActive()) {
-                channel.close();
-                LOG.debug("Channel closed for session {}", session.getId());
-            }
+    private void onSessionClosed(Credentials credentials, PlayerSession session) {
+        synchronized (this) {
+            // A delayed close from an old login must never remove its replacement.
+            sessions.asMap().computeIfPresent(credentials, (key, current) -> current == session ? null : current);
+            ownedSessions.remove(session);
         }
     }
 
     // ==================== 公共方法 ====================
 
     /**
-     * 验证客户端凭证
-     * <p>
-     * 委托给注入的 {@link CredentialsVerifier}。
+     * Invokes the configured credential verifier without taking ownership of the login buffer.
      *
-     * @param byteBuf 客户端发送的认证数据
-     * @return 验证通过返回 Credentials，失败返回 null
+     * @param byteBuf the borrowed login payload buffer
+     * @return the verifier's credential result
      */
     public Credentials verify(ByteBuf byteBuf) {
         try {
@@ -240,149 +213,170 @@ public class SessionService {
     }
 
     /**
-     * 获取会话
-     * <p>
-     * 从缓存中获取会话，会刷新访问时间（重置 expireAfterAccess 计时）。
+     * Looks up a player session and updates the cache access time.
      *
-     * @param key 凭证
-     * @return 会话，不存在返回 null
+     * @param key the attribute or cache key
+     * @return the cached session, or {@code null} if absent
      */
     public PlayerSession getSession(Credentials key) {
         return sessions.getIfPresent(key);
     }
 
     /**
-     * 添加会话
-     * <p>
-     * <b>注意：</b>此方法会覆盖已存在的会话，推荐使用 {@link #replaceSession}。
+     * Registers a player session and closes any distinct previous session for the key.
      *
-     * @param key     凭证
-     * @param session 会话
-     * @return 总是返回 true
+     * <p>Invalid arguments, nonplayer sessions and closed resources are rejected.
+     *
+     * @param key the attribute or cache key
+     * @param session the session associated with the operation
+     * @return {@code true} if registration succeeds; {@code false} if the input or lifecycle state
+     * is invalid
      */
     public boolean putSession(Credentials key, Session session) {
-        if (key == null || session == null) {
+        if (key == null || !(session instanceof PlayerSession playerSession)) {
             return false;
         }
-        sessions.put(key, (PlayerSession) session);
+        try {
+            registerSession(key, playerSession);
+            return true;
+        } catch (IllegalStateException e) {
+            return false;
+        }
+    }
+
+    /**
+     * Removes a cached entry and synchronously releases its session.
+     *
+     * <p>The overload with an expected session removes the entry only if its current
+     * value is that exact instance, preventing stale callbacks from deleting replacements.
+     *
+     * @param key the attribute or cache key
+     * @return {@code true} if an entry was removed
+     */
+    public boolean removeSession(Credentials key) {
+        PlayerSession removed;
+        synchronized (this) {
+            removed = sessions.asMap().remove(key);
+        }
+        if (removed == null) {
+            return false;
+        }
+        cleanupSync(removed);
         return true;
     }
 
     /**
-     * 移除会话
-     * <p>
-     * 显式移除会话，会触发 {@link #onSessionRemoved} (cause=EXPLICIT)。
+     * Removes a cached entry and synchronously releases its session.
      *
-     * @param key 凭证
-     * @return true 如果会话存在并被移除
+     * <p>The overload with an expected session removes the entry only if its current
+     * value is that exact instance, preventing stale callbacks from deleting replacements.
+     *
+     * @param key the attribute or cache key
+     * @param expected the exact session instance required for removal
+     * @return {@code true} if an entry was removed
      */
-    public boolean removeSession(Credentials key) {
-        var session = sessions.getIfPresent(key);
-        if (session != null) {
-            sessions.invalidate(key);
-            return true;
+    public boolean removeSession(Credentials key, PlayerSession expected) {
+        boolean removed;
+        synchronized (this) {
+            var current = sessions.asMap().get(key);
+            removed = current != null && current == expected;
+            if (removed) {
+                sessions.asMap().remove(key);
+            }
         }
-        return false;
+        if (removed) {
+            cleanupSync(expected);
+        }
+        return removed;
     }
 
     /**
-     * ✅ 原子性替换会话（推荐方法）
-     * <p>
-     * 这是登录流程的推荐方法，解决了多个并发问题：
-     * <ul>
-     *   <li>✅ 同步踢出旧会话，避免双会话状态</li>
-     *   <li>✅ 避免双重清理（RemovalListener 不处理 REPLACED）</li>
-     *   <li>✅ 线程安全的原子操作</li>
-     * </ul>
-     * <p>
-     * <b>工作流程：</b>
-     * <pre>
-     * 1. 获取旧会话
-     * 2. 同步发送 LOG_OUT 事件（踢出旧连接）
-     * 3. 同步清理旧会话（关闭 Channel 等）
-     * 4. 存入新会话（触发 RemovalListener，但不清理）
-     * </pre>
-     * <p>
-     * <b>使用示例：</b>
-     * <pre>{@code
-     * PlayerSession newSession = game.createPlayerSession();
-     * PlayerSession oldSession = sessionService.replaceSession(credentials, newSession);
-     * if (oldSession != null) {
-     *     LOG.warn("Replaced old session for {}", credentials);
-     * }
-     * }</pre>
+     * Publishes a replacement session and closes the previous distinct session outside the registry
+     * monitor.
      *
-     * @param credentials 凭证
-     * @param newSession  新会话
-     * @return 旧会话（如果存在），不存在返回 null
-     * @throws IllegalArgumentException 如果参数为 null
+     * <p>Replacing a session with the same instance does not close it.
+     *
+     * @param credentials the verified credential identity
+     * @param newSession the replacement player session
+     * @return the previous session, or {@code null} if no entry existed
+     * @throws IllegalArgumentException if the credentials or replacement is null
+     * @throws IllegalStateException if the service or replacement session is closed
      */
     public PlayerSession replaceSession(Credentials credentials, PlayerSession newSession) {
         if (credentials == null || newSession == null) {
             throw new IllegalArgumentException("credentials and newSession cannot be null");
         }
+        return registerSession(credentials, newSession);
+    }
 
-        // 1. 获取旧会话
-        var oldSession = sessions.getIfPresent(credentials);
-
-        if (oldSession != null) {
-            LOG.warn("Replacing active session: credentials={}, oldSessionId={}, newSessionId={}",
-                    credentials, oldSession.getId(), newSession.getId());
-
-            // 2. 同步踢出旧会话
-            synchronized (oldSession) {
-                if (oldSession.getStatus() == Session.Status.CONNECTED) {
-                    try {
-                        // 发送 LOG_OUT 事件（会触发断开连接）
-                        oldSession.onEvent(Events.event(null, Events.LOG_OUT));
-                        LOG.debug("Sent LOG_OUT event to old session: {}", oldSession.getId());
-                    } catch (Exception e) {
-                        LOG.error("Failed to send LOG_OUT to old session: {}", oldSession.getId(), e);
-                    }
+    /**
+     * Registers ownership and a close listener atomically with respect to session closure, then
+     * cleans up the old entry.
+     *
+     * @param credentials the verified credential identity
+     * @param newSession the replacement player session
+     * @return the previous session, or {@code null} if no entry existed
+     * @throws IllegalStateException if the service or new session is closed
+     */
+    private PlayerSession registerSession(Credentials credentials, PlayerSession newSession) {
+        PlayerSession oldSession;
+        // Share DefaultSession.close()'s monitor to register the close listener atomically.
+        // Lock order is session -> service. Cleanup always runs outside the service monitor.
+        synchronized (newSession) {
+            if (newSession.isShuttingDown() || newSession.getStatus() == Session.Status.CLOSED) {
+                throw new IllegalStateException("Session is closed");
+            }
+            synchronized (this) {
+                if (closed) {
+                    throw new IllegalStateException("SessionService is closed");
+                }
+                oldSession = sessions.asMap().put(credentials, newSession);
+                ownedSessions.add(newSession);
+                if (oldSession != newSession && newSession instanceof DefaultSession defaultSession) {
+                    defaultSession.addCloseListener(() -> onSessionClosed(credentials, newSession));
                 }
             }
-
-            // 3. 同步清理旧会话
+        }
+        if (oldSession != null && oldSession != newSession) {
             cleanupSync(oldSession);
         }
-
-        // 4. 存入新会话
-        sessions.put(credentials, newSession);
-
         return oldSession;
     }
 
     /**
-     * 获取缓存统计信息
-     * <p>
-     * 返回缓存的命中率、驱逐次数等指标，用于监控。
+     * Returns recorded cache statistics.
      *
-     * @return 缓存统计
+     * @return the cumulative cache statistics snapshot
      */
     public CacheStats getStats() {
         return sessions.stats();
     }
 
     /**
-     * 获取当前会话数量
+     * Returns the estimated number of cached sessions.
      *
-     * @return 会话数量（估算值）
+     * @return the estimated cache size
      */
     public long size() {
         return sessions.estimatedSize();
     }
 
     /**
-     * 关闭 SessionService
-     * <p>
-     * 停止定期清理任务，清空所有会话。
+     * Stops periodic cleanup and closes every owned session before invalidating the cache.
+     *
+     * <p>Session cleanup runs outside the service monitor. Repeated calls have no effect
+     * after the service is marked closed, and one failed session does not skip the rest.
      */
     public void close() {
-        if (closed) {
-            return;
+        ArrayList<PlayerSession> sessionsToClose;
+        synchronized (this) {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            sessionsToClose = new ArrayList<>(ownedSessions);
         }
 
-        closed = true;
         LOG.info("Shutting down SessionService...");
 
         // 停止清理任务
@@ -398,7 +392,12 @@ public class SessionService {
             }
         }
 
-        // 清空所有会话（触发 RemovalListener）
+        // RemovalListener runs asynchronously, so close the snapshot on this thread first.
+        for (PlayerSession session : sessionsToClose) {
+            cleanupSync(session);
+        }
+
+        // Already-closed sessions are ignored by the removal listener.
         sessions.invalidateAll();
         sessions.cleanUp();
 

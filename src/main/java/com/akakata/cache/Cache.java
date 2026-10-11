@@ -3,58 +3,61 @@ package com.akakata.cache;
 import java.util.List;
 
 /**
+ * Defines a named cache with lifecycle operations and identifier or property lookups.
+ *
+ * @param <T> the cached entry type
  * @author Kelvin
  */
 public interface Cache<T> {
 
     /**
-     * Initialization of cache
+     * Initializes cache contents or resources.
      */
     void init();
 
     /**
-     * Dispose when it shut down
+     * Releases cache contents and resources.
      */
     void dispose();
 
     /**
-     * Reload cache when is modified
+     * Refreshes cached contents from the backing data source.
      */
     void reload();
 
     /**
-     * Get by id
+     * Looks up an entry by its identifier.
      *
-     * @param id id
-     * @return T
+     * @param id the identifier
+     * @return the cached entry, or {@code null} if absent
      */
     T getById(Object id);
 
     /**
-     * Get by property name
+     * Finds entries whose named property matches a value.
      *
      * @param propertyName property name
-     * @param value        value
-     * @return T
+     * @param value the value to store or encode
+     * @return the matching entries
      */
     List<T> getByPropertyName(String propertyName, Object value);
 
     /**
-     * Get all cache
+     * Returns all cached entries.
      *
-     * @return List<T>
+     * @return the cached entries
      */
     List<T> getAll();
 
     /**
-     * Get cache name
+     * Get cache name.
      *
      * @return cache name
      */
     String getCacheName();
 
     /**
-     * Set cache name
+     * Set cache name.
      *
      * @param cacheName cache name
      */

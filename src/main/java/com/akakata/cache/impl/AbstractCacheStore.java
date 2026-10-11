@@ -10,23 +10,34 @@ import java.util.List;
 import java.util.Map;
 
 /**
+ * Provides a named cache registry and delegates queries to registered caches.
+ *
+ * <p>The registry uses an ordinary map. Callers must coordinate concurrent registry
+ * mutations. Unknown cache names and delegated query failures return {@code null}.
+ *
  * @author Kelvin
  */
 public abstract class AbstractCacheStore implements CacheStore {
 
+    /**
+     * Logger for component lifecycle and diagnostic messages.
+     */
     private static final Logger LOG = LoggerFactory.getLogger(AbstractCacheStore.class);
 
     /**
-     * Cache store for read-only
+     * Cache store for read-only.
      */
     protected final Map<String, Cache> cacheStore;
 
+    /**
+     * Creates an empty named-cache registry.
+     */
     public AbstractCacheStore() {
         cacheStore = new HashMap<>();
     }
 
     /**
-     * Initialization of cache
+     * Provides a registry-initialization hook. The base implementation does nothing.
      */
     @Override
     public void init() {
@@ -34,7 +45,7 @@ public abstract class AbstractCacheStore implements CacheStore {
     }
 
     /**
-     * Dispose when it shut down
+     * Disposes every registered cache and clears the registry.
      */
     @Override
     public void dispose() {
@@ -47,7 +58,10 @@ public abstract class AbstractCacheStore implements CacheStore {
     }
 
     /**
-     * Get cache by cache name
+     * Returns the cache registered under the supplied name.
+     *
+     * @param cacheName the registered cache name
+     * @return the cache, or {@code null} for an unknown name
      */
     @Override
     public Cache<?> get(String cacheName) {
@@ -60,7 +74,12 @@ public abstract class AbstractCacheStore implements CacheStore {
     }
 
     /**
-     * Get by id
+     * Delegates an identifier lookup to a named cache.
+     *
+     * @param <T> the cached entry type
+     * @param cacheName the registered cache name
+     * @param id the identifier
+     * @return the entry, or {@code null} if the cache or entry is absent or lookup fails
      */
     @Override
     public <T> T getById(String cacheName, Integer id) {
@@ -79,7 +98,13 @@ public abstract class AbstractCacheStore implements CacheStore {
     }
 
     /**
-     * Get by property name
+     * Delegates a property query to a named cache.
+     *
+     * @param <T> the cached entry type
+     * @param cacheName the registered cache name
+     * @param propertyName the property to query
+     * @param value the value to store or encode
+     * @return the matching entries, or {@code null} if the cache is absent or lookup fails
      */
     @Override
     public <T> List<T> getByPropertyName(String cacheName, String propertyName, Object value) {
@@ -98,7 +123,11 @@ public abstract class AbstractCacheStore implements CacheStore {
     }
 
     /**
-     * Get all
+     * Returns entries from a named cache.
+     *
+     * @param <T> the cached entry type
+     * @param cacheName the registered cache name
+     * @return the cached entries, or {@code null} if the cache is absent or lookup fails
      */
     @Override
     public <T> List<T> getAll(String cacheName) {

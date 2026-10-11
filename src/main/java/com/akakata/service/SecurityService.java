@@ -8,16 +8,7 @@ import org.slf4j.LoggerFactory;
 import javax.inject.Singleton;
 
 /**
- * 安全服务
- * <p>
- * 负责所有加密相关的操作，从 LoginService 中分离出来。
- * <p>
- * <b>职责：</b>
- * <ul>
- *   <li>生成加密 token</li>
- *   <li>验证 token</li>
- *   <li>密钥管理（未来扩展）</li>
- * </ul>
+ * Encrypts credential keys into tokens and decrypts tokens to their original keys.
  *
  * @author Kelvin
  * @since 0.7.8
@@ -25,17 +16,23 @@ import javax.inject.Singleton;
 @Singleton
 public class SecurityService {
 
+    /**
+     * Creates a security service instance.
+     */
+    public SecurityService() {
+    }
+
+    /**
+     * Logger for component lifecycle and diagnostic messages.
+     */
     private static final Logger LOG = LoggerFactory.getLogger(SecurityService.class);
 
     /**
-     * 生成加密 token
-     * <p>
-     * 使用 AES-GCM 加密凭证的 randomKey，返回加密后的 token。
-     * 这个 token 会发送给客户端，用于后续请求的认证。
+     * Encrypts the credential key as a URL-safe token.
      *
-     * @param credentials 凭证
-     * @return 加密后的 token
-     * @throws RuntimeException 如果加密失败
+     * @param credentials the verified credential identity
+     * @return the encrypted credential key
+     * @throws RuntimeException if token generation fails
      */
     public String generateToken(Credentials credentials) {
         try {
@@ -50,13 +47,11 @@ public class SecurityService {
     }
 
     /**
-     * 验证 token
-     * <p>
-     * 解密 token，返回原始的 randomKey。
+     * Decrypts a token to recover its credential key.
      *
-     * @param encryptedToken 加密的 token
-     * @return 解密后的 randomKey
-     * @throws RuntimeException 如果解密失败
+     * @param encryptedToken the encrypted credential token
+     * @return the credential key, or {@code null} for a null token
+     * @throws RuntimeException if token decoding or authentication fails
      */
     public String verifyToken(String encryptedToken) {
         try {

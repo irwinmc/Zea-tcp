@@ -1,242 +1,107 @@
-# Banner Customization Guide
+# Banner Customization
 
-Zea-tcp displays a startup banner similar to Spring Boot. You can customize it in several ways.
+`CommandLine.run()` calls `printBanner()` before creating the server context.
+The default implementation delegates to
+[Banner.printBanner(Logger)](../src/main/java/com/akakata/banner/Banner.java).
 
-## Default Banner
+## Classpath Banner
 
-The default banner looks like this:
+Create `src/main/resources/banner.txt` in your application:
 
-```
-  ████████╗ ██████╗██████╗
-  ╚══██╔══╝██╔════╝██╔══██╗
-     ██║   ██║     ██████╔╝
-     ██║   ██║     ██╔═══╝
-     ██║   ╚██████╗██║
-     ╚═╝    ╚═════╝╚═╝
-
- :: Zea TCP ::                (v1.0-SNAPSHOT)
+```text
+====================================
+  MY GAME SERVER
+  Powered by Zea TCP Transport
+====================================
 ```
 
-Plus system information like Java version, OS, PID, etc.
+The loader looks up `banner.txt` at the classpath root and reads it as UTF-8.
+It prints that text to standard output. Missing or unreadable resources fall back
+to the ASCII text built into `Banner`; an empty resource produces an empty custom
+banner. The repository already includes a
+[banner.txt](../src/main/resources/banner.txt) resource.
 
----
+Classpath resource order determines which `banner.txt` is found when an application
+and its dependencies both supply one. Ensure the intended application resource is
+selected by your launcher. Banner text is literal: `${version}`, `${env}` and other
+placeholders are not expanded.
 
-## Method 1: Custom banner.txt File
+## Default Runtime Information
 
-Create a file named `banner.txt` in your `src/main/resources` directory:
+After printing banner text, the default implementation prints a
+`:: Zea TCP :: (v...)` line to standard output and logs:
 
-```
-src/main/resources/
-  └── banner.txt
-```
+- Java version and vendor.
+- Operating-system name, version and architecture.
+- Process ID from the runtime management bean, or `unknown` on failure.
+- Current working directory.
 
-**Example banner.txt:**
-```
-╔═══════════════════════════════════╗
-║   MY AWESOME GAME SERVER          ║
-║   Powered by Zea TCP              ║
-╚═══════════════════════════════════╝
-```
+There is no banner-mode property or configuration flag in the current loader.
+Override `printBanner()` to replace or suppress this behavior.
 
-The custom banner will be loaded automatically at startup.
+## Displayed Version
 
----
+The Maven project version is **0.7.8**. The current `Banner.getVersion()` looks for
+`META-INF/maven/com.akakata/Zea-tcp/pom.properties`, with an uppercase `Z`, and falls
+back to `1.0-SNAPSHOT` if that resource is absent or cannot be read.
 
-## Method 2: Override printBanner() Method
+The library artifact ID in the POM is lowercase `zea-tcp`, so its normal Maven
+metadata is under `META-INF/maven/com.akakata/zea-tcp/pom.properties`. Consequently,
+the current default banner can display `1.0-SNAPSHOT` even for the 0.7.8 library.
+This display value does not describe the actual dependency version. An application
+that needs its own accurate version line can print it explicitly in an override.
 
-You can programmatically customize the banner in your server class:
+## Override the Banner
+
+This complete entry point prints an application-owned banner and version:
 
 ```java
-public class MyGameServer extends CommandLine {
+package com.example;
 
-    @Override
-    protected void printBanner() {
-        System.out.println();
-        System.out.println("  ╔══════════════════════════════════╗");
-        System.out.println("  ║   MY CUSTOM GAME SERVER          ║");
-        System.out.println("  ║   Version 2.0                    ║");
-        System.out.println("  ╚══════════════════════════════════╝");
-        System.out.println();
+import com.akakata.CommandLine;
 
-        // Optionally call super to show system info
-        // super.printBanner();
-    }
-}
-```
-
----
-
-## Method 3: Disable Banner
-
-To disable the banner completely:
-
-```java
-public class MyGameServer extends CommandLine {
-
-    @Override
-    protected void printBanner() {
-        // Do nothing - no banner
-    }
-}
-```
-
----
-
-## ASCII Art Generators
-
-Use these tools to create ASCII art banners:
-
-1. **Text to ASCII Art Generator**: http://patorjk.com/software/taag/
-   - Font recommendation: "ANSI Shadow", "Big", "Standard"
-
-2. **FIGlet**: Command-line tool
-   ```bash
-   figlet -f standard "ZEA TCP"
-   ```
-
-3. **ASCII Art Generator**: https://www.ascii-art-generator.org/
-
----
-
-## Banner Examples
-
-### Example 1: Minimalist
-```
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-  GAME SERVER v2.0
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-```
-
-### Example 2: Box Style
-```
-┌────────────────────────────┐
-│   MY GAME SERVER           │
-│   Powered by Zea TCP       │
-└────────────────────────────┘
-```
-
-### Example 3: Large ASCII
-```
-  ██████╗  █████╗ ███╗   ███╗███████╗
- ██╔════╝ ██╔══██╗████╗ ████║██╔════╝
- ██║  ███╗███████║██╔████╔██║█████╗
- ██║   ██║██╔══██║██║╚██╔╝██║██╔══╝
- ╚██████╔╝██║  ██║██║ ╚═╝ ██║███████╗
-  ╚═════╝ ╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝
-```
-
-### Example 4: Simple Text with Colors
-```java
-@Override
-protected void printBanner() {
-    // ANSI colors (works in most terminals)
-    String CYAN = "\u001B[36m";
-    String RESET = "\u001B[0m";
-
-    System.out.println();
-    System.out.println(CYAN + "  ╔══════════════════════════╗" + RESET);
-    System.out.println(CYAN + "  ║   EPIC GAME SERVER       ║" + RESET);
-    System.out.println(CYAN + "  ╚══════════════════════════╝" + RESET);
-    System.out.println();
-}
-```
-
----
-
-## System Information Display
-
-The default banner includes:
-- Java version and vendor
-- Operating system and architecture
-- Process ID (PID)
-- Working directory
-
-You can customize what information to show:
-
-```java
-@Override
-protected void printBanner() {
-    System.out.println("  MY GAME SERVER");
-    System.out.println();
-
-    // Show only specific info
-    LOG.info("Version: 2.0.0");
-    LOG.info("Environment: {}",
-        System.getProperty("env", "production"));
-    LOG.info("Max Memory: {} MB",
-        Runtime.getRuntime().maxMemory() / 1024 / 1024);
-}
-```
-
----
-
-## Tips
-
-1. **Keep it simple**: Overly complex banners can clutter logs
-2. **Test in production**: Some log aggregators may not display ASCII art well
-3. **Consider width**: Keep banners under 80 characters wide for compatibility
-4. **Use ANSI colors carefully**: Not all environments support them
-5. **Version info**: Include version numbers in your custom banner
-
----
-
-## Resources
-
-- Default banner: `src/main/resources/banner.txt`
-- Banner class: `com.akakata.banner.Banner`
-- Override method: `CommandLine.printBanner()`
-
----
-
-## Complete Example
-
-**src/main/resources/banner.txt:**
-```
-  ███╗   ███╗██╗   ██╗     ██████╗  █████╗ ███╗   ███╗███████╗
-  ████╗ ████║╚██╗ ██╔╝    ██╔════╝ ██╔══██╗████╗ ████║██╔════╝
-  ██╔████╔██║ ╚████╔╝     ██║  ███╗███████║██╔████╔██║█████╗
-  ██║╚██╔╝██║  ╚██╔╝      ██║   ██║██╔══██║██║╚██╔╝██║██╔══╝
-  ██║ ╚═╝ ██║   ██║       ╚██████╔╝██║  ██║██║ ╚═╝ ██║███████╗
-  ╚═╝     ╚═╝   ╚═╝        ╚═════╝ ╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝
-```
-
-**MyGameServer.java:**
-```java
-public class MyGameServer extends CommandLine {
-
+public final class BrandedServer extends CommandLine {
     public static void main(String[] args) {
-        new MyGameServer().run(args);
+        new BrandedServer().run(args);
     }
 
     @Override
     protected void printBanner() {
-        // Use custom banner.txt from resources
-        super.printBanner();
-
-        // Add extra info
-        System.out.println("  Environment: Production");
-        System.out.println("  Region: US-WEST");
-        System.out.println();
+        System.out.println("MY GAME SERVER — application version 1.0.0");
+        System.out.println("Transport dependency: Zea TCP 0.7.8");
     }
 }
 ```
 
-**Output:**
+This override replaces the default banner, version lookup and runtime-information
+logging. To preserve the default information and append application details, call
+`super.printBanner()` before your additional output.
+
+## Disable Banner Output
+
+```java
+package com.example;
+
+import com.akakata.CommandLine;
+
+public final class QuietServer extends CommandLine {
+    public static void main(String[] args) {
+        new QuietServer().run(args);
+    }
+
+    @Override
+    protected void printBanner() {
+        // Suppress banner text and its runtime-information logs.
+    }
+}
 ```
-  ███╗   ███╗██╗   ██╗     ██████╗  █████╗ ███╗   ███╗███████╗
-  ████╗ ████║╚██╗ ██╔╝    ██╔════╝ ██╔══██╗████╗ ████║██╔════╝
-  ██╔████╔██║ ╚████╔╝     ██║  ███╗███████║██╔████╔██║█████╗
-  ██║╚██╔╝██║  ╚██╔╝      ██║   ██║██╔══██║██║╚██╔╝██║██╔══╝
-  ██║ ╚═╝ ██║   ██║       ╚██████╔╝██║  ██║██║ ╚═╝ ██║███████╗
-  ╚═╝     ╚═╝   ╚═╝        ╚═════╝ ╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝
 
- :: Zea TCP ::                (v1.0-SNAPSHOT)
+Other startup and lifecycle logs still run. Use plain text when your log collector
+does not render terminal colors or Unicode art, and keep application version
+information separate from environment or region labels.
 
-2025-01-19 10:30:45.123  INFO --- [main] Banner: Java version: 21.0.1, Vendor: Oracle Corporation
-2025-01-19 10:30:45.124  INFO --- [main] Banner: OS: Mac OS X (14.0), Arch: aarch64
-2025-01-19 10:30:45.125  INFO --- [main] Banner: PID: 12345
-2025-01-19 10:30:45.126  INFO --- [main] Banner: Working directory: /Users/you/game-server
+## Related Documentation
 
-  Environment: Production
-  Region: US-WEST
-```
+- [Application startup](../README.md#lifecycle-and-components)
+- [Configuration loading](CONFIGURATION.md#loading-configuration)
+- [CommandLine](../src/main/java/com/akakata/CommandLine.java)

@@ -1,514 +1,332 @@
-# Zea-tcp Thread Pool and EventLoop Architecture Analysis
+# Event Loops, Dispatch and Lifecycle
 
-## Table of Contents
+This guide describes the threading and resource ownership of Zea TCP Transport
+0.7.8 with Netty 4.2.19.Final, Agrona 2.6.1 and Java 21. Configuration keys are
+listed in the [configuration guide](CONFIGURATION.md).
 
-- [Current Architecture Analysis](#current-architecture-analysis)
-- [Thread Sharing Architecture Diagram](#thread-sharing-architecture-diagram)
-- [Detailed Analysis of Thread Pool Sharing](#detailed-analysis-of-thread-pool-sharing)
-- [Performance Comparison Data](#performance-comparison-data)
-- [Final Conclusion](#final-conclusion)
-- [Potential Improvement Solutions](#potential-improvement-solutions)
+## Resource Layout
 
----
-
-## Current Architecture Analysis
-
-### Good News: The Architecture is Already Optimal!
-
-Let me prove this with actual code:
-
-**NetworkBootstrap.java:22-23**
-```java
-public NetworkBootstrap(int bossThreads, int workerThreads) {
-    this.bossGroup = new NioEventLoopGroup(bossThreads,
-        new DefaultThreadFactory("netty-boss"));
-    this.workerGroup = new NioEventLoopGroup(workerThreads,
-        new DefaultThreadFactory("netty-worker"));
-}
-```
-
-**ServerModule.java:160-161**
-```java
-config.setBossGroup(networkBootstrap.getBossGroup());    // ← Shared!
-config.setWorkerGroup(networkBootstrap.getWorkerGroup()); // ← Shared!
-```
-
-**All three servers (TCP/HTTP/WebSocket) share the same `NetworkBootstrap` instance, therefore:**
-- **Shared bossGroup** - Created only once
-- **Shared workerGroup** - Created only once
-- **Unified thread pool strategy** - Managed through `DefaultThreadFactory` naming
-
----
-
-## Thread Sharing Architecture Diagram
-
-```
+```text
 ServerContext
-    ↓ creates
-NetworkBootstrap
-    ├─ bossGroup (2 threads: netty-boss-1, netty-boss-2)
-    └─ workerGroup (8 threads: netty-worker-1..8)
-         ↓ injected into
-    ┌────────────────┬────────────────┬──────────────────┐
-    │  tcpServer     │  httpServer    │  webSocketServer │
-    │  (port 8090)   │  (port 8081)   │  (port 8300)     │
-    └────────────────┴────────────────┴──────────────────┘
-         All servers share the same thread pool
+  NetworkBootstrap
+    shared boss EventLoopGroup       TCP / HTTP / WebSocket accepts
+    shared worker EventLoopGroup     accepted-channel I/O and pipelines
+  Game (DefaultGame)
+    dedicated AgronaEventDispatcher  game-level events
+    connected player sessions
+  SessionService
+    Caffeine registry and owned sessions
+    periodic cache-cleanup scheduler
+  EventDispatcherMetrics
+    daemon platform-thread scheduler
+
+EventDispatchers (process-wide)
+  shared ShardedEventDispatcher
+    Agrona shard 0 ... shard S-1
+      queue + agent platform thread
+      virtual-thread callbacks in CONCURRENT mode
 ```
 
----
+`ServerModule` assigns the same `NetworkBootstrap` groups to each listener's
+`NettyConfig`. No separate I/O group is created for each protocol in the default
+Dagger graph. A standalone `NettyConfig` can create its own groups if none are
+provided; the caller must establish ownership for those resources.
 
-## Detailed Analysis of Thread Pool Sharing
+## Netty I/O Groups
 
-### Statement 1: "If each creates new NioEventLoopGroup(), CPU cores will be sliced"
-
-**Completely correct!**
-
-#### Wrong approach (hypothetical):
-```java
-// Bad design
-Server tcp = new NettyTCPServer(
-    new NioEventLoopGroup(2),    // 2 boss threads
-    new NioEventLoopGroup(8)     // 8 worker threads
-);
-
-Server http = new NettyTCPServer(
-    new NioEventLoopGroup(2),    // Another 2 boss threads
-    new NioEventLoopGroup(8)     // Another 8 worker threads
-);
-
-Server ws = new NettyTCPServer(
-    new NioEventLoopGroup(2),    // Another 2 boss threads
-    new NioEventLoopGroup(8)     // Another 8 worker threads
-);
-
-// Total: 6 boss + 24 worker = 30 threads!
-```
-
-**Problems:**
-- CPU over-subscription (30 threads competing for 8 cores)
-- Massive context switching overhead
-- High cache miss rate
-- Memory waste (each EventLoop has its own buffers)
-
-#### Correct approach (current architecture):
-```java
-// Excellent design
-NetworkBootstrap bootstrap = new NetworkBootstrap(2, 8);  // Created only once
-
-Server tcp = new NettyTCPServer(
-    bootstrap.getBossGroup(),    // Shared
-    bootstrap.getWorkerGroup()   // Shared
-);
-
-Server http = new NettyTCPServer(
-    bootstrap.getBossGroup(),    // Shared
-    bootstrap.getWorkerGroup()   // Shared
-);
-
-Server ws = new NettyTCPServer(
-    bootstrap.getBossGroup(),    // Shared
-    bootstrap.getWorkerGroup()   // Shared
-);
-
-// Total: 2 boss + 8 worker = 10 threads
-```
-
-**Advantages:**
-- Thread count = CPU cores (8), no over-subscription
-- Minimal context switching
-- Good CPU cache affinity
-- Memory efficient
-
----
-
-### Statement 2: "Share bossGroup"
-
-**Completely correct! Code already does this**
-
-**Reasons:**
-1. **Single responsibility for Boss Group**: Only handles `accept()` new connections
-2. **Low CPU intensity**: Accept operations are very fast
-3. **No multi-port conflicts**: Each server binds to different ports, boss threads just distribute new connections to workers
-
-**Implementation:**
-```java
-// NetworkBootstrap.java:22
-this.bossGroup = new NioEventLoopGroup(bossThreads,
-    new DefaultThreadFactory("netty-boss"));
-
-// ServerModule.java:160
-config.setBossGroup(networkBootstrap.getBossGroup());  // All servers share
-```
-
-**Thread naming verification:**
-```bash
-jstack <pid> | grep netty-boss
-
-"netty-boss-1"   # Handles all accept operations for TCP/HTTP/WebSocket
-"netty-boss-2"   # Backup
-```
-
----
-
-### Statement 3: "Separate workerGroup"
-
-**Partially correct, but separation not needed in current scenario**
-
-#### When should workerGroup be separated?
-
-**Scenario A: Different servers have significantly different load characteristics**
+The current `NetworkBootstrap` construction is equivalent to:
 
 ```java
-// Example: WebSocket is long-connection high-concurrency, HTTP is short-connection low-concurrency
-NioEventLoopGroup httpWorkerGroup = new NioEventLoopGroup(4);    // Fewer threads
-NioEventLoopGroup wsWorkerGroup = new NioEventLoopGroup(16);     // More threads
+package com.example;
 
-// Benefit: Prevent HTTP traffic from saturating WebSocket worker threads
-```
+import com.akakata.context.NetworkBootstrap;
 
-**Scenario B: QoS guarantees needed**
-
-```java
-// Critical service (gaming) high priority
-NioEventLoopGroup gameWorkerGroup = new NioEventLoopGroup(8,
-    new ThreadPoolExecutor(..., new ThreadPoolExecutor.CallerRunsPolicy()));
-
-// Monitoring service low priority
-NioEventLoopGroup monitorWorkerGroup = new NioEventLoopGroup(2);
-```
-
-**Scenario C: Fault domain isolation**
-
-```java
-// If a protocol's handler has bugs causing thread blocking, it won't affect other protocols
-```
-
-#### Current scenario should share workerGroup!
-
-**Reasons:**
-
-1. **Natural load balancing**: Netty EventLoop uses Round-Robin connection assignment
-2. **High resource utilization**: Game server traffic is uneven, shared pool allows dynamic scheduling
-3. **Simplified management**: No need to manually tune thread count for each protocol
-
-**Data support:**
-
-Assuming configuration `workerThreadCount=8` (8-core CPU):
-
-```
-Shared mode:
-- Total threads: 8
-- WebSocket peak: 6 threads handling
-- HTTP low: 2 threads handling
-- Utilization: 100%
-
-Separated mode:
-- WebSocket Pool: 6 threads → 100% utilization at peak, 20% at low
-- HTTP Pool: 2 threads → 100% utilization at peak, 0% at low
-- Overall utilization: ~60%
-```
-
----
-
-### Statement 4: "Unified thread pool strategy"
-
-**Completely correct! Already implemented**
-
-```java
-// NetworkBootstrap.java:22-23
-this.bossGroup = new NioEventLoopGroup(bossThreads,
-    new DefaultThreadFactory("netty-boss"));     // ← Unified naming
-this.workerGroup = new NioEventLoopGroup(workerThreads,
-    new DefaultThreadFactory("netty-worker"));   // ← Unified naming
-```
-
-**Benefits of unified strategy:**
-
-1. **Monitoring friendly**:
-   ```bash
-   jstack <pid> | grep netty-worker | wc -l
-   # Immediately know how many worker threads
-   ```
-
-2. **Troubleshooting**:
-   ```bash
-   # Find which worker thread has high CPU
-   top -H -p <pid>
-   # PID     %CPU   COMMAND
-   # 12345   95.0   netty-worker-3  ← Problem here
-   ```
-
-3. **Unified configuration**:
-   ```java
-   // Can set in DefaultThreadFactory
-   // - Priority
-   // - UncaughtExceptionHandler
-   // - Thread naming pattern
-   ```
-
----
-
-## Performance Comparison Data
-
-Based on Netty best practices and theoretical analysis of current architecture:
-
-| Metric | Independent Thread Pool per Server | Shared Thread Pool (Current) | Improvement |
-|--------|-----------------------------------|------------------------------|-------------|
-| **Total Threads** | 30 (6 boss + 24 worker) | 10 (2 boss + 8 worker) | **-67%** |
-| **Context Switches/sec** | ~15,000 | ~5,000 | **-67%** |
-| **Memory Usage** | ~150 MB | ~50 MB | **-67%** |
-| **Throughput (req/s)** | 80K | 120K | **+50%** |
-| **P99 Latency** | 15ms | 5ms | **-67%** |
-
-### Detailed Calculation Basis
-
-#### Thread Count Calculation
-```
-Independent thread pool mode:
-  TCP Server:    2 boss + 8 worker = 10
-  HTTP Server:   2 boss + 8 worker = 10
-  WS Server:     2 boss + 8 worker = 10
-  Total: 30 threads
-
-Shared thread pool mode:
-  NetworkBootstrap: 2 boss + 8 worker = 10
-  Total: 10 threads
-
-Savings: (30 - 10) / 30 = 67%
-```
-
-#### Context Switch Calculation
-```
-Assuming 8-core CPU:
-  30 threads: ~15,000 context switches per second
-  10 threads: ~5,000 context switches per second
-
-Measurement method:
-  vmstat 1
-  or perf stat -e context-switches -p <pid>
-```
-
-#### Memory Calculation
-```
-Each EventLoop approximately uses:
-  - Thread stack: 1MB
-  - Internal buffers: 4MB
-  - Object metadata: ~100KB
-
-30 threads: 30 × 5MB ≈ 150MB
-10 threads: 10 × 5MB ≈ 50MB
-```
-
----
-
-## Final Conclusion
-
-### Current architecture is **Netty's recommended best practice**!
-
-**Evidence:**
-
-1. **Netty official documentation recommends:**
-   > "For server applications, it's recommended to use a shared EventLoopGroup for all server bootstrap instances."
-
-2. **Code perfectly implements this:**
-   ```java
-   NetworkBootstrap (singleton)
-       ↓
-   Shared bossGroup + workerGroup
-       ↓
-   All servers reuse
-   ```
-
-3. **Follows Reactor pattern best practices:**
-   ```
-   Multi-Reactor threads (boss group)
-       ↓
-   Multi-Worker thread pool (worker group)
-       ↓
-   Event-driven processing
-   ```
-
----
-
-## Potential Improvement Solutions
-
-**If performance bottlenecks are encountered in the future, consider this optimization:**
-
-### Set priorities for different protocols (Advanced usage)
-
-```java
-public class PrioritizedNetworkBootstrap {
-
-    private final NioEventLoopGroup bossGroup;
-
-    // High priority: Game data packets (WebSocket/TCP)
-    private final NioEventLoopGroup gameWorkerGroup;
-
-    // Low priority: Monitoring API (HTTP)
-    private final NioEventLoopGroup monitorWorkerGroup;
-
-    public PrioritizedNetworkBootstrap(int bossThreads,
-                                        int gameThreads,
-                                        int monitorThreads) {
-        this.bossGroup = new NioEventLoopGroup(bossThreads,
-            new DefaultThreadFactory("netty-boss", false, Thread.NORM_PRIORITY));
-
-        this.gameWorkerGroup = new NioEventLoopGroup(gameThreads,
-            new DefaultThreadFactory("netty-game-worker", false, Thread.MAX_PRIORITY));
-
-        this.monitorWorkerGroup = new NioEventLoopGroup(monitorThreads,
-            new DefaultThreadFactory("netty-monitor-worker", false, Thread.MIN_PRIORITY));
-    }
-
-    public NioEventLoopGroup getBossGroup() {
-        return bossGroup;
-    }
-
-    public NioEventLoopGroup getGameWorkerGroup() {
-        return gameWorkerGroup;
-    }
-
-    public NioEventLoopGroup getMonitorWorkerGroup() {
-        return monitorWorkerGroup;
-    }
-
-    public void close() {
-        bossGroup.shutdownGracefully();
-        gameWorkerGroup.shutdownGracefully();
-        monitorWorkerGroup.shutdownGracefully();
+public final class NetworkGroupsExample {
+    public static void main(String[] args) {
+        try (NetworkBootstrap bootstrap = new NetworkBootstrap(2, 2)) {
+            System.out.println(bootstrap.getBossGroup());
+            System.out.println(bootstrap.getWorkerGroup());
+        }
     }
 }
 ```
 
-**Usage example:**
+Internally each group uses `MultiThreadIoEventLoopGroup`, a
+`DefaultThreadFactory` with prefix `netty-boss` or `netty-worker`, and
+`NioIoHandler.newFactory()`. This replaces the deprecated `NioEventLoopGroup` API.
+
+The bundled properties request two boss and two worker threads. Missing properties
+fall back to one boss and the JVM's available processor count for workers. These
+are group sizes; event-loop threads can be started lazily by Netty. Sharing groups
+means HTTP, WebSocket and TCP I/O can affect one another's latency.
+
+Network pipeline work includes decoding, login initialization and HTTP request
+handling. Event dispatch moves submitted application callbacks to dispatcher
+threads, but it does not move every pipeline operation. Avoid blocking I/O or long
+CPU work in Netty callbacks.
+
+`NetworkBootstrap.close()` requests graceful shutdown of both groups before
+waiting uninterruptibly for both termination futures. Invoke context or network
+group shutdown from a thread outside these event loops.
+
+## Shared Session Shards
+
+The process-wide factory creates:
+
+```text
+S = max(2, Integer.highestOneBit(Runtime.getRuntime().availableProcessors()))
+```
+
+For example, six available processors yield four shards, eight yield eight, and
+one yields two. A separately constructed `ShardedEventDispatcher(count)` rounds a
+positive count up to a power of two.
+
+| Operation | Route or Registration |
+| --- | --- |
+| `fireEvent(event, session)` | `session.getId().hashCode() & (S - 1)` |
+| `fireEvent(event)` | `event.getType() & (S - 1)` |
+| Register a `SessionEventHandler` | Its session's ID shard |
+| Register an ordinary `EventHandler` | Every shard |
+| `removeHandlersForSession(session)` on the sharded dispatcher | Search every shard |
+
+`DefaultPlayerSession` resolves and stores its shared Agrona shard at construction,
+and `DefaultSession.onEvent()` supplies the target session when submitting. Inside
+that shard, session handlers are filtered to the target session; ordinary handlers
+remain observers of matching events. Two players sharing a shard therefore do not
+receive one another's targeted handler callbacks.
+
+An unscoped `fireEvent(event)` has no target-session filter. Use scoped submission
+for player work. `getHandlers()` on the sharded dispatcher selects one shard rather
+than aggregating every subscription. For session-handler removal through the
+sharded facade, use `removeHandlersForSession`; the typed `removeHandler` route is
+based on event type and can differ from the session's registration shard.
+
+`EventDispatchers.newDedicatedDispatcher()` constructs two shards. In contrast,
+`AbstractGame` directly creates and initializes one `AgronaEventDispatcher` for
+its own game events.
+
+## Agrona Queue and Callback Execution
+
+Each Agrona dispatcher uses a `ManyToOneConcurrentArrayQueue` with capacity
+**32,768**, supports multiple publishing threads and has one consumer agent. The
+agent processes at most **256** deliveries per work cycle and uses an Agrona
+`BackoffIdleStrategy` when idle. Its platform thread is named
+`agrona-event-dispatcher` and is not a daemon, so owners must close it.
+
+A standalone `AgronaEventDispatcher` must be initialized explicitly.
+`ShardedEventDispatcher` initializes its shards during construction.
+
+| Mode | Callback Execution | Waiting Behavior |
+| --- | --- | --- |
+| `SERIAL` | Matching handlers run in sequence on the agent thread | A blocking handler blocks that shard |
+| `CONCURRENT` (default) | A new virtual thread runs each matching handler | The agent waits up to 5,000 ms for that event's handlers |
+
+Concurrent mode does not provide one reusable worker pool. A callback timeout is
+logged but does not interrupt or cancel unfinished handlers; they can overlap with
+later deliveries and continue after dispatcher closure. Separate shards run
+independently. Application handlers and shared payload objects must therefore
+coordinate concurrent access.
+
+Handlers receive the submitted `Event` object. Dispatch metadata records the
+session and retained native reference, but there is no deep copy of the event or
+its source. Avoid mutating an event after submission. Handler registration uses
+concurrent maps and copy-on-write lists; removing a handler does not revoke a
+callback that has already been selected or started.
+
+### Queue Saturation
+
+`fireEvent` has no accepted/rejected return value. A full queue logs a warning and
+drops the submission. Submission after closure is ignored. Neither operation
+transfers the caller's original native-buffer reference. There is no automatic
+retry, overflow queue or reliable-delivery acknowledgment.
+
+Sampled queue depths show waiting deliveries rather than all active callbacks.
+A zero-depth queue can coexist with running virtual threads. See
+[monitoring](MONITORING.md#dispatcher-queue-metrics) for sampling semantics.
+
+## Session and Game Lifecycle
+
+The normal game connection path moves a session through `NOT_CONNECTED`,
+`CONNECTING` and `CONNECTED`. `DefaultSession.close()` makes `CLOSED` terminal,
+marks shutdown and disables writes. Events and new handlers are ignored afterward,
+and a sender offered after closure is immediately closed instead of attached.
+
+Login success write callbacks check channel activity and session shutdown under
+`synchronized (session)` before attaching the sender, connecting the game,
+installing the protocol and registering login handlers. Channel close listeners
+also close sessions whose success response or initialization is still pending.
+A failed login or callback cleans up the session and transport.
+
+The session monitor is deliberately shared by login, game connection, registry
+registration and session closure. Synchronizing on a method parameter locks the
+passed session object; a private lock in only one participant would not coordinate
+those operations. Custom code should avoid unrelated locking on the session and
+long-running work while holding its monitor. `afterSessionConnect` runs outside
+`connectSession`'s own synchronized blocks, but its login caller may still hold the
+session monitor.
+
+Session closure detaches its sender and snapshots close listeners under the
+monitor, then performs resource cleanup outside that critical section. Reentrant
+closure by the closing thread returns; another closing thread waits for completion.
+`DefaultPlayerSession.close()` also disconnects from its game.
+
+`EventDispatchers.release()` recognizes both the shared facade and individual
+shared shards. It removes the closing session's handlers while leaving the shared
+agent and queue available to other players. A privately owned dispatcher is closed.
+
+`AbstractGame.close()` marks the game closed, snapshots connected sessions and
+closes them outside its game lock. It then clears membership and closes its
+dedicated dispatcher. New creation and connection are rejected once closure begins.
+
+## Session Registry Ownership
+
+`SessionService` caches player sessions by `Credentials` with a maximum of 10,000
+entries, expiration after two hours of cache access inactivity and 24 hours after
+write. The default constructor schedules cache cleanup every minute on a virtual
+thread created for its single-thread scheduled executor.
+
+Replacement closes the previous session synchronously. Registering the same
+session under the same key does not close it. Conditional removal and default
+session close callbacks compare the cached session by identity, preventing an old
+session callback from removing its replacement.
+
+A separate identity-based ownership set tracks sessions even when asynchronous
+cache removal notifications are pending. Service shutdown marks the registry
+closed and snapshots that ownership, stops the cleanup scheduler with a bounded
+wait, closes the owned sessions and invalidates the cache. Cleanup occurs outside
+the registry monitor to avoid holding it across session callbacks.
+
+Cache expiration is not an automatic client reconnect mechanism or a transport
+idle timeout. Applications define stable credential identities and their own
+reconnect policy.
+
+## Payload Ownership
+
+Netty native buffers are reference-counted. Treat event submission as a borrow of
+the caller's reference, with additional references retained by asynchronous owners.
+
+| Boundary | Ownership Rule |
+| --- | --- |
+| `Session.onEvent`, `fireEvent`, game broadcast | Caller retains its original reference; accepted delivery retains its own |
+| Queue rejection, cancellation or shutdown drain | Dispatcher releases any reference retained for the abandoned delivery |
+| Concurrent callback | Each worker retains a separate native reference and releases it in `finally` |
+| Handler callback | Payload is borrowed for callback duration; retain separately to keep it afterward |
+| `DefaultToServerHandler` | Releases the inbound native owner after forwarding to the session |
+| `SocketMessageSender` sending an `Event` | Retains its native source until write completion or failure |
+| `MessageBufferEventEncoder` | Uses a retained duplicate for each write, preserving the source reader index |
+| `NettyMessageBuffer` wrapping a `ByteBuf` | Does not add a reference; the caller releases the native buffer when finished |
+| `ByteBufHolder` | Owns an existing reference and releases it once on close; do not close it twice |
+
+The dispatcher captures the native object retained at submission. Its cleanup does
+not depend on the event still pointing to that same source later. This prevents
+cleanup from releasing a replacement source, but does not make payload mutation
+safe for concurrent handlers.
+
+`EventDecoder` and `MessageBufferEventDecoder` allocate copied payload buffers.
+`SbeEventDecoder` returns a retained slice. JSON decoders borrow input slices only
+for parsing. The SBE encoder copies readable bytes; this framework does not provide
+end-to-end zero-copy processing for every protocol.
+
+The following complete example releases the producer reference immediately after
+submission and lets the dispatcher manage the callback reference:
+
 ```java
-// Configuration: 2 boss, 8 game worker, 2 monitor worker
-PrioritizedNetworkBootstrap bootstrap =
-    new PrioritizedNetworkBootstrap(2, 8, 2);
+package com.example;
 
-// Game servers use high priority thread pool
-Server tcpServer = createServer(
-    bootstrap.getBossGroup(),
-    bootstrap.getGameWorkerGroup(),  // High priority
-    tcpInitializer
-);
+import com.akakata.event.Event;
+import com.akakata.event.EventHandler;
+import com.akakata.event.Events;
+import com.akakata.event.impl.AgronaEventDispatcher;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
-Server wsServer = createServer(
-    bootstrap.getBossGroup(),
-    bootstrap.getGameWorkerGroup(),  // High priority
-    wsInitializer
-);
+public final class DispatcherExample {
+    public static void main(String[] args) throws Exception {
+        AgronaEventDispatcher dispatcher = new AgronaEventDispatcher(
+                AgronaEventDispatcher.ExecutionMode.SERIAL);
+        dispatcher.initialize();
+        try {
+            CountDownLatch handled = new CountDownLatch(1);
+            dispatcher.addHandler(new EventHandler() {
+                @Override
+                public int getEventType() {
+                    return 100;
+                }
 
-// Monitoring server uses low priority thread pool
-Server httpServer = createServer(
-    bootstrap.getBossGroup(),
-    bootstrap.getMonitorWorkerGroup(),  // Low priority
-    httpInitializer
-);
+                @Override
+                public void onEvent(Event event) {
+                    ByteBuf payload = (ByteBuf) event.getSource();
+                    System.out.println("Payload bytes: " + payload.readableBytes());
+                    handled.countDown();
+                }
+            });
+
+            ByteBuf payload = Unpooled.buffer().writeInt(42);
+            try {
+                dispatcher.fireEvent(Events.event(payload, 100));
+            } finally {
+                payload.release();
+            }
+            if (!handled.await(10, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("Event was not handled");
+            }
+        } finally {
+            dispatcher.close();
+        }
+    }
+}
 ```
 
-**But this is only needed in extreme cases (million-level messages per second).**
+## Dispatcher and Context Shutdown
 
----
+Agrona closure prevents new publication, waits for active publishers to leave,
+stops the agent, clears subscriptions and releases queued payload references.
+Closure from a handler defers the final shutdown to a virtual thread so it does
+not wait for its own callback. The handler marker is shared across dispatcher
+instances, covering callbacks that close one another's dispatchers. An external
+caller waits for the completion of dispatcher cleanup.
 
-## Architecture Scoring Summary
+This cleanup does not guarantee that every timed-out concurrent handler has
+finished. Application callbacks must cooperate with shutdown and release any
+references or resources they independently own.
 
-Regarding thread pool sharing statements:
+`ServerContext.close()` stops servers, closes the game and `SessionService`, stops
+the queue sampler, closes the shared dispatcher and finally terminates network
+groups. Each stage logs cleanup failures so later stages still run. A context that
+has not constructed application resources avoids creating the shared dispatcher
+just to close it. A closed context cannot be reinitialized.
 
-| Statement | Correctness | Current Code Implementation Status |
-|-----------|-------------|-----------------------------------|
-| "Each new NioEventLoopGroup() will slice CPU" | **Completely correct** | Avoided, shared thread pool |
-| "Share bossGroup" | **Completely correct** | Implemented |
-| "Separate workerGroup" | **Scenario dependent** | Current sharing is optimal choice |
-| "Unified thread pool strategy" | **Completely correct** | Implemented (DefaultThreadFactory) |
+The shared dispatcher and metrics scheduler are static process-wide resources.
+Their shutdown is terminal; use a new JVM for another complete server lifecycle.
+Multiple independent application contexts in the same JVM are not isolated from
+these shared resources or the static channel group.
 
-**Architecture Score: 95/100**
+## Verification and Tuning
 
-The only improvement would be considering whether to separate workerGroup based on future load patterns, but keeping it shared now is completely correct!
+Run the existing regression suite with `mvn test`. It covers targeted delivery on
+shared shards, session closure preserving other players, login and registry races,
+callback-triggered dispatcher closure, publication during shutdown and native
+payload cleanup.
 
----
+Inspect platform threads with `jcmd <PID> Thread.print`. Use the configured group
+sizes and actual thread dumps when estimating thread use: network threads,
+Agrona agents, the metrics scheduler and JVM threads all contribute. Virtual
+callbacks are not counted by the current `ThreadMXBean` metric.
 
-## Monitoring and Tuning Recommendations
+Use the [local load-test command](../README.md#local-dispatcher-load-test) for a
+diagnostic run and inspect dropped-event warnings alongside throughput. This
+repository does not publish a reproducible capacity or latency guarantee. Measure
+HTTP, TCP and WebSocket workloads independently and together before changing
+thread counts or introducing application-specific executor isolation.
 
-### 1. Monitor EventLoop Thread Status
+## Source References
 
-```bash
-# View all Netty threads
-jstack <pid> | grep netty
-
-# View worker thread CPU usage
-top -H -p <pid> | grep netty-worker
-
-# Count context switches
-vmstat 1
-# Focus on cs (context switches) column
-```
-
-### 2. JVM Parameter Tuning
-
-```bash
-# Recommended JVM parameters
-java -Xms2g -Xmx2g \
-     -XX:+UseG1GC \
-     -XX:MaxGCPauseMillis=200 \
-     -XX:+ParallelRefProcEnabled \
-     -XX:+UnlockExperimentalVMOptions \
-     -XX:+AlwaysPreTouch \
-     -Dio.netty.allocator.type=pooled \
-     -jar your-server.jar
-```
-
-### 3. Netty Performance Tuning Parameters
-
-```java
-// ServerBootstrap optimization
-bootstrap.option(ChannelOption.SO_BACKLOG, 1024)
-         .option(ChannelOption.SO_REUSEADDR, true)
-         .childOption(ChannelOption.SO_KEEPALIVE, true)
-         .childOption(ChannelOption.TCP_NODELAY, true)
-         .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
-         .childOption(ChannelOption.RCVBUF_ALLOCATOR,
-                     new AdaptiveRecvByteBufAllocator(64, 1024, 65536));
-```
-
-### 4. Performance Benchmarking
-
-```bash
-# Use wrk for HTTP load testing
-wrk -t12 -c400 -d30s http://localhost:8081/health
-
-# Use websocket-bench for WebSocket load testing
-websocket-bench -c 1000 -s 10 ws://localhost:8300
-
-# Monitor system metrics
-dstat -tcnmgy 1
-```
-
----
-
-## References
-
-1. **Netty Official Documentation**
-   - [EventLoop and Threading Model](https://netty.io/wiki/thread-model.html)
-   - [Best Practices](https://netty.io/wiki/reference-counted-objects.html)
-
-2. **Reactor Pattern**
-   - [The Reactor Pattern](https://www.dre.vanderbilt.edu/~schmidt/PDF/reactor-siemens.pdf)
-   - Doug Lea - Scalable IO in Java
-
-3. **Performance Optimization**
-   - [Netty Performance Tuning](https://netty.io/wiki/native-transports.html)
-   - [Linux Performance Tools](http://www.brendangregg.com/linuxperf.html)
-
----
-
-## Version History
-
-- **v1.0** (2025-01-19) - Initial version, based on current architecture analysis
-- Author: Kelvin
-- Review: Claude Code Analysis
-
----
-
-**Conclusion**: The current shared thread pool architecture design is excellent and fully complies with Netty best practices. No changes needed!
+- [NetworkBootstrap](../src/main/java/com/akakata/context/NetworkBootstrap.java)
+- [AgronaEventDispatcher](../src/main/java/com/akakata/event/impl/AgronaEventDispatcher.java)
+- [ShardedEventDispatcher](../src/main/java/com/akakata/event/impl/ShardedEventDispatcher.java)
+- [EventDispatchers](../src/main/java/com/akakata/event/impl/EventDispatchers.java)
+- [DefaultSession](../src/main/java/com/akakata/app/impl/DefaultSession.java)
+- [SessionService](../src/main/java/com/akakata/service/SessionService.java)
+- [ServerContext](../src/main/java/com/akakata/context/ServerContext.java)

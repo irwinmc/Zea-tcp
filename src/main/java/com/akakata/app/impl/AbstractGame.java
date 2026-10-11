@@ -12,70 +12,69 @@ import com.akakata.service.IdGeneratorService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.HashSet;
 import java.util.Set;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 抽象游戏房间基类
- * <p>
- * Game 代表一个游戏房间，负责管理房间内的所有 PlayerSession。
- * 每个 Game 有独立的 EventDispatcher，用于处理房间级别的事件。
- * <p>
- * 架构设计：
- * - Game 是容器，不是 Session
- * - Game 使用独立的 AgronaEventDispatcher，不与 PlayerSession 共享
- * - 广播通过直接遍历 sessions 实现，而非通过 EventDispatcher
+ * Implements concurrent session membership and a dedicated dispatcher for game events.
+ *
+ * <p>Connection takes the session monitor before the game monitor. Shutdown marks
+ * the game closed under its monitor and releases sessions outside that monitor.
+ * Subclasses provide application behavior in {@link #onLogin(com.akakata.app.PlayerSession)}.
  *
  * @author Kelvin
  */
 public abstract class AbstractGame implements Game {
 
+    /**
+     * Logger for component lifecycle and diagnostic messages.
+     */
     private static final Logger LOG = LoggerFactory.getLogger(AbstractGame.class);
+    /**
+     * Identifier generator used for new game instances.
+     */
     private static final IdGeneratorService ID_GENERATOR = new IdGeneratorService();
 
     // ==================== 字段 ====================
 
     /**
-     * 游戏房间唯一标识
+     * Identifier used for game identity.
      */
     protected final String id;
 
     /**
-     * 游戏房间名称
+     * Diagnostic game name.
      */
     protected final String gameName;
 
     /**
-     * 房间内的所有玩家会话
+     * Live set of sessions associated with the game.
      */
     protected Set<PlayerSession> sessions;
 
     /**
-     * 房间专用的事件调度器
-     * <p>
-     * 使用独立的 AgronaEventDispatcher，不与 PlayerSession 的 sharedDispatcher 共享。
-     * 用于处理房间级别的事件（如果需要）。
+     * Dispatcher used for event delivery; ownership depends on whether it is shared.
      */
     protected EventDispatcher eventDispatcher;
 
     /**
-     * 房间关闭标志
-     * <p>
-     * 当房间开始关闭流程时设置为 true，阻止新的玩家连接和事件处理。
+     * Flag indicating that resource shutdown has started.
      */
     protected volatile boolean isShuttingDown;
 
     // ==================== 构造函数 ====================
 
     /**
-     * 构造游戏房间
+     * Creates a game with an empty concurrent session set and starts its dedicated dispatcher.
      *
-     * @param gameName 房间名称
+     * @param gameName the diagnostic game name
      */
     protected AbstractGame(String gameName) {
         this.id = String.valueOf(ID_GENERATOR.generateFor(AbstractGame.class));
         this.gameName = gameName;
-        this.sessions = new HashSet<>();
+        this.sessions = ConcurrentHashMap.newKeySet();
 
         // 创建房间专用的 EventDispatcher
         AgronaEventDispatcher dispatcher = new AgronaEventDispatcher();
@@ -90,27 +89,29 @@ public abstract class AbstractGame implements Game {
     // ==================== Getters ====================
 
     /**
-     * 获取房间 ID
+     * Returns the identifier.
      *
-     * @return 房间 ID
+     * @return the identifier
      */
     public String getId() {
         return id;
     }
 
     /**
-     * 获取房间名称
+     * Returns the diagnostic game name.
      *
-     * @return 房间名称
+     * @return the diagnostic game name
      */
     public String getGameName() {
         return gameName;
     }
 
     /**
-     * 获取房间内所有玩家会话
+     * Returns the game's live session membership set.
      *
-     * @return 玩家会话集合
+     * <p>Use lifecycle methods to coordinate membership changes with session state.
+     *
+     * @return the live set of player sessions
      */
     @Override
     public Set<PlayerSession> getSessions() {
@@ -118,9 +119,9 @@ public abstract class AbstractGame implements Game {
     }
 
     /**
-     * 检查房间是否正在关闭
+     * Tests whether game closure has started.
      *
-     * @return true 如果房间正在关闭
+     * @return {@code true} once the game is marked closed
      */
     public boolean isShuttingDown() {
         return isShuttingDown;
@@ -129,69 +130,76 @@ public abstract class AbstractGame implements Game {
     // ==================== 玩家会话管理 ====================
 
     /**
-     * 创建新的玩家会话
-     * <p>
-     * 直接构造 PlayerSession，不使用工厂模式。
+     * Creates a player session associated with this game without connecting it.
      *
-     * @return 新创建的玩家会话
+     * @return the newly created player session
+     * @throws IllegalStateException if the default game implementation is closed
      */
     @Override
-    public PlayerSession createPlayerSession() {
+    public synchronized PlayerSession createPlayerSession() {
+        if (isShuttingDown) {
+            throw new IllegalStateException("Game is closed");
+        }
         return new DefaultPlayerSession.PlayerSessionBuilder()
                 .game(this)
                 .build();
     }
 
     /**
-     * 玩家登录回调
-     * <p>
-     * 在玩家成功登录后调用，用于初始化玩家的事件处理器等。
-     * 子类必须实现此方法以定义具体的登录逻辑。
+     * Installs application event handlers after successful authentication and protocol setup.
      *
-     * @param playerSession 玩家会话
+     * @param playerSession the player session
      */
     @Override
     public abstract void onLogin(PlayerSession playerSession);
 
     /**
-     * 连接玩家会话到房间
-     * <p>
-     * 将玩家会话添加到房间的 sessions 集合中，并设置会话状态。
-     * 如果房间正在关闭，则拒绝连接。
+     * Connects a session to the game if both are open and it is not already connected.
      *
-     * @param playerSession 玩家会话
-     * @return true 如果连接成功，false 如果房间正在关闭
+     * <p>The default implementation takes the session monitor before the game monitor.
+     * The connection callback runs after its own synchronized blocks exit; a caller may
+     * still hold the session monitor. A failing callback closes the session.
+     *
+     * @param playerSession the player session
+     * @return {@code true} if accepted; {@code false} if closed or already connected
      */
     @Override
-    public synchronized boolean connectSession(PlayerSession playerSession) {
-        if (isShuttingDown) {
-            LOG.warn("Game is shutting down, playerSession {} will not be connected!", playerSession);
-            return false;
+    public boolean connectSession(PlayerSession playerSession) {
+        // Share DefaultSession.close()'s monitor so connecting and closing cannot overlap.
+        synchronized (playerSession) {
+            synchronized (this) {
+                if (isShuttingDown || playerSession.isShuttingDown()
+                        || playerSession.getStatus() == Session.Status.CLOSED
+                        || playerSession.isConnected() || sessions.contains(playerSession)) {
+                    return false;
+                }
+                playerSession.setStatus(Session.Status.CONNECTING);
+                sessions.add(playerSession);
+                playerSession.setGame(this);
+                playerSession.setStatus(Session.Status.CONNECTED);
+            }
         }
 
-        // 设置连接状态
-        playerSession.setStatus(Session.Status.CONNECTING);
-        sessions.add(playerSession);
-        playerSession.setGame(this);
-
-        // 设置为已连接
-        playerSession.setStatus(Session.Status.CONNECTED);
-
+        // Application callbacks run outside both lifecycle monitors.
         LOG.debug("PlayerSession {} connected to game {}", playerSession.getId(), id);
-
-        // 连接后回调
-        afterSessionConnect(playerSession);
-
-        return true;
+        try {
+            afterSessionConnect(playerSession);
+            return true;
+        } catch (RuntimeException e) {
+            try {
+                playerSession.close();
+            } catch (Exception closeFailure) {
+                e.addSuppressed(closeFailure);
+            }
+            throw e;
+        }
     }
 
     /**
-     * 玩家会话连接后的回调
-     * <p>
-     * 在玩家会话成功连接到房间后调用。
-     * 子类可以覆盖此方法以实现自定义逻辑（如通知其他玩家）。
+     * Runs the application callback after a session joins the game. The default implementation does
+     * nothing.
      *
-     * @param playerSession 已连接的玩家会话
+     * @param playerSession the player session
      */
     @Override
     public void afterSessionConnect(PlayerSession playerSession) {
@@ -199,17 +207,20 @@ public abstract class AbstractGame implements Game {
     }
 
     /**
-     * 断开玩家会话
-     * <p>
-     * 从房间的 sessions 集合中移除玩家会话，并释放会话的事件处理器。
+     * Removes a session from this game and releases its event registrations.
      *
-     * @param playerSession 要断开的玩家会话
-     * @return true 如果成功移除会话
+     * <p>This operation does not itself close the transport. Use the session's
+     * {@code close()} method for complete session cleanup.
+     *
+     * @param playerSession the player session
+     * @return {@code true} if the session was present and removed
      */
     @Override
-    public synchronized boolean disconnectSession(PlayerSession playerSession) {
+    public boolean disconnectSession(PlayerSession playerSession) {
         // 释放玩家会话的事件处理器
-        EventDispatchers.release(playerSession.getEventDispatcher(), playerSession);
+        if (!playerSession.isShuttingDown()) {
+            EventDispatchers.release(playerSession.getEventDispatcher(), playerSession);
+        }
 
         // 从房间移除会话
         boolean removed = sessions.remove(playerSession);
@@ -224,12 +235,9 @@ public abstract class AbstractGame implements Game {
     // ==================== 事件处理 ====================
 
     /**
-     * 发送事件到房间的 EventDispatcher
-     * <p>
-     * 用于处理房间级别的事件（如果需要）。
-     * 大多数情况下应该使用 sendBroadcast 来向所有玩家广播。
+     * Submits an event to the game dispatcher. A closed default game ignores the event.
      *
-     * @param event 事件
+     * @param event the event to process
      */
     @Override
     public void send(Event event) {
@@ -239,12 +247,13 @@ public abstract class AbstractGame implements Game {
     }
 
     /**
-     * 向房间内所有已连接的玩家广播消息
-     * <p>
-     * 直接遍历 sessions 集合，向每个已连接的玩家发送事件。
-     * 不通过 EventDispatcher，避免不必要的开销。
+     * Submits the outbound event to each connected session.
      *
-     * @param networkEvent 网络事件
+     * <p>Each accepted delivery retains its own native payload reference. The caller
+     * retains ownership of the original event payload and may release that reference
+     * after this method returns.
+     *
+     * @param networkEvent the outbound event to broadcast
      */
     @Override
     public void sendBroadcast(NetworkEvent networkEvent) {
@@ -263,29 +272,32 @@ public abstract class AbstractGame implements Game {
     // ==================== 生命周期 ====================
 
     /**
-     * 关闭房间
-     * <p>
-     * 设置关闭标志，并关闭房间内所有玩家会话。
-     * 此方法是线程安全的。
+     * Stops accepting sessions, closes connected sessions and releases the game dispatcher.
+     *
+     * <p>The default implementation continues closing remaining sessions when an
+     * individual session fails, and performs cleanup outside the game monitor.
      */
     @Override
-    public synchronized void close() {
-        if (isShuttingDown) {
-            return;
+    public void close() {
+        List<PlayerSession> sessionsToClose;
+        synchronized (this) {
+            if (isShuttingDown) {
+                return;
+            }
+            LOG.info("Closing game: id={}, name={}, sessions={}", id, gameName, sessions.size());
+            isShuttingDown = true;
+            sessionsToClose = new ArrayList<>(sessions);
         }
 
-        LOG.info("Closing game: id={}, name={}, sessions={}", id, gameName, sessions.size());
-
-        isShuttingDown = true;
-
         // 关闭所有玩家会话
-        for (PlayerSession session : sessions) {
+        for (PlayerSession session : sessionsToClose) {
             try {
                 session.close();
             } catch (Exception e) {
                 LOG.error("Error closing session {} in game {}", session.getId(), id, e);
             }
         }
+        sessions.clear();
 
         // 关闭房间的 EventDispatcher
         if (eventDispatcher != null) {

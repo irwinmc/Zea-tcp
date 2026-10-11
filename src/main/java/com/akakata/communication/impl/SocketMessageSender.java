@@ -3,6 +3,7 @@ package com.akakata.communication.impl;
 import com.akakata.communication.MessageSender;
 import com.akakata.event.Event;
 import com.akakata.event.Events;
+import com.akakata.event.EventResources;
 import com.akakata.handlers.codec.EventEncoder;
 import com.akakata.handlers.codec.JsonEncoder;
 import com.akakata.handlers.codec.MessageBufferEventEncoder;
@@ -17,28 +18,73 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
+ * Writes messages to a Netty channel and closes it after a disconnect message.
+ *
+ * <p>Event writes retain the native payload until the write future completes.
+ * For raw Netty messages, normal pipeline ownership rules apply. Closing selects an
+ * event encoder when available and otherwise writes a one-byte disconnect opcode.
+ *
  * @author Kelvin
  */
 public class SocketMessageSender implements MessageSender {
 
+    /**
+     * Logger for component lifecycle and diagnostic messages.
+     */
     private static final Logger LOG = LoggerFactory.getLogger(SocketMessageSender.class);
 
+    /**
+     * Associated transport channel.
+     */
     private final Channel channel;
 
+    /**
+     * Associates an outbound sender with a Netty channel.
+     *
+     * @param channel the Netty transport channel
+     */
     public SocketMessageSender(Channel channel) {
         super();
         this.channel = channel;
     }
 
+    /**
+     * Writes and flushes a message through the channel.
+     *
+     * <p>For an event, a captured native payload is retained until the write future
+     * completes, including failed writes. The caller keeps its original event-payload
+     * reference. Raw Netty messages follow normal pipeline ownership transfer.
+     *
+     * @param message the message or string to send
+     * @return the channel write future
+     */
     @Override
     public Object sendMessage(Object message) {
+        if (message instanceof Event event) {
+            Object payloadReference = EventResources.retainPayload(event);
+            try {
+                return channel.writeAndFlush(message).addListener(future ->
+                        EventResources.releasePayload(payloadReference));
+            } catch (Throwable failure) {
+                EventResources.releasePayload(payloadReference);
+                throw failure;
+            }
+        }
         return channel.writeAndFlush(message);
     }
 
+    /**
+     * Returns the associated Netty channel.
+     *
+     * @return the associated Netty channel
+     */
     public Channel getChannel() {
         return channel;
     }
 
+    /**
+     * Writes a disconnect opcode or event and closes the channel when that write completes.
+     */
     @Override
     public void close() {
         LOG.debug("Going to close tcp connection in class: {}", this.getClass().getName());
@@ -58,6 +104,9 @@ public class SocketMessageSender implements MessageSender {
                 .addListener(ChannelFutureListener.CLOSE);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public String toString() {
         String channelId = "Socket channel: ";
@@ -70,6 +119,12 @@ public class SocketMessageSender implements MessageSender {
         return sender;
     }
 
+    /**
+     * Tests whether the pipeline contains one of the supported event encoders.
+     *
+     * @param pipeline the Netty handler pipeline
+     * @return {@code true} if an event encoder is present
+     */
     private boolean supportsEventOutbound(ChannelPipeline pipeline) {
         if (pipeline == null) {
             return false;
@@ -82,6 +137,12 @@ public class SocketMessageSender implements MessageSender {
                 || hasGenericEventEncoder(pipeline);
     }
 
+    /**
+     * Scans pipeline message encoders for a supported event-encoder implementation.
+     *
+     * @param pipeline the Netty handler pipeline
+     * @return {@code true} if a supported message encoder is found
+     */
     private boolean hasGenericEventEncoder(ChannelPipeline pipeline) {
         for (String name : pipeline.names()) {
             if (pipeline.get(name) instanceof MessageToMessageEncoder<?> encoder) {

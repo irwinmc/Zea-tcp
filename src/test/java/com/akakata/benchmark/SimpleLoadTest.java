@@ -10,15 +10,29 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Simple load test for AgronaEventDispatcher.
- * Tests throughput and latency under different load levels.
+ * Runs a configurable local event-dispatcher load test and reports throughput and latency.
  *
  * @author Kelvin
  */
 public class SimpleLoadTest {
 
+    /**
+     * Creates a simple load test instance.
+     */
+    public SimpleLoadTest() {
+    }
+
+    /**
+     * Logger for component lifecycle and diagnostic messages.
+     */
     private static final Logger LOG = LoggerFactory.getLogger(SimpleLoadTest.class);
 
+    /**
+     * Runs this executable example or isolated regression probe.
+     *
+     * @param args the command-line arguments
+     * @throws Exception if the operation fails
+     */
     public static void main(String[] args) throws Exception {
         // 配置参数
         int threads = 4;              // 并发线程数（可以调整）
@@ -160,42 +174,72 @@ public class SimpleLoadTest {
     }
 
     /**
-     * 测试事件，包含时间戳用于计算延迟
+     * Carries a load-test sequence value and timing information.
      */
     static class TestEvent implements Event {
+        /**
+         * Type used by this regression fixture.
+         */
         private int type = 1001;
+        /**
+         * Source used by this regression fixture.
+         */
         private Object source;
+        /**
+         * Timestamp used by this regression fixture.
+         */
         private long timestamp;
 
+        /**
+         * Creates a test event instance.
+         */
         public TestEvent() {
             this.timestamp = System.nanoTime();
         }
 
+        /**
+         * {@inheritDoc}
+         */
         @Override
         public int getType() {
             return type;
         }
 
+        /**
+         * {@inheritDoc}
+         */
         @Override
         public void setType(int type) {
             this.type = type;
         }
 
+        /**
+         * {@inheritDoc}
+         */
         @Override
         public Object getSource() {
             return source;
         }
 
+        /**
+         * {@inheritDoc}
+         */
         @Override
         public void setSource(Object source) {
             this.source = source;
         }
 
+        /**
+         * {@inheritDoc}
+         */
         @Override
         public long getTimeStamp() {
             return timestamp;
         }
 
+        /**
+         * {@inheritDoc}
+         */
         @Override
         public void setTimeStamp(long timeStamp) {
             this.timestamp = timeStamp;

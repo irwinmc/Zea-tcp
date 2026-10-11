@@ -1,32 +1,40 @@
 package com.akakata.server;
 
 /**
+ * Starts and stops the configured TCP, HTTP and WebSocket servers.
+ *
  * @author Kelvin
  */
 public interface ServerManager {
 
     /**
-     * Start servers with several ports
+     * Starts the enabled servers at configured ports or at the supplied override ports.
      *
-     * @param flashPort     flash policy server port
-     * @param tcpPort       tcp port
-     * @param httpPort      http port
+     * <p>The legacy Flash port parameter is retained for compatibility and is unused
+     * by the default implementation.
+     *
+     * @param flashPort flash policy server port
+     * @param tcpPort the TCP override port; nonpositive values skip the server
+     * @param httpPort http port
      * @param webSocketPort web socket port
-     * @throws Exception
+     * @throws Exception if an enabled server fails to start
      */
     void startServers(int flashPort, int tcpPort, int httpPort, int webSocketPort) throws Exception;
 
     /**
-     * Start servers with port in Spring xml
+     * Starts the enabled servers at configured ports or at the supplied override ports.
      *
-     * @throws Exception
+     * <p>The legacy Flash port parameter is retained for compatibility and is unused
+     * by the default implementation.
+     *
+     * @throws Exception if an enabled server fails to start
      */
     void startServers() throws Exception;
 
     /**
-     * Used to stop the server and manage cleanup of zeal.
+     * Stops all server instances managed by this component.
      *
-     * @throws Exception
+     * @throws Exception if server shutdown fails
      */
     void stopServers() throws Exception;
 }

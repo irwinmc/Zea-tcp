@@ -12,56 +12,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Custom binary protocol using MessageBuffer abstraction for flexible message encoding.
- * <p>
- * This protocol provides a balance between performance and flexibility, using a custom
- * {@code MessageBuffer} abstraction that wraps Netty's ByteBuf. It's suitable for scenarios
- * where you need more control over message structure than JSON provides, but don't need
- * the extreme performance of SBE.
- * </p>
- * <p>
- * <b>Protocol Characteristics:</b>
- * <ul>
- *   <li>Encoding: Custom binary (MessageBuffer-based)</li>
- *   <li>Framing: 2-byte length prefix</li>
- *   <li>Performance: Faster than JSON, slower than SBE</li>
- *   <li>Flexibility: High (dynamic message structure)</li>
- *   <li>Schema: Runtime-defined (no compile-time validation)</li>
- * </ul>
- * </p>
- * <p>
- * <b>Message Format:</b>
- * <pre>
- * +--------+--------------------+
- * | Length | MessageBuffer Body |
- * | 2 bytes| Variable length    |
- * +--------+--------------------+
+ * Installs length framing and binary message-buffer event handlers.
  *
- * MessageBuffer typically contains:
- * - Event type (int)
- * - Event timestamp (long)
- * - Custom fields (primitives, strings, byte arrays)
- * </pre>
- * </p>
- * <p>
- * <b>Pipeline Configuration:</b>
- * <pre>
- * Inbound:  lengthDecoder → messageBufferEventDecoder → eventHandler
- * Outbound: eventHandler → messageBufferEventEncoder → lengthFieldPrepender
- * </pre>
- * </p>
- * <p>
- * <b>Use Cases:</b>
- * <ul>
- *   <li>Custom game protocols with dynamic message structure</li>
- *   <li>Legacy protocol compatibility</li>
- *   <li>Prototyping before committing to SBE schema</li>
- * </ul>
- * </p>
- * <p>
- * <b>Note:</b> This implementation uses setter injection (legacy pattern).
- * Consider refactoring to constructor injection for consistency with other protocols.
- * </p>
+ * <p>Callers must configure the decoder, encoder and length prepender before
+ * applying the protocol.
  *
  * @author Kelvin
  * @see MessageBufferEventDecoder
@@ -70,9 +24,18 @@ import org.slf4j.LoggerFactory;
  */
 public class MessageBufferProtocol extends AbstractNettyProtocol {
 
+    /**
+     * Logger for component lifecycle and diagnostic messages.
+     */
     private static final Logger LOG = LoggerFactory.getLogger(MessageBufferProtocol.class);
 
+    /**
+     * Decoder for opcode and binary message-buffer payloads.
+     */
     private MessageBufferEventDecoder messageBufferEventDecoder;
+    /**
+     * Encoder for opcode and binary message-buffer payloads.
+     */
     private MessageBufferEventEncoder messageBufferEventEncoder;
     /**
      * Netty handler that prepends the 2-byte length header to outgoing messages.
@@ -81,33 +44,14 @@ public class MessageBufferProtocol extends AbstractNettyProtocol {
     private LengthFieldPrepender lengthFieldPrepender;
 
     /**
-     * Constructs a new MessageBuffer protocol with default configuration.
-     * <p>
-     * Dependencies must be set via setter methods after construction.
-     * </p>
+     * Creates an unconfigured message-buffer protocol; set its codecs before applying it.
      */
     public MessageBufferProtocol() {
         super("MESSAGE_BUFFER_PROTOCOL");
     }
 
     /**
-     * Configures the channel pipeline with MessageBuffer protocol handlers.
-     * <p>
-     * Adds handlers in the following order:
-     * <ol>
-     *   <li><b>lengthDecoder</b> - Extracts frames based on 2-byte length prefix (inbound)</li>
-     *   <li><b>messageBufferEventDecoder</b> - Decodes binary to Event objects (inbound)</li>
-     *   <li><b>eventHandler</b> - Processes decoded events (bidirectional)</li>
-     *   <li><b>lengthFieldPrepender</b> - Adds 2-byte length prefix (outbound)</li>
-     *   <li><b>messageBufferEventEncoder</b> - Encodes Event objects to binary (outbound)</li>
-     * </ol>
-     * </p>
-     * <p>
-     * <b>Note:</b> Outbound handlers execute in reverse order of addition, so
-     * messageBufferEventEncoder runs before lengthFieldPrepender.
-     * </p>
-     *
-     * @param playerSession the session to configure with MessageBuffer protocol
+     * {@inheritDoc}
      */
     @Override
     public void applyProtocol(PlayerSession playerSession) {
@@ -126,26 +70,56 @@ public class MessageBufferProtocol extends AbstractNettyProtocol {
         pipeline.addLast("messageBufferEventEncoder", messageBufferEventEncoder);
     }
 
+    /**
+     * Returns the message buffer event decoder.
+     *
+     * @return the message buffer event decoder
+     */
     public MessageBufferEventDecoder getMessageBufferEventDecoder() {
         return messageBufferEventDecoder;
     }
 
+    /**
+     * Sets the message buffer event decoder.
+     *
+     * @param messageBufferEventDecoder the message buffer event decoder
+     */
     public void setMessageBufferEventDecoder(MessageBufferEventDecoder messageBufferEventDecoder) {
         this.messageBufferEventDecoder = messageBufferEventDecoder;
     }
 
+    /**
+     * Returns the message buffer event encoder.
+     *
+     * @return the message buffer event encoder
+     */
     public MessageBufferEventEncoder getMessageBufferEventEncoder() {
         return messageBufferEventEncoder;
     }
 
+    /**
+     * Sets the message buffer event encoder.
+     *
+     * @param messageBufferEventEncoder the message buffer event encoder
+     */
     public void setMessageBufferEventEncoder(MessageBufferEventEncoder messageBufferEventEncoder) {
         this.messageBufferEventEncoder = messageBufferEventEncoder;
     }
 
+    /**
+     * Returns the outbound length-field prepender.
+     *
+     * @return the outbound length-field prepender
+     */
     public LengthFieldPrepender getLengthFieldPrepender() {
         return lengthFieldPrepender;
     }
 
+    /**
+     * Sets the outbound length-field prepender.
+     *
+     * @param lengthFieldPrepender the length field prepender
+     */
     public void setLengthFieldPrepender(LengthFieldPrepender lengthFieldPrepender) {
         this.lengthFieldPrepender = lengthFieldPrepender;
     }

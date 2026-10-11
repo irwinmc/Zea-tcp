@@ -8,22 +8,54 @@ import java.security.SecureRandom;
 import java.util.Base64;
 
 /**
+ * Encodes and decodes strings with the project's AES-GCM key and URL-safe Base64.
+ *
+ * <p>Each encrypted value contains a random 12-byte IV followed by ciphertext and
+ * an authentication tag. String-to-byte conversion uses the platform default charset.
  *
  * @author Kelvin
  */
 public final class AesGcmCipher {
 
+    /**
+     * Cipher transformation used for authenticated encryption.
+     */
     private static final String TRANSFORMATION = "AES/GCM/NoPadding";
+    /**
+     * Authentication-tag size in bits.
+     */
     private static final int TAG_LENGTH_BIT = 128;
+    /**
+     * Initialization-vector size in bytes.
+     */
     private static final int IV_LENGTH = 12;
+    /**
+     * Key bytes used by the default cipher implementation.
+     */
     private static final byte[] DEFAULT_KEY = "q7X1FXD1GLNalua5".getBytes();
 
+    /**
+     * Secure random source for initialization vectors.
+     */
     private static final SecureRandom RANDOM = new SecureRandom();
+    /**
+     * Cipher key constructed from the configured default key bytes.
+     */
     private static final SecretKey SECRET_KEY = new SecretKeySpec(DEFAULT_KEY, "AES");
 
+    /**
+     * Prevents direct construction of this utility or singleton component.
+     */
     private AesGcmCipher() {
     }
 
+    /**
+     * Encrypts a string using a fresh IV and encodes the result as URL-safe Base64.
+     *
+     * @param plainText the plaintext string, or null
+     * @return the encoded ciphertext, or {@code null} for null input
+     * @throws IllegalStateException if encryption fails
+     */
     public static String encrypt(String plainText) {
         if (plainText == null) {
             return null;
@@ -44,6 +76,14 @@ public final class AesGcmCipher {
         }
     }
 
+    /**
+     * Decodes and authenticates ciphertext before returning its plaintext.
+     *
+     * @param cipherText the URL-safe Base64 ciphertext, or null
+     * @return the decrypted string, or {@code null} for null input
+     * @throws IllegalArgumentException if the input is not valid URL-safe Base64
+     * @throws IllegalStateException if decryption or authentication fails
+     */
     public static String decrypt(String cipherText) {
         if (cipherText == null) {
             return null;

@@ -4,18 +4,18 @@ import com.akakata.app.exception.InvalidParamException;
 import com.akakata.communication.impl.RequestMessage;
 
 /**
- * 游戏命令
+ * Executes an application command for a player session and its request parameters.
  *
  * @author Kyia
  */
 public interface Command {
 
     /**
-     * 执行命令
+     * Executes this command for the supplied player and request.
      *
-     * @param session 玩家的会话对象
-     * @param request 请求，包含参数、通道信息
-     * @throws InvalidParamException
+     * @param session the session associated with the operation
+     * @param request the inbound request
+     * @throws InvalidParamException if required parameters are absent or invalid
      */
     void execute(PlayerSession session, RequestMessage request) throws InvalidParamException;
 }

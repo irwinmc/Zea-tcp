@@ -43,10 +43,12 @@ public class LoginHandler extends SimpleChannelInboundHandler<Event> {
      * Protocol associated with the session or installed after authentication.
      */
     private final Protocol protocol;
+
     /**
      * Game associated with this session or component.
      */
     private final Game game;
+
     /**
      * Authentication coordinator used to create and replace player sessions.
      */

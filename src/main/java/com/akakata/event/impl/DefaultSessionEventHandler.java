@@ -12,7 +12,7 @@ import org.slf4j.LoggerFactory;
  * Dispatches session events to overridable callbacks by opcode.
  *
  * <p>The default inbound callback broadcasts the payload through the player's
- * game. Outbound callbacks send through the session sender, and disconnect, logout
+ * application Game's serial queue. Outbound callbacks send through the session sender, and disconnect, logout
  * and exception callbacks close the session.
  *
  * @author Kyia
@@ -94,7 +94,7 @@ public class DefaultSessionEventHandler implements SessionEventHandler {
     }
 
     /**
-     * Wraps the inbound event as a network event and broadcasts it to the player's game.
+     * Wraps the inbound event as a network event and queues it for broadcasting through the application Game.
      *
      * @param event the event to process
      */

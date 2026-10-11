@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @Timeout(10)
 class SessionCacheLifecycleRegressionTest {
+
     /**
      * Creates a session cache lifecycle regression test instance.
      */
@@ -35,10 +36,12 @@ class SessionCacheLifecycleRegressionTest {
      * Game used by this regression fixture.
      */
     private DefaultGame game;
+
     /**
      * Service used by this regression fixture.
      */
     private SessionService service;
+
     /**
      * Credentials used by this regression fixture.
      */

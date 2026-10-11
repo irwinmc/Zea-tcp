@@ -32,6 +32,7 @@ public class WebSocketProtocol extends AbstractNettyProtocol {
      * Decoder for binary WebSocket event frames.
      */
     private final WebSocketEventDecoder webSocketEventDecoder;
+
     /**
      * Encoder for binary WebSocket event frames.
      */

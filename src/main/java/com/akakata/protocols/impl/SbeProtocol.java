@@ -31,10 +31,12 @@ public class SbeProtocol extends AbstractNettyProtocol {
      * Decoder for the project's SBE-style event frames.
      */
     private final SbeEventDecoder sbeEventDecoder;
+
     /**
      * Encoder for the project's SBE-style event frames.
      */
     private final SbeEventEncoder sbeEventEncoder;
+
     /**
      * Shared outbound TCP frame-length encoder.
      */

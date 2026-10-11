@@ -6,7 +6,7 @@
 
     <groupId>com.akakata</groupId>
     <artifactId>zea-tcp</artifactId>
-    <version>0.7.8</version>
+    <version>0.8.0</version>
 
     <name>Zea TCP Transport</name>
     <description>High-performance Netty transport and protocol gateway for the Zea platform.</description>
@@ -56,7 +56,6 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <io.netty.version>4.2.19.Final</io.netty.version>
-        <org.agrona.version>2.6.1</org.agrona.version>
         <dagger.version>2.60.1</dagger.version>
         <exec.mainClass>com.akakata.benchmark.SimpleLoadTest</exec.mainClass>
     </properties>
@@ -66,12 +65,6 @@
             <groupId>io.netty</groupId>
             <artifactId>netty-all</artifactId>
             <version>${io.netty.version}</version>
-        </dependency>
-
-        <dependency>
-            <groupId>org.agrona</groupId>
-            <artifactId>agrona</artifactId>
-            <version>${org.agrona.version}</version>
         </dependency>
 
         <!-- Jackson -->
@@ -92,12 +85,12 @@
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-api</artifactId>
-            <version>2.0.17</version>
+            <version>2.0.20</version>
         </dependency>
         <dependency>
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-classic</artifactId>
-            <version>1.6.3</version>
+            <version>1.6.5</version>
         </dependency>
 
         <dependency>
@@ -200,9 +193,6 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.2.5</version>
-                <configuration>
-                    <argLine>--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED</argLine>
-                </configuration>
             </plugin>
             <plugin>
                 <groupId>org.sonatype.central</groupId>

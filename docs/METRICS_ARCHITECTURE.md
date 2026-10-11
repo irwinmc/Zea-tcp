@@ -1,6 +1,6 @@
 # Metrics Architecture
 
-Zea TCP Transport 0.7.8 exposes two process-wide collectors:
+Zea TCP Transport 0.8.0 exposes two process-wide collectors:
 `ServerMetrics` for explicit counters and direct runtime readings, and
 `EventDispatcherMetrics` for sampled shared-dispatcher queue depths.
 [Monitoring](MONITORING.md) describes their HTTP output.
@@ -132,8 +132,9 @@ The sampler reads:
 - The successful sampling timestamp in epoch milliseconds.
 
 The shared shard count is `max(2, highestOneBit(availableProcessors))`. Sampling
-excludes game-owned or other dedicated dispatchers. Queue values count waiting
-deliveries, not callback tasks or execution time.
+excludes game-owned or other dedicated dispatchers. Queue values count pending Netty tasks, excluding running callbacks and execution
+time. Cancelled task shells can remain in a physical queue until the worker reaches
+them, although their event, session and payload references have already been cleared.
 
 | Getter | Behavior |
 | --- | --- |

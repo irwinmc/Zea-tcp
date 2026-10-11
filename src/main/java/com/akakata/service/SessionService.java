@@ -67,6 +67,7 @@ public class SessionService {
 
     // Include removed sessions whose asynchronous Caffeine cleanup has not completed yet.
     // Guarded by this, with identity semantics matching each resource's lifecycle.
+
     /**
      * Identity-based ownership set including entries awaiting asynchronous removal cleanup; guarded
      * by this service.

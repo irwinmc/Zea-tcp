@@ -18,6 +18,7 @@ public final class AppContext {
      * App context.
      */
     public static final String APP_CONTEXT = "appContext";
+
     /**
      * Dependency or pipeline name for app session.
      */
@@ -27,14 +28,17 @@ public final class AppContext {
      * Servers.
      */
     public static final String SERVER_MANAGER = "serverManager";
+
     /**
      * Dependency or pipeline name for tcp server.
      */
     public static final String TCP_SERVER = "tcpServer";
+
     /**
      * Dependency or pipeline name for http server.
      */
     public static final String HTTP_SERVER = "httpServer";
+
     /**
      * Dependency or pipeline name for web socket server.
      */

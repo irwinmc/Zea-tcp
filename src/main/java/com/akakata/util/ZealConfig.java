@@ -17,10 +17,12 @@ public class ZealConfig {
      * System-property key used to prefix generated identifiers with a node name.
      */
     public static final String NODE_NAME = "ZealNode";
+
     /**
      * Attribute key identifying reconnect credentials.
      */
     public static final String RECONNECT_KEY = "RECONNECT_KEY";
+
     /**
      * Attribute key identifying the reconnect registry.
      */

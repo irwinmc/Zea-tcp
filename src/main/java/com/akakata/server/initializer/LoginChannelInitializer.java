@@ -22,14 +22,17 @@ public class LoginChannelInitializer extends ChannelInitializer<SocketChannel> {
      * Maximum inbound frame size in bytes.
      */
     private final int frameSize;
+
     /**
      * Decoder selected for inbound login frames.
      */
     private final ChannelHandler eventDecoder;
+
     /**
      * Handler that authenticates TCP login events.
      */
     private final LoginHandler loginHandler;
+
     /**
      * Shared outbound TCP frame-length encoder.
      */

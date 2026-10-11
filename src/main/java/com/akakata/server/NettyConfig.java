@@ -31,34 +31,42 @@ public class NettyConfig {
      * Pipeline initializer used for accepted channels.
      */
     protected ChannelInitializer<? extends Channel> channelInitializer;
+
     /**
      * Options applied to listening channels.
      */
     private Map<ChannelOption<?>, Object> channelOptions;
+
     /**
      * Options applied to accepted child channels.
      */
     private Map<ChannelOption<?>, Object> channelChildOptions;
+
     /**
      * Shared event-loop group for accepting incoming connections.
      */
     private volatile EventLoopGroup bossGroup;
+
     /**
      * Shared event-loop group for processing connection I/O.
      */
     private volatile EventLoopGroup workerGroup;
+
     /**
      * Accepting-thread count used when creating a boss group lazily.
      */
     private int bossThreadCount;
+
     /**
      * I/O-thread count used when creating a worker group lazily.
      */
     private int workerThreadCount;
+
     /**
      * Cached or explicitly supplied server bind address.
      */
     private volatile InetSocketAddress socketAddress;
+
     /**
      * Configured server bind port.
      */

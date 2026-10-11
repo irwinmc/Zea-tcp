@@ -28,18 +28,22 @@ public class ServerManagerImpl implements ServerManager {
      * Configured TCP server instance.
      */
     private final Server tcpServer;
+
     /**
      * Configured HTTP server instance.
      */
     private final Server httpServer;
+
     /**
      * Configured WebSocket server instance.
      */
     private final Server webSocketServer;
+
     /**
      * Configuration manager supplying server ports, switches and sampling intervals.
      */
     private final ConfigurationManager configManager;
+
     /**
      * Server instances successfully started by this manager.
      */

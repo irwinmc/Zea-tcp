@@ -46,9 +46,9 @@ public final class EventDispatchers {
     // ==================== 初始化方法 ====================
 
     /**
-     * Creates and initializes at least two shards, sized from the available processors.
+     * Creates at least two lazily started shards, sized from the available processors.
      *
-     * @return the initialized shared dispatcher
+     * @return the shared dispatcher
      */
     private static ShardedEventDispatcher createSharedDispatcher() {
         int cores = Runtime.getRuntime().availableProcessors();
@@ -84,7 +84,7 @@ public final class EventDispatchers {
     }
 
     /**
-     * Creates an initialized two-shard dispatcher owned by the caller.
+     * Creates a lazily started two-shard dispatcher owned by the caller.
      *
      * @return a new dedicated dispatcher that the caller must close
      */
@@ -109,7 +109,8 @@ public final class EventDispatchers {
             return;
         }
 
-        if (dispatcher == SHARED_DISPATCHER || SHARED_DISPATCHER.containsShard(dispatcher)) {
+        if (dispatcher == SHARED_DISPATCHER || SHARED_DISPATCHER.containsShard(dispatcher)
+                || (dispatcher instanceof NettyEventDispatcher netty && netty.borrowsExecutor())) {
             // 共享调度器及其分片：只移除该 session 的 handlers
             dispatcher.removeHandlersForSession(session);
             LOG.debug("Removed handlers for session {} from shared dispatcher", session.getId());

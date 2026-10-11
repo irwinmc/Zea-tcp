@@ -32,16 +32,22 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @Timeout(10)
 class LoginCallbackLifecycleRegressionTest {
+
     /**
      * Selects the TCP or WebSocket login path under test.
      */
-    enum Transport {     /**
-     * Tcp used by this regression fixture.
-     */
-    TCP,     /**
-     * Websocket used by this regression fixture.
-     */
-    WEBSOCKET }
+    enum Transport {
+
+        /**
+         * Tcp used by this regression fixture.
+         */
+        TCP,
+
+        /**
+         * Websocket used by this regression fixture.
+         */
+        WEBSOCKET
+    }
 
     /**
      * Creates a login callback lifecycle regression test instance.
@@ -155,30 +161,37 @@ class LoginCallbackLifecycleRegressionTest {
      * Owns channel, session and protocol resources for a login regression scenario.
      */
     private static final class Fixture implements AutoCloseable {
+
         /**
          * Game used by this regression fixture.
          */
         final DefaultGame game = new DefaultGame();
+
         /**
          * Session used by this regression fixture.
          */
         final PlayerSession session = game.createPlayerSession();
+
         /**
          * Sessions used by this regression fixture.
          */
         final SessionService sessions = new SessionService(buffer -> null, false);
+
         /**
          * Protocol used by this regression fixture.
          */
         final RecordingProtocol protocol = new RecordingProtocol();
+
         /**
          * Write used by this regression fixture.
          */
         final DelayedWrite write = new DelayedWrite();
+
         /**
          * Associated transport channel.
          */
         final EmbeddedChannel channel;
+
         /**
          * Transport used by this regression fixture.
          */
@@ -229,6 +242,7 @@ class LoginCallbackLifecycleRegressionTest {
      * Captures outbound writes so tests can complete their promises after closure.
      */
     private static final class DelayedWrite extends ChannelOutboundHandlerAdapter {
+
         /**
          * Creates a delayed write instance.
          */
@@ -239,6 +253,7 @@ class LoginCallbackLifecycleRegressionTest {
          * Promise used by this regression fixture.
          */
         ChannelPromise promise;
+
         /**
          * Message used by this regression fixture.
          */
@@ -279,6 +294,7 @@ class LoginCallbackLifecycleRegressionTest {
      * Records protocol installation during login callback tests.
      */
     private static final class RecordingProtocol implements Protocol {
+
         /**
          * Creates a recording protocol instance.
          */

@@ -32,10 +32,12 @@ public abstract class CommandLine {
      * Application context owning configuration and server resources.
      */
     protected ServerContext context;
+
     /**
      * Manager coordinating startup and shutdown of the configured servers.
      */
     protected ServerManager serverManager;
+
     /**
      * Flag recording completion of server startup.
      */

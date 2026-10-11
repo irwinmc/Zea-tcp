@@ -192,24 +192,28 @@ public interface Session {
      */
     enum Status {
         // Status of not connected
+
         /**
          * The session has not entered the connection process.
          */
         NOT_CONNECTED,
 
         // Status of connecting
+
         /**
          * The session is being attached to a game.
          */
         CONNECTING,
 
         // Status of connected
+
         /**
          * The session is attached and connected.
          */
         CONNECTED,
 
         // Status of closed
+
         /**
          * The session is closed; the default implementation treats this state as terminal.
          */

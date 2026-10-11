@@ -31,6 +31,7 @@ public class MetricsHandler extends AbstractHttpHandler {
      * Logger for component lifecycle and diagnostic messages.
      */
     private static final Logger LOG = LoggerFactory.getLogger(MetricsHandler.class);
+
     /**
      * Shared JSON mapper for payload conversion.
      */

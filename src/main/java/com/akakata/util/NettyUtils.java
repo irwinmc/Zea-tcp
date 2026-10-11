@@ -35,6 +35,7 @@ public class NettyUtils {
      * Attribute key used to associate a Netty channel with application data.
      */
     public static final String NETTY_CHANNEL = "NETTY_CHANNEL";
+
     /**
      * Logger for component lifecycle and diagnostic messages.
      */

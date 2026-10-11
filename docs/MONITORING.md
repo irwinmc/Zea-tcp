@@ -1,6 +1,6 @@
 # Monitoring Endpoints
 
-Zea TCP Transport 0.7.8 serves health and metrics endpoints through its HTTP
+Zea TCP Transport 0.8.0 serves health and metrics endpoints through its HTTP
 listener, whose bundled port is 8081. Enable `server.http.enabled` and use the
 configured `http.port`. The HTTP-only repository example uses port 18081 instead.
 See the [configuration guide](CONFIGURATION.md).
@@ -70,7 +70,7 @@ readings are available independently; dispatcher depths are sampled.
 - `cpu_load` is system CPU utilization as a fraction, rounded to two decimals;
   `0.25` means 25%. A negative value indicates an unavailable reading.
 - `thread_count` is the management bean's platform-thread count, excluding virtual
-  threads. It does not count concurrent dispatcher callbacks.
+  threads. Netty business executors use platform threads and are included.
 - Channel counts come from `AbstractNettyServer.ALL_CHANNELS`. The group includes
   listening channels and explicitly registered TCP client channels; it is not a
   complete HTTP or WebSocket client count.
@@ -211,7 +211,9 @@ The default sampling interval is 30 seconds. Configure
 to disable it. Before sampling, the cached total is zero and the per-shard array
 is empty even though `shard_count` can be positive.
 
-These values exclude dedicated game queues and active callback tasks. Total and
+These values count pending Netty tasks and exclude the application Game queue and
+running callbacks. Cancelled task shells may remain counted until their worker
+reaches them, although their event and native payload references are already cleared. Total and
 per-shard depths are read separately, so their sums need not match during concurrent
 publication. Use `last_update_timestamp` to assess freshness. A growing maximum
 can identify a hot shard; a zero queue does not prove that all handlers have finished.

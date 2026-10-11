@@ -28,6 +28,7 @@ public final class ServerContext implements AutoCloseable {
      * Logger for component lifecycle and diagnostic messages.
      */
     private static final Logger LOG = LoggerFactory.getLogger(ServerContext.class);
+
     /**
      * Default classpath properties resource.
      */
@@ -37,30 +38,37 @@ public final class ServerContext implements AutoCloseable {
      * Configuration manager supplying server ports, switches and sampling intervals.
      */
     private final ConfigurationManager configManager;
+
     /**
      * Owner of the shared boss and worker event-loop groups.
      */
     private final NetworkBootstrap networkBootstrap;
+
     /**
      * Singleton sampler for shared-dispatcher queue depths.
      */
     private EventDispatcherMetrics dispatcherMetrics;
+
     /**
      * Flag recording successful application initialization.
      */
     private volatile boolean initialized = false;
+
     /**
      * Terminal lifecycle flag, published when shutdown begins.
      */
     private boolean closed = false;
+
     /**
      * Game associated with this session or component.
      */
     private volatile Game game;
+
     /**
      * Credential-keyed session registry and session resource owner.
      */
     private volatile SessionService sessionService;
+
     /**
      * Manager coordinating startup and shutdown of the configured servers.
      */

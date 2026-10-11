@@ -34,6 +34,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * failures.
  */
 class BufferLifecycleRegressionTest {
+
     /**
      * Creates a buffer lifecycle regression test instance.
      */
@@ -144,6 +145,7 @@ class BufferLifecycleRegressionTest {
      * Throws during JSON serialization to exercise allocation cleanup.
      */
     public static class FailingPayload {
+
         /**
          * Creates a failing payload instance.
          */
@@ -164,6 +166,7 @@ class BufferLifecycleRegressionTest {
      * Tracks native allocations so tests can assert their final reference counts.
      */
     private static class TrackingAllocator extends AbstractByteBufAllocator {
+
         /**
          * Buffers used by this regression fixture.
          */

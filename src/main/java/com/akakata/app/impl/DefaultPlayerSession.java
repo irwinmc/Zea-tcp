@@ -160,10 +160,12 @@ public class DefaultPlayerSession extends DefaultSession implements PlayerSessio
          * Player associated with this session or builder.
          */
         protected Player player;
+
         /**
          * Game associated with this session or component.
          */
         protected Game game;
+
         /**
          * Protocol associated with the session or installed after authentication.
          */

@@ -17,8 +17,6 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -28,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @Timeout(10)
 class BinaryPayloadLifecycleRegressionTest {
+
     /**
      * Creates a binary payload lifecycle regression test instance.
      */
@@ -89,10 +88,13 @@ class BinaryPayloadLifecycleRegressionTest {
 
     /**
      * Verifies the regression scenario: queued payload is retained until dispatcher closes.
+     *
+     * @throws Exception if executor startup or a completion barrier fails
      */
     @Test
-    void queuedPayloadIsRetainedUntilDispatcherCloses() {
-        AgronaEventDispatcher dispatcher = new AgronaEventDispatcher();
+    void queuedPayloadIsRetainedUntilDispatcherCloses() throws Exception {
+        DispatcherTestSupport.PausedDispatcher paused = new DispatcherTestSupport.PausedDispatcher(64);
+        NettyEventDispatcher dispatcher = paused.dispatcher;
         ByteBuf payload = Unpooled.buffer().writeByte(1);
         try {
             dispatcher.fireEvent(Events.event(new NettyMessageBuffer(payload), Events.START));
@@ -103,7 +105,7 @@ class BinaryPayloadLifecycleRegressionTest {
 
             assertEquals(0, payload.refCnt());
         } finally {
-            dispatcher.close();
+            paused.close();
             release(payload);
         }
     }
@@ -113,7 +115,7 @@ class BinaryPayloadLifecycleRegressionTest {
      */
     @Test
     void droppedPayloadDoesNotAcquireAReference() {
-        AgronaEventDispatcher dispatcher = new AgronaEventDispatcher();
+        NettyEventDispatcher dispatcher = new NettyEventDispatcher();
         dispatcher.close();
         ByteBuf payload = Unpooled.buffer().writeByte(1);
         try {
@@ -168,10 +170,13 @@ class BinaryPayloadLifecycleRegressionTest {
 
     /**
      * Verifies the regression scenario: queue overflow releases the rejected delivery reference.
+     *
+     * @throws Exception if executor startup or a completion barrier fails
      */
     @Test
-    void queueOverflowReleasesTheRejectedDeliveryReference() {
-        AgronaEventDispatcher dispatcher = new AgronaEventDispatcher();
+    void queueOverflowReleasesTheRejectedDeliveryReference() throws Exception {
+        DispatcherTestSupport.PausedDispatcher paused = new DispatcherTestSupport.PausedDispatcher(64);
+        NettyEventDispatcher dispatcher = paused.dispatcher;
         ByteBuf payload = Unpooled.buffer().writeByte(1);
         Event event = Events.event(payload, Events.START);
         try {
@@ -180,13 +185,15 @@ class BinaryPayloadLifecycleRegressionTest {
             }
             assertEquals(dispatcher.getQueueCapacity() + 1, payload.refCnt());
 
-            dispatcher.fireEvent(event);
+            assertFalse(dispatcher.tryFireEvent(event));
 
+            assertEquals(1, dispatcher.getRejectedEventCount());
+            assertEquals(dispatcher.getQueueCapacity(), dispatcher.getQueueSize());
             assertEquals(dispatcher.getQueueCapacity() + 1, payload.refCnt());
             dispatcher.close();
             assertEquals(1, payload.refCnt());
         } finally {
-            dispatcher.close();
+            paused.close();
             release(payload);
         }
     }
@@ -194,10 +201,13 @@ class BinaryPayloadLifecycleRegressionTest {
     /**
      * Verifies the regression scenario: changing queued event source does not leak its original
      * reference.
+     *
+     * @throws Exception if executor startup or a completion barrier fails
      */
     @Test
-    void changingQueuedEventSourceDoesNotLeakItsOriginalReference() {
-        AgronaEventDispatcher dispatcher = new AgronaEventDispatcher();
+    void changingQueuedEventSourceDoesNotLeakItsOriginalReference() throws Exception {
+        DispatcherTestSupport.PausedDispatcher paused = new DispatcherTestSupport.PausedDispatcher(64);
+        NettyEventDispatcher dispatcher = paused.dispatcher;
         ByteBuf original = Unpooled.buffer().writeByte(1);
         ByteBuf replacement = Unpooled.buffer().writeByte(2);
         try {
@@ -210,7 +220,7 @@ class BinaryPayloadLifecycleRegressionTest {
             assertEquals(1, original.refCnt());
             assertEquals(1, replacement.refCnt());
         } finally {
-            dispatcher.close();
+            paused.close();
             release(original);
             release(replacement);
         }
@@ -218,10 +228,12 @@ class BinaryPayloadLifecycleRegressionTest {
 
     /**
      * Verifies the regression scenario: failing handler releases queue and task payload references.
+     *
+     * @throws Exception if executor startup or a completion barrier fails
      */
     @Test
-    void failingHandlerReleasesQueueAndTaskPayloadReferences() {
-        AgronaEventDispatcher dispatcher = new AgronaEventDispatcher();
+    void failingHandlerReleasesQueueAndTaskPayloadReferences() throws Exception {
+        NettyEventDispatcher dispatcher = new NettyEventDispatcher();
         ByteBuf payload = Unpooled.buffer().writeByte(1);
         dispatcher.addHandler(new EventHandler() {
             @Override
@@ -232,7 +244,7 @@ class BinaryPayloadLifecycleRegressionTest {
         });
         try {
             dispatcher.fireEvent(Events.event(payload, Events.START));
-            assertEquals(1, dispatcher.doWork());
+            DispatcherTestSupport.drain(dispatcher);
             assertEquals(1, payload.refCnt());
         } finally {
             dispatcher.close();
@@ -292,21 +304,9 @@ class BinaryPayloadLifecycleRegressionTest {
      * @throws Exception if the operation fails
      */
     private static void drain(PlayerSession session) throws Exception {
-        CountDownLatch done = new CountDownLatch(1);
-        EventHandler barrier = new EventHandler() {
-            @Override
-            public int getEventType() { return 100_100; }
-
-            @Override
-            public void onEvent(Event event) { done.countDown(); }
-        };
-        session.getEventDispatcher().addHandler(barrier);
-        try {
-            session.getEventDispatcher().fireEvent(Events.event(null, 100_100));
-            assertTrue(done.await(2, TimeUnit.SECONDS));
-        } finally {
-            session.getEventDispatcher().removeHandler(barrier);
-        }
+        DispatcherTestSupport.drain(session.getEventDispatcher());
+        DispatcherTestSupport.drain(session.getGame().getEventDispatcher());
+        DispatcherTestSupport.drain(session.getEventDispatcher());
     }
 
     /**

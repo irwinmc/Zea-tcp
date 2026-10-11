@@ -9,7 +9,7 @@ import io.netty.util.ReferenceCounted;
  *
  * <p>Payload references are captured independently of mutable events so cleanup
  * always releases the reference that was originally retained.
-
+ *
  * <p>Capture the reference before starting asynchronous work:
  * <pre>{@code
  * Object payload = EventResources.retainPayload(event);
@@ -21,6 +21,7 @@ import io.netty.util.ReferenceCounted;
  * }</pre>
  */
 public final class EventResources {
+
     /**
      * Prevents direct construction of this utility or singleton component.
      */

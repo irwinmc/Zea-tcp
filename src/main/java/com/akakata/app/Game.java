@@ -1,19 +1,23 @@
 package com.akakata.app;
 
 import com.akakata.event.Event;
+import com.akakata.event.EventDispatcher;
 import com.akakata.event.NetworkEvent;
 
 import java.util.Set;
 
 /**
- * Owns a group of player sessions and routes game events and outbound broadcasts.
+ * Defines application-wide player membership, shared events and outbound broadcasts.
  *
- * <p>A session is created before it is connected. Implementations define the login
+ * <p>The default server context creates one Game for the application. It owns a
+ * serial business executor for shared events and broadcasts; player sessions use
+ * separate shared session executors. No room selection is required.
+ * A session is created before it is connected. Implementations define the login
  * callbacks and are responsible for releasing their sessions and dispatcher when closed.
  *
  * @author Kyia
  */
-public interface Game {
+public interface Game extends AutoCloseable {
 
     /**
      * Creates a player session associated with this game without connecting it.
@@ -71,6 +75,18 @@ public interface Game {
     Set<PlayerSession> getSessions();
 
     /**
+     * Returns the application dispatcher used to register shared business-event handlers.
+     *
+     * <p>The default Game owns one serial Netty business executor, separate from the
+     * session shards. Close the Game to release it rather than closing the dispatcher
+     * independently while the Game remains active.
+     *
+     * @return the application event dispatcher
+     * @since 0.8.0
+     */
+    EventDispatcher getEventDispatcher();
+
+    /**
      * Submits an event to the game dispatcher. A closed default game ignores the event.
      *
      * @param event the event to process
@@ -78,11 +94,13 @@ public interface Game {
     void send(Event event);
 
     /**
-     * Submits the outbound event to each connected session.
+     * Queues an outbound broadcast before submitting targeted recipient deliveries.
      *
      * <p>Each accepted delivery retains its own native payload reference. The caller
      * retains ownership of the original event payload and may release that reference
-     * after this method returns.
+     * after this method returns. The default implementation serializes broadcasts
+     * with Game events, then queues each connected recipient's delivery on its own
+     * session executor. Saturation or shutdown can discard a delivery.
      *
      * @param networkEvent the outbound event to broadcast
      */
@@ -94,5 +112,6 @@ public interface Game {
      * <p>The default implementation continues closing remaining sessions when an
      * individual session fails, and performs cleanup outside the game monitor.
      */
+    @Override
     void close();
 }

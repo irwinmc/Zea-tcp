@@ -33,10 +33,12 @@ public class MessageBufferProtocol extends AbstractNettyProtocol {
      * Decoder for opcode and binary message-buffer payloads.
      */
     private MessageBufferEventDecoder messageBufferEventDecoder;
+
     /**
      * Encoder for opcode and binary message-buffer payloads.
      */
     private MessageBufferEventEncoder messageBufferEventEncoder;
+
     /**
      * Netty handler that prepends the 2-byte length header to outgoing messages.
      * The length field contains the size of the message body (excluding the length field itself).

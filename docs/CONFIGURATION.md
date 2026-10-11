@@ -1,6 +1,6 @@
 # Configuration Guide
 
-This guide describes the configuration consumed by Zea TCP Transport 0.7.8.
+This guide describes the configuration consumed by Zea TCP Transport 0.8.0.
 Dependency versions and build commands are listed in the [README](../README.md).
 
 ## Loading Configuration
@@ -277,10 +277,11 @@ in the current Netty API. These values are code settings, not properties.
 | Session-cache expiration after write | 24 hours |
 | Periodic cache cleanup | Every minute; enabled by the default `SessionService` constructor |
 | Shared dispatcher shard count | `max(2, highestOneBit(availableProcessors))` |
-| Queue capacity per Agrona dispatcher | 32,768 deliveries |
-| Maximum polling batch | 256 deliveries |
-| Default handler mode | `CONCURRENT`, using virtual threads |
-| Concurrent callback wait | 5,000 milliseconds per event |
+| Pending-task capacity per Netty business executor | 32,768 tasks |
+| Application Game count in the default context | One |
+| Application Game business executors | One, separate from the session shards |
+| Handler execution | Serial on the assigned business executor |
+| Callback timeout | None; callbacks must return promptly |
 | HTTP request aggregation | 65,536 bytes |
 | Static-file root | `html` under the process working directory |
 
@@ -303,24 +304,15 @@ saturation and shutdown behavior.
 - **Queue growth or dropped events:** inspect per-shard sampled depths and handler
   work; thread count and protocol changes require workload-specific measurement.
 
-### Agrona Access Error During Startup
+### Launching the Examples
 
-An `IllegalAccessError` reporting that `org.agrona.UnsafeApi` cannot access
-`jdk.internal.misc.Unsafe` means the launching JVM lacks the required module-access
-options. Supply these before the Java main class or `-jar` argument:
+Use JDK 21 or later. The library uses Netty for both I/O and business event
+execution; it does not require additional JVM module-access options. In IntelliJ
+IDEA, select `com.akakata.TestServer` as the main class and use the test classpath.
+Maven launches use:
 
-```text
---add-opens=java.base/jdk.internal.misc=ALL-UNNAMED --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED
+```bash
+mvn test-compile exec:java -Dexec.mainClass=com.akakata.TestServer
 ```
 
-In IntelliJ IDEA, place them in the Application configuration's **VM options**.
-The repository provides a shared **TestServer (Agrona)** configuration with both
-options. Maven launches use [.mvn/jvm.config](../.mvn/jvm.config); run
-`mvn test-compile exec:java -Dexec.mainClass=com.akakata.TestServer` from the
-repository root.
-
-Passing these options through `exec.args`, `commandlineArgs` or the IDE's
-**Program arguments** sends them to the application's `main(String[])` after JVM
-startup and does not grant module access. Surefire's `argLine` applies to forked
-test JVMs and does not configure direct IDE application runs. See the
-[launch instructions](../README.md#run-in-intellij-idea).
+See the [launch instructions](../README.md#run-in-intellij-idea).

@@ -40,14 +40,17 @@ public class SbeEventEncoder extends MessageToMessageEncoder<Event> {
      * Size of the SBE-style message header in bytes.
      */
     private static final int HEADER_SIZE = 8;
+
     /**
      * Schema identifier encoded in the SBE-style header.
      */
     private static final int SCHEMA_ID = 1;
+
     /**
      * Protocol schema version or application version identifier.
      */
     private static final int VERSION = 1;
+
     /**
      * Shared JSON mapper for payload conversion.
      */

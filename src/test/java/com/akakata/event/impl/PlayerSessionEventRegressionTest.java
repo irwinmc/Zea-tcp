@@ -16,19 +16,15 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.EnumSource;
 
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Verifies targeted player-event routing and shared-shard ownership under both execution modes.
+ * Verifies targeted player-event routing and shared-shard ownership.
  */
 @Timeout(10)
 class PlayerSessionEventRegressionTest {
@@ -40,26 +36,25 @@ class PlayerSessionEventRegressionTest {
     }
 
     /**
-     * Barrier event type used by this regression fixture.
-     */
-    private static final int BARRIER_EVENT_TYPE = 10_001;
-
-    /**
      * Game used by this regression fixture.
      */
     private DefaultGame game;
+
     /**
      * First used by this regression fixture.
      */
     private PlayerSession first;
+
     /**
      * Second used by this regression fixture.
      */
     private PlayerSession second;
+
     /**
      * First sender used by this regression fixture.
      */
     private RecordingSender firstSender;
+
     /**
      * Second sender used by this regression fixture.
      */
@@ -243,13 +238,11 @@ class PlayerSessionEventRegressionTest {
      * Verifies the regression scenario: session routing filters any and typed handlers but keeps
      * global observers.
      *
-     * @param mode the mode
+     * @throws Exception if asynchronous delivery fails
      */
-    @ParameterizedTest
-    @EnumSource(AgronaEventDispatcher.ExecutionMode.class)
-    void sessionRoutingFiltersAnyAndTypedHandlersButKeepsGlobalObservers(
-            AgronaEventDispatcher.ExecutionMode mode) {
-        AgronaEventDispatcher dispatcher = new AgronaEventDispatcher(mode);
+    @Test
+    void sessionRoutingFiltersAnyAndTypedHandlersButKeepsGlobalObservers() throws Exception {
+        NettyEventDispatcher dispatcher = new NettyEventDispatcher();
         try {
             Session target = new DefaultSession.SessionBuilder().id("target").eventDispatcher(dispatcher).build();
             Session other = new DefaultSession.SessionBuilder().id("other").eventDispatcher(dispatcher).build();
@@ -268,7 +261,7 @@ class PlayerSessionEventRegressionTest {
             Event event = Events.dataInEvent("payload");
 
             target.onEvent(event);
-            dispatcher.doWork();
+            drain(dispatcher);
 
             assertEquals(List.of(event), targetAny.events);
             assertEquals(List.of(event), targetTyped.events);
@@ -284,10 +277,12 @@ class PlayerSessionEventRegressionTest {
 
     /**
      * Verifies the regression scenario: unscoped dispatcher events keep broadcast semantics.
+     *
+     * @throws Exception if the executor barrier fails
      */
     @Test
-    void unscopedDispatcherEventsKeepBroadcastSemantics() {
-        AgronaEventDispatcher dispatcher = new AgronaEventDispatcher(AgronaEventDispatcher.ExecutionMode.SERIAL);
+    void unscopedDispatcherEventsKeepBroadcastSemantics() throws Exception {
+        NettyEventDispatcher dispatcher = new NettyEventDispatcher();
         try {
             Session one = new DefaultSession.SessionBuilder().id("one").eventDispatcher(dispatcher).build();
             Session two = new DefaultSession.SessionBuilder().id("two").eventDispatcher(dispatcher).build();
@@ -298,7 +293,7 @@ class PlayerSessionEventRegressionTest {
             Event event = Events.event(null, Events.START);
 
             dispatcher.fireEvent(event);
-            dispatcher.doWork();
+            drain(dispatcher);
 
             assertEquals(List.of(event), firstHandler.events);
             assertEquals(List.of(event), secondHandler.events);
@@ -310,12 +305,11 @@ class PlayerSessionEventRegressionTest {
     /**
      * Verifies the regression scenario: reusing event across sessions keeps each delivery target.
      *
-     * @param mode the mode
+     * @throws Exception if asynchronous delivery fails
      */
-    @ParameterizedTest
-    @EnumSource(AgronaEventDispatcher.ExecutionMode.class)
-    void reusingEventAcrossSessionsKeepsEachDeliveryTarget(AgronaEventDispatcher.ExecutionMode mode) {
-        AgronaEventDispatcher dispatcher = new AgronaEventDispatcher(mode);
+    @Test
+    void reusingEventAcrossSessionsKeepsEachDeliveryTarget() throws Exception {
+        NettyEventDispatcher dispatcher = new NettyEventDispatcher();
         try {
             Session one = new DefaultSession.SessionBuilder().id("one").eventDispatcher(dispatcher).build();
             Session two = new DefaultSession.SessionBuilder().id("two").eventDispatcher(dispatcher).build();
@@ -328,7 +322,7 @@ class PlayerSessionEventRegressionTest {
             // Enqueue both deliveries before consumption to catch mutable routing metadata.
             one.onEvent(event);
             two.onEvent(event);
-            dispatcher.doWork();
+            drain(dispatcher);
 
             assertEquals(List.of(event), firstHandler.events);
             assertEquals(List.of(event), secondHandler.events);
@@ -344,7 +338,7 @@ class PlayerSessionEventRegressionTest {
      */
     @Test
     void closingDedicatedSessionStillClosesItsDispatcher() {
-        class DedicatedDispatcher extends AgronaEventDispatcher {
+        class DedicatedDispatcher extends NettyEventDispatcher {
             private boolean closed;
 
             @Override
@@ -388,26 +382,20 @@ class PlayerSessionEventRegressionTest {
      * @param dispatcher the dispatcher
      * @throws InterruptedException if the operation is interrupted
      */
-    private static void drain(EventDispatcher dispatcher) throws InterruptedException {
-        CountDownLatch reached = new CountDownLatch(1);
-        EventHandler barrier = new EventHandler() {
-            @Override
-            public void onEvent(Event event) {
-                reached.countDown();
-            }
+    private void drain(EventDispatcher dispatcher) throws InterruptedException {
+        drainScope(dispatcher);
+        drainScope(game.getEventDispatcher());
+        drainScope(dispatcher);
+    }
 
-            @Override
-            public int getEventType() {
-                return BARRIER_EVENT_TYPE;
-            }
-        };
-        dispatcher.addHandler(barrier);
-        try {
-            dispatcher.fireEvent(Events.event(null, BARRIER_EVENT_TYPE));
-            assertTrue(reached.await(2, TimeUnit.SECONDS), "The dispatcher must continue consuming events");
-        } finally {
-            dispatcher.removeHandler(barrier);
-        }
+    /**
+     * Waits for deliveries submitted before a barrier on one fixed executor.
+     *
+     * @param dispatcher the registration scope to drain
+     * @throws InterruptedException if the caller is interrupted
+     */
+    private static void drainScope(EventDispatcher dispatcher) throws InterruptedException {
+        DispatcherTestSupport.drain(dispatcher);
     }
 
     /**
@@ -434,6 +422,7 @@ class PlayerSessionEventRegressionTest {
      * Records outbound messages and close calls for lifecycle assertions.
      */
     private static final class RecordingSender implements MessageSender {
+
         /**
          * Creates a recording sender instance.
          */
@@ -444,6 +433,7 @@ class PlayerSessionEventRegressionTest {
          * Messages used by this regression fixture.
          */
         private final List<Object> messages = new CopyOnWriteArrayList<>();
+
         /**
          * Terminal lifecycle flag, published when shutdown begins.
          */
@@ -471,14 +461,17 @@ class PlayerSessionEventRegressionTest {
      * Records deliveries for player-routing assertions.
      */
     private static final class RecordingHandler implements SessionEventHandler {
+
         /**
          * Session used by this regression fixture.
          */
         private final Session session;
+
         /**
          * Event type used by this regression fixture.
          */
         private final int eventType;
+
         /**
          * Events used by this regression fixture.
          */

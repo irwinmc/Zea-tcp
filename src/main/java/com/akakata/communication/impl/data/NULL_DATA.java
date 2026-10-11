@@ -8,12 +8,10 @@ import java.io.Serializable;
  * @author Kelvin
  */
 public class NULL_DATA implements Serializable {
+
     /**
      * Creates a null_data instance.
      */
     public NULL_DATA() {
     }
-
-
-
 }

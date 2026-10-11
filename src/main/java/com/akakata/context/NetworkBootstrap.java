@@ -26,6 +26,7 @@ public final class NetworkBootstrap implements AutoCloseable {
      * Shared event-loop group for accepting incoming connections.
      */
     private final EventLoopGroup bossGroup;
+
     /**
      * Shared event-loop group for processing connection I/O.
      */

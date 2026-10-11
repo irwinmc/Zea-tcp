@@ -16,6 +16,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * Verifies cleanup of failed login sessions while preserving valid prior sessions.
  */
 class LoginLifecycleRegressionTest {
+
     /**
      * Creates a login lifecycle regression test instance.
      */
@@ -26,10 +27,12 @@ class LoginLifecycleRegressionTest {
      * Game used by this regression fixture.
      */
     private RecordingGame game;
+
     /**
      * Sessions used by this regression fixture.
      */
     private SessionService sessions;
+
     /**
      * Credentials used by this regression fixture.
      */
@@ -97,6 +100,7 @@ class LoginLifecycleRegressionTest {
      * Records sessions created during authentication regression scenarios.
      */
     private static class RecordingGame extends DefaultGame {
+
         /**
          * Creates a recording game instance.
          */

@@ -8,14 +8,15 @@ Zea TCP Transport is a Java game-server foundation built on Netty. It provides T
 HTTP and WebSocket listeners, player sessions, asynchronous event dispatch, a
 credential-keyed session cache and HTTP monitoring endpoints.
 
-This documentation describes version **0.7.8** and the implementation in this
+This documentation describes version **0.8.0** and the implementation in this
 checkout. Dependency versions below come from [pom.xml](pom.xml).
 
 ## Features
 
 - TCP, HTTP and WebSocket listeners sharing Netty NIO event-loop groups.
 - Configurable TCP JSON or SBE-style binary envelopes; binary WebSocket events.
-- Agrona queues with session-based sharding and serial or concurrent callbacks.
+- Ordered Netty business executors with stable session-based sharding.
+- One application Game with a serial queue for shared events and broadcasts.
 - Session-targeted delivery that isolates player handlers on shared shards.
 - Coordinated session, game, cache, dispatcher and network shutdown.
 - Dagger compile-time dependency injection and Caffeine session caching.
@@ -35,7 +36,7 @@ reconnection and client connection pooling are not implemented.
 <dependency>
     <groupId>com.akakata</groupId>
     <artifactId>zea-tcp</artifactId>
-    <version>0.7.8</version>
+    <version>0.8.0</version>
 </dependency>
 ```
 
@@ -85,15 +86,12 @@ From the repository root on macOS or Linux:
 ```bash
 mvn test-compile dependency:copy-dependencies -DincludeScope=runtime
 java \
-  --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED \
-  --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED \
   -cp "target/test-classes:target/classes:target/dependency/*" \
   com.akakata.TestServer
 ```
 
-The JVM options match the access options used by this project's tests and launcher
-for Agrona. On Windows, use `;` as the classpath separator and adapt the shell's line
-continuation syntax. Stop the example with Ctrl+C to invoke the shutdown hook.
+No additional JVM module-access options are required. On Windows, use `;` as
+the classpath separator and adapt the shell's line continuation syntax. Stop the example with Ctrl+C to invoke the shutdown hook.
 
 Alternatively, launch through Maven:
 
@@ -101,27 +99,14 @@ Alternatively, launch through Maven:
 mvn test-compile exec:java -Dexec.mainClass=com.akakata.TestServer
 ```
 
-Maven reads the required JVM options from [.mvn/jvm.config](.mvn/jvm.config).
-The `exec:java` goal runs inside that Maven JVM. The `exec.mainClass` property
+The `exec:java` goal runs inside the Maven JVM. The `exec.mainClass` property
 selects the entry point while retaining the load-test helper as the default.
 
 ### Run in IntelliJ IDEA
 
-Select the shared **TestServer (Agrona)** configuration from
-[.run/TestServer.run.xml](.run/TestServer.run.xml). It includes the required JVM
-options and uses the `zea-tcp` module.
-
-For an existing Application configuration, open **Run > Edit Configurations**,
-select `TestServer`, enable **Modify options > Add VM options**, and enter:
-
-```text
---add-opens=java.base/jdk.internal.misc=ALL-UNNAMED --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED
-```
-
-These are **VM options**, not **Program arguments**. Direct IDE launches do not
-inherit Maven's `.mvn/jvm.config` or Surefire's test `argLine`. Without the access
-options, Agrona 2.6.1 can fail during queue initialization with `IllegalAccessError`
-for `jdk.internal.misc.Unsafe`.
+Create an **Application** configuration with main class `com.akakata.TestServer`
+and the `zea-tcp` test classpath. Use JDK 21 or later and the repository root as the
+working directory. No framework-specific VM options are needed.
 
 ### Example Ports and Packaging
 
@@ -136,7 +121,7 @@ Other executable examples are `com.akakata.HttpOnlyServer` (HTTP port 18081),
 `com.akakata.AdvancedTestServer`. They live in
 [src/test/java/com/akakata](src/test/java/com/akakata).
 
-`mvn package` produces the library JAR `target/zea-tcp-0.7.8.jar`. It does not bundle
+`mvn package` produces the library JAR `target/zea-tcp-0.8.0.jar`. It does not bundle
 runtime dependencies or configure a `Main-Class`. The provided [run.sh](run.sh)
 expects an application-owned executable `server.jar` in the working directory;
 create that application artifact before using the script.
@@ -192,6 +177,13 @@ closure. Hooks should release application-owned resources and handle their own
 cleanup failures. Overriding `awaitTermination()` changes the wait behavior;
 returning from it does not itself invoke shutdown.
 
+The default context creates one `Game` for the application. `Game` is the
+application's session container and shared event boundary; no room registry, room
+selection or room-specific configuration is needed. `DefaultGame` supplies a
+broadcasting example, and applications can subclass `AbstractGame` to implement
+shared business behavior. Register application-wide event handlers through
+`Game.getEventDispatcher().addHandler(...)` and submit them with `Game.send(...)`.
+
 `ServerContext.getBean()` exposes `Game`, `SessionService` and `ServerManager`.
 It is not a general-purpose lookup for arbitrary Dagger bindings. Configuration
 is available through `getConfigManager()`.
@@ -229,11 +221,20 @@ broadcast. The default session handler wraps the message in a `NETWORK_MESSAGE`
 (`0x34`) for outbound delivery. The WebSocket decoder also translates incoming
 `0x34` into `0x33`. TCP JSON and SBE decoders preserve the received opcode.
 
-The default dispatcher mode runs matching handlers on virtual threads, with a
-five-second wait per event. Queue saturation drops submissions; there is no
-reliable-delivery acknowledgment or automatic retry. Callback timeouts do not
-cancel running handlers. Shared payload objects require application-level
-coordination when accessed concurrently.
+Each session is bound to a fixed Netty business executor, so accepted events of
+all types run serially in submission order. The application's Game owns one
+additional business executor for `send()` and `sendBroadcast()`. A broadcast first
+runs in the Game queue, then enters each recipient's session queue. Network I/O
+uses separate Netty event-loop groups.
+
+Callbacks run synchronously on their business executor. Keep them short; move
+blocking work elsewhere and submit its completion back to the owning queue.
+There is no automatic callback timeout. Queues are bounded to 32,768 pending tasks
+per executor by default. Saturation rejects submissions without running callbacks
+on the publishing thread. `NettyEventDispatcher.tryFireEvent()` and `execute()`
+report acceptance; the existing `fireEvent()` and Game methods do not acknowledge
+delivery or retry. Session state belongs to its session executor; application-wide
+state belongs to the Game executor. Posting work between these queues is asynchronous.
 
 For native `ByteBuf` or `MessageBuffer` payloads, asynchronous dispatch retains its
 own reference and the caller releases its original reference after submission.
@@ -272,15 +273,14 @@ Direct dependencies declared by the current POM:
 
 | Dependency | Version | Role |
 | --- | --- | --- |
-| `io.netty:netty-all` | 4.2.19.Final | Network I/O and codecs |
-| `org.agrona:agrona` | 2.6.1 | Concurrent queues and agent runner |
+| `io.netty:netty-all` | 4.2.19.Final | Network I/O, codecs and business executors |
 | `com.google.dagger:dagger` | 2.60.1 | Compile-time injection |
 | `javax.inject:javax.inject` | 1 | Injection annotations |
 | `tools.jackson.core:jackson-databind` | 3.2.3 | JSON serialization |
 | `tools.jackson.dataformat:jackson-dataformat-yaml` | 3.2.3 | YAML dependency; configuration loading uses properties |
 | `com.github.ben-manes.caffeine:caffeine` | 3.3.0 | Session cache |
-| `org.slf4j:slf4j-api` | 2.0.17 | Logging API |
-| `ch.qos.logback:logback-classic` | 1.6.3 | Logging implementation |
+| `org.slf4j:slf4j-api` | 2.0.20 | Logging API |
+| `ch.qos.logback:logback-classic` | 1.6.5 | Logging implementation |
 | `net.logstash.logback:logstash-logback-encoder` | 9.0 | Structured log encoding |
 | `org.junit.jupiter:junit-jupiter` | 5.12.2 | Regression tests; test scope |
 
@@ -299,7 +299,8 @@ mvn clean install
 
 The regression suite covers player-event isolation, shared-shard preservation,
 session and cache shutdown, replacement and login races, callback-triggered
-closure, and native-buffer ownership. Examples with `main` methods are executable
+closure, serial session and Game ordering, reentrant publication, queue rejection,
+and native-buffer ownership. Examples with `main` methods are executable
 helpers rather than JUnit tests.
 
 The POM configures Maven Compiler 3.13.0, Surefire 3.2.5, JavaDoc 3.12.0,
@@ -316,7 +317,7 @@ mvn compile javadoc:jar
 
 Open `target/reports/apidocs/index.html` for the framework API and
 `target/reports/testapidocs/index.html` for examples and regression-test helpers.
-The archive is `target/zea-tcp-0.7.8-javadoc.jar`. Compilation generates the Dagger
+The archive is `target/zea-tcp-0.8.0-javadoc.jar`. Compilation generates the Dagger
 component types needed by JavaDoc. Documentation uses English, UTF-8 and strict
 doclint checks; generated Dagger sources are excluded.
 
@@ -326,16 +327,14 @@ After preparing the example classpath above:
 
 ```bash
 java \
-  --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED \
-  --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED \
   -cp "target/test-classes:target/classes:target/dependency/*" \
   com.akakata.benchmark.SimpleLoadTest
 ```
 
-The current helper has fixed producer counts and waits before measuring completion.
-It can drop events when queues fill, so treat its output as a local diagnostic,
-not a capacity guarantee. `mvn test-compile exec:java` defaults to this helper and
-receives the JVM access options from the repository's `.mvn/jvm.config`.
+The helper uses four producers, counts accepted and rejected events separately,
+and waits for a queue barrier before reporting completed throughput and mean
+latency. It is a local diagnostic rather than a capacity guarantee or a tail-latency
+benchmark. `mvn test-compile exec:java` defaults to this helper.
 
 ## Documentation
 

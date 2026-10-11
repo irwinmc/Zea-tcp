@@ -39,18 +39,22 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
      * Route prefix for root requests.
      */
     private static final String ROOT = "/";
+
     /**
      * Route prefix for api requests.
      */
     private static final String API = "/api";
+
     /**
      * Route prefix for rpc requests.
      */
     private static final String RPC = "/r";
+
     /**
      * Route prefix for health requests.
      */
     private static final String HEALTH = "/health";
+
     /**
      * Route prefix for metrics requests.
      */
@@ -60,22 +64,27 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
      * Route prefix for static file handler requests.
      */
     private final StaticFileHandler staticFileHandler;
+
     /**
      * Route prefix for index page handler requests.
      */
     private final IndexPageHandler indexPageHandler;
+
     /**
      * Route prefix for api handler requests.
      */
     private final ApiHandler apiHandler;
+
     /**
      * Route prefix for rpc handler requests.
      */
     private final RpcHandler rpcHandler;
+
     /**
      * Route prefix for health check handler requests.
      */
     private final HealthCheckHandler healthCheckHandler;
+
     /**
      * Route prefix for metrics handler requests.
      */

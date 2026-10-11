@@ -1,136 +1,143 @@
 package com.akakata.event.impl;
 
 import com.akakata.app.Session;
-import com.akakata.event.*;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.akakata.event.Event;
+import com.akakata.event.EventDispatcher;
+import com.akakata.event.EventHandler;
+import com.akakata.event.SessionEventHandler;
+import io.netty.util.concurrent.DefaultEventExecutorGroup;
+import io.netty.util.concurrent.DefaultThreadFactory;
+import io.netty.util.concurrent.EventExecutor;
+import io.netty.util.concurrent.RejectedExecutionHandlers;
+import io.netty.util.concurrent.SingleThreadEventExecutor;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.ThreadLocalRandom;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
- * Distributes deliveries across initialized Agrona dispatcher shards.
+ * Owns a bounded Netty business executor group and stable session shards.
  *
- * <p>Shard counts are rounded to a power of two. Session-aware deliveries and
- * registrations use the session identifier hash; unscoped deliveries use the event
- * type. Global handlers are registered on every shard. The original event object is
- * passed to handlers so broadcasts can reuse it without changing its identity.
+ * <p>Session deliveries use a stable identifier hash. Global subscriptions are
+ * registered on every shard. Unscoped facade deliveries use the event-type hash.
+ * All callbacks on one executor run serially in submission order.
  *
- * @author Kelvin
+ * @since 0.8.0
  */
-public class ShardedEventDispatcher implements EventDispatcher {
+public class ShardedEventDispatcher implements EventDispatcher, AutoCloseable {
 
     /**
-     * Logger for component lifecycle and diagnostic messages.
+     * Owner of all shared business threads and bounded task queues.
      */
-    private static final Logger LOG = LoggerFactory.getLogger(ShardedEventDispatcher.class);
-
-    // ==================== 字段 ====================
+    private final DefaultEventExecutorGroup executorGroup;
 
     /**
-     * Initialized dispatchers indexed by the shard-selection mask.
+     * Session registration scopes indexed by the selection mask.
      */
-    private final AgronaEventDispatcher[] shards;
+    private final NettyEventDispatcher[] shards;
 
     /**
-     * Power-of-two shard mask used for event and session hash selection.
+     * Mask for the power-of-two executor count.
      */
     private final int mask;
 
-    // ==================== 构造函数 ====================
+    /**
+     * Completion signal shared by concurrent shutdown callers.
+     */
+    private final CompletableFuture<Void> closeCompletion = new CompletableFuture<>();
 
     /**
-     * Creates and initializes the requested number of shards, rounding up to a power of two.
+     * Terminal creation and registration flag; guarded by this facade.
+     */
+    private boolean closed;
+
+    /**
+     * Creates a group with the default maximum pending tasks per executor.
      *
-     * @param shardCount the positive shard count, rounded up to a power of two
+     * @param shardCount positive shard count, rounded up to a power of two
      */
     public ShardedEventDispatcher(int shardCount) {
-        // 确保 shardCount 是 2 的幂
-        if (Integer.bitCount(shardCount) != 1) {
-            int nextPowerOfTwo = Integer.highestOneBit(shardCount - 1) << 1;
-            LOG.info("Shard count {} is not power of two, rounding to {}", shardCount, nextPowerOfTwo);
-            shardCount = nextPowerOfTwo;
-        }
-
-        // 创建并初始化所有分片
-        this.shards = new AgronaEventDispatcher[shardCount];
-        for (int i = 0; i < shardCount; i++) {
-            shards[i] = new AgronaEventDispatcher();
-            shards[i].initialize();
-        }
-
-        this.mask = shardCount - 1;
-
-        LOG.info("Initialized ShardedEventDispatcher with {} shards", shardCount);
+        this(shardCount, NettyEventDispatcher.DEFAULT_QUEUE_CAPACITY);
     }
 
-    // ==================== 生命周期 ====================
+    /**
+     * Creates a lazily started business group with bounded pending tasks.
+     *
+     * @param shardCount positive shard count, rounded up to a power of two
+     * @param queueCapacity maximum pending tasks per executor, at least 16
+     * @throws IllegalArgumentException if either value is outside its supported range
+     */
+    public ShardedEventDispatcher(int shardCount, int queueCapacity) {
+        if (shardCount <= 0 || shardCount > (1 << 30) || queueCapacity < 16) {
+            throw new IllegalArgumentException("Positive shard count and queue capacity of at least 16 required");
+        }
+        int count = Integer.bitCount(shardCount) == 1 ? shardCount : Integer.highestOneBit(shardCount - 1) << 1;
+        this.mask = count - 1;
+        this.executorGroup = new DefaultEventExecutorGroup(count,
+                new DefaultThreadFactory("zea-business", false), queueCapacity, RejectedExecutionHandlers.reject());
+        this.shards = new NettyEventDispatcher[count];
+        for (int i = 0; i < count; i++) {
+            shards[i] = new NettyEventDispatcher(executorGroup.next(), queueCapacity);
+        }
+        executorGroup.terminationFuture().addListener(future -> {
+            if (future.isSuccess()) {
+                closeCompletion.complete(null);
+            } else {
+                closeCompletion.completeExceptionally(future.cause());
+            }
+        });
+    }
 
     /**
      * {@inheritDoc}
      */
     @Override
-    public void close() {
-        LOG.info("Closing ShardedEventDispatcher with {} shards", shards.length);
-        for (AgronaEventDispatcher shard : shards) {
-            shard.close();
+    public synchronized void addHandler(EventHandler handler) {
+        Objects.requireNonNull(handler, "handler");
+        if (closed) {
+            throw new IllegalStateException("Dispatcher is closed");
         }
-    }
-
-    // ==================== EventDispatcher 接口实现 ====================
-
-    /**
-     * {@inheritDoc}
-     */
-    @Override
-    public void addHandler(EventHandler eventHandler) {
-        Objects.requireNonNull(eventHandler, "eventHandler");
-
-        // SessionEventHandler 根据 session 分片（只注册到一个分片）
-        if (eventHandler instanceof SessionEventHandler sessionHandler) {
-            Session session = sessionHandler.getSession();
-            if (session != null) {
-                selectShardBySession(session).addHandler(eventHandler);
-                LOG.trace("Added SessionEventHandler for session {} to shard", session.getId());
-                return;
+        if (handler instanceof SessionEventHandler scoped && scoped.getSession() != null) {
+            selectSession(scoped.getSession()).addHandler(handler);
+        } else {
+            for (NettyEventDispatcher shard : shards) {
+                shard.addHandler(handler);
             }
         }
-
-        // 其他类型的 handler 注册到所有分片（广播）
-        for (AgronaEventDispatcher shard : shards) {
-            shard.addHandler(eventHandler);
-        }
-        LOG.trace("Added non-session EventHandler to all {} shards", shards.length);
     }
 
     /**
-     * Returns one selected shard's handler snapshot. Wildcard queries select a random shard.
+     * Returns an aggregate snapshot, deduplicating global handlers by identity.
      *
-     * @param eventType the event opcode or subscription selector
-     * @return the selected shard's registered handlers
+     * @param eventType the event subscription type
+     * @return handlers registered for this type on any session shard
      */
     @Override
     public List<EventHandler> getHandlers(int eventType) {
-        if (eventType == Events.ANY) {
-            return randomShard().getHandlers(eventType);
+        Set<EventHandler> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        List<EventHandler> result = new ArrayList<>();
+        for (NettyEventDispatcher shard : shards) {
+            for (EventHandler handler : shard.getHandlers(eventType)) {
+                if (seen.add(handler)) {
+                    result.add(handler);
+                }
+            }
         }
-        return selectShard(eventType).getHandlers(eventType);
+        return result;
     }
 
     /**
      * {@inheritDoc}
      */
     @Override
-    public void removeHandler(EventHandler eventHandler) {
-        if (eventHandler.getEventType() == Events.ANY) {
-            // ANY handler 注册在所有分片，需要全部移除
-            for (AgronaEventDispatcher shard : shards) {
-                shard.removeHandler(eventHandler);
-            }
-        } else {
-            // 特定类型的 handler 只在对应分片
-            selectShard(eventHandler.getEventType()).removeHandler(eventHandler);
+    public synchronized void removeHandler(EventHandler handler) {
+        for (NettyEventDispatcher shard : shards) {
+            shard.removeHandler(handler);
         }
     }
 
@@ -138,15 +145,9 @@ public class ShardedEventDispatcher implements EventDispatcher {
      * {@inheritDoc}
      */
     @Override
-    public void removeHandlersForEvent(int eventType) {
-        if (eventType == Events.ANY) {
-            // ANY 类型在所有分片
-            for (AgronaEventDispatcher shard : shards) {
-                shard.removeHandlersForEvent(eventType);
-            }
-        } else {
-            // 特定类型只在对应分片
-            selectShard(eventType).removeHandlersForEvent(eventType);
+    public synchronized void removeHandlersForEvent(int eventType) {
+        for (NettyEventDispatcher shard : shards) {
+            shard.removeHandlersForEvent(eventType);
         }
     }
 
@@ -155,19 +156,15 @@ public class ShardedEventDispatcher implements EventDispatcher {
      */
     @Override
     public boolean removeHandlersForSession(Session session) {
-        boolean removed = false;
-        for (AgronaEventDispatcher shard : shards) {
-            removed |= shard.removeHandlersForSession(session);
-        }
-        return removed;
+        return selectSession(Objects.requireNonNull(session, "session")).removeHandlersForSession(session);
     }
 
     /**
      * {@inheritDoc}
      */
     @Override
-    public void clear() {
-        for (AgronaEventDispatcher shard : shards) {
+    public synchronized void clear() {
+        for (NettyEventDispatcher shard : shards) {
             shard.clear();
         }
     }
@@ -177,11 +174,9 @@ public class ShardedEventDispatcher implements EventDispatcher {
      */
     @Override
     public void fireEvent(Event event) {
-        if (event == null) {
-            return;
+        if (event != null) {
+            shards[event.getType() & mask].fireEvent(event);
         }
-        // 根据事件类型分片
-        selectShard(event.getType()).fireEvent(event);
     }
 
     /**
@@ -189,64 +184,39 @@ public class ShardedEventDispatcher implements EventDispatcher {
      */
     @Override
     public void fireEvent(Event event, Session session) {
-        if (event == null) {
-            return;
+        if (event != null) {
+            selectSession(Objects.requireNonNull(session, "session")).fireEvent(event, session);
         }
-        selectShardBySession(Objects.requireNonNull(session, "session")).fireEvent(event, session);
     }
 
-    // ==================== 分片选择方法 ====================
-
     /**
-     * Selects a shard using the event opcode and power-of-two mask.
+     * Selects a stable shard from the immutable session identifier.
      *
-     * @param eventType the event opcode or subscription selector
-     * @return the selected shard
+     * @param session the target session
+     * @return the session's fixed registration and execution scope
      */
-    private AgronaEventDispatcher selectShard(int eventType) {
-        return shards[eventType & mask];
+    private NettyEventDispatcher selectSession(Session session) {
+        return shards[session.getId().hashCode() & mask];
     }
 
     /**
-     * Selects a shard using the session identifier hash.
+     * Returns a borrowed session shard without transferring ownership.
      *
-     * @param session the session associated with the operation
-     * @return the selected shard
-     */
-    private AgronaEventDispatcher selectShardBySession(Session session) {
-        int hash = session.getId().hashCode();
-        return shards[hash & mask];
-    }
-
-    /**
-     * Selects a shard using the current thread's random source.
-     *
-     * @return the selected shard
-     */
-    private AgronaEventDispatcher randomShard() {
-        return shards[ThreadLocalRandom.current().nextInt(shards.length)];
-    }
-
-    // ==================== 公共方法 ====================
-
-    /**
-     * Selects the shard from the stable session identifier hash without transferring ownership.
-     *
-     * @param session the session associated with the operation
-     * @return the shard selected for the session
+     * @param session the target session
+     * @return the shard selected by its immutable identifier
      */
     public EventDispatcher getShardForSession(Session session) {
-        return selectShardBySession(session);
+        return selectSession(Objects.requireNonNull(session, "session"));
     }
 
     /**
-     * Tests shard membership by object identity.
+     * Tests whether this facade owns the supplied session shard.
      *
-     * @param dispatcher the dispatcher
-     * @return {@code true} if the dispatcher is one of this instance's shards
+     * @param dispatcher the potential shard
+     * @return true for an owned session registration scope
      */
     boolean containsShard(EventDispatcher dispatcher) {
-        for (AgronaEventDispatcher shard : shards) {
+        for (NettyEventDispatcher shard : shards) {
             if (shard == dispatcher) {
                 return true;
             }
@@ -254,39 +224,77 @@ public class ShardedEventDispatcher implements EventDispatcher {
         return false;
     }
 
-    // ==================== 监控方法 ====================
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void close() {
+        List<NettyEventDispatcher> scopes = null;
+        synchronized (this) {
+            if (!closed) {
+                closed = true;
+                scopes = List.of(shards);
+            }
+        }
+        if (scopes != null) {
+            try {
+                for (NettyEventDispatcher scope : scopes) {
+                    scope.beginClose();
+                }
+            } finally {
+                executorGroup.shutdownGracefully(0, 5, TimeUnit.SECONDS);
+            }
+        }
+        if (!NettyEventDispatcher.isDispatchThread() && !inEventLoop()) {
+            closeCompletion.join();
+        }
+    }
 
     /**
-     * Returns the initialized shard count.
+     * Tests whether this caller runs on any executor owned by this group.
      *
-     * @return the number of shards
+     * @return true if waiting for group termination would join the caller
+     */
+    private boolean inEventLoop() {
+        for (EventExecutor executor : executorGroup) {
+            if (executor.inEventLoop()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Returns the fixed executor count.
+     *
+     * @return the number of session shards and business executors
      */
     public int shardCount() {
         return shards.length;
     }
 
     /**
-     * Samples the sum of the shard queue depths.
+     * Samples pending Netty tasks across the session shards.
      *
-     * @return the approximate total queue depth
+     * @return approximate total pending tasks, excluding running callbacks
      */
     public int aggregateQueueSize() {
         int total = 0;
-        for (AgronaEventDispatcher shard : shards) {
-            total += shard.getQueueSize();
+        for (int size : shardQueueSizes()) {
+            total += size;
         }
         return total;
     }
 
     /**
-     * Samples queue depths in shard-index order.
+     * Samples physical executor queues in shard-index order.
      *
-     * @return a new array of approximate per-shard queue depths
+     * @return approximate pending tasks per executor, excluding running callbacks
      */
     public int[] shardQueueSizes() {
         int[] sizes = new int[shards.length];
         for (int i = 0; i < shards.length; i++) {
-            sizes[i] = shards[i].getQueueSize();
+            sizes[i] = ((SingleThreadEventExecutor) shards[i].executor()).pendingTasks();
         }
         return sizes;
     }

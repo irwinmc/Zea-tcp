@@ -33,18 +33,22 @@ class ServerContextShutdownTest {
      * Selects the isolated server-context shutdown scenario.
      */
     enum Scenario {
+
         /**
          * Initialized used by this regression fixture.
          */
         INITIALIZED,
+
         /**
          * Uninitialized used by this regression fixture.
          */
         UNINITIALIZED,
+
         /**
          * Game close failure used by this regression fixture.
          */
         GAME_CLOSE_FAILURE,
+
         /**
          * Initialization failure used by this regression fixture.
          */
@@ -79,8 +83,6 @@ class ServerContextShutdownTest {
         String classpath = System.getProperty("surefire.test.class.path", System.getProperty("java.class.path"));
         Process process = new ProcessBuilder(
                 Path.of(System.getProperty("java.home"), "bin", "java").toString(),
-                "--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED",
-                "--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED",
                 "-cp", classpath, ShutdownProbe.class.getName(), scenario.name())
                 .redirectErrorStream(true)
                 .redirectOutput(output.toFile())
@@ -115,6 +117,7 @@ class ServerContextShutdownTest {
      * Runs lifecycle shutdown checks in a separate JVM to isolate global dispatchers.
      */
     public static final class ShutdownProbe {
+
         /**
          * Creates a shutdown probe instance.
          */
@@ -163,7 +166,7 @@ class ServerContextShutdownTest {
                     game.onLogin(connected);
                     sessions.putSession(new SimpleCredentials(), connected);
 
-                    // Failed/in-flight logins may exist in the cache without joining the room.
+                    // Failed/in-flight logins may exist in the cache without joining the Game.
                     PlayerSession pending = game.createPlayerSession();
                     RecordingSender pendingSender = new RecordingSender();
                     pending.setSender(pendingSender);
@@ -207,8 +210,8 @@ class ServerContextShutdownTest {
                 assertTrue(network.getBossGroup().isTerminated());
                 assertTrue(network.getWorkerGroup().isTerminated());
                 assertTrue(Thread.getAllStackTraces().keySet().stream()
-                        .noneMatch(t -> t.isAlive() && t.getName().equals("agrona-event-dispatcher")),
-                        "Room and shared dispatcher threads must terminate before close returns");
+                        .noneMatch(t -> t.isAlive() && (t.getName().startsWith("zea-business-") || t.getName().startsWith("zea-event-"))),
+                        "Game and shared dispatcher threads must terminate before close returns");
             } finally {
                 // Clean up even on a regression, so the assertion is reported instead of hanging.
                 if (game != null) {
@@ -240,6 +243,7 @@ class ServerContextShutdownTest {
          * Records outbound messages and close calls for lifecycle assertions.
          */
         private static final class RecordingSender implements MessageSender {
+
             /**
              * Creates a recording sender instance.
              */

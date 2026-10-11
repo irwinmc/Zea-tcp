@@ -8,7 +8,9 @@ import java.util.List;
  * Registers handlers and delivers events asynchronously.
  *
  * <p>Session-aware delivery selects handlers for the supplied session while still
- * allowing global observers. A shared dispatcher must outlive individual sessions.
+ * allowing global observers. Netty subscriptions distinguish session instances
+ * by object identity, including sessions with the same business ID or value equality.
+ * A shared dispatcher must outlive individual sessions.
  * Use {@link com.akakata.event.impl.EventDispatchers#release(EventDispatcher,
  * com.akakata.app.Session)}
  * for session cleanup rather than closing a shared dispatcher.
@@ -18,6 +20,11 @@ import java.util.List;
  * discarding the delivery. The caller can release its original reference after the
  * submission returns. Queue saturation or shutdown may cause a delivery to be dropped.
  *
+ * <p>The default Netty implementation invokes callbacks serially on each fixed
+ * business executor. Targeted events for a session share one executor across all
+ * event types. Unscoped events on the sharded facade may use different executors;
+ * use the Game dispatcher for ordered application-wide work.
+ *
  * <p>For session-scoped delivery and cleanup:
  * <pre>{@code
  * EventDispatcher dispatcher = EventDispatchers.sharedDispatcher();
@@ -25,11 +32,11 @@ import java.util.List;
  * dispatcher.fireEvent(event, session);
  * dispatcher.removeHandlersForSession(session);
  * }</pre>
-
+ *
  * @author Kelvin
  * @see Event
  * @see EventHandler
- * @see com.akakata.event.impl.AgronaEventDispatcher
+ * @see com.akakata.event.impl.NettyEventDispatcher
  * @see com.akakata.event.impl.ShardedEventDispatcher
  */
 public interface EventDispatcher {
@@ -47,8 +54,8 @@ public interface EventDispatcher {
     /**
      * Returns the handlers visible for an event-type subscription.
      *
-     * <p>Sharded implementations may return the view of one selected shard rather than
-     * an aggregate of every shard.
+     * <p>The Netty sharded implementation aggregates all session shards and
+     * deduplicates global registrations by handler identity.
      *
      * @param eventType the event opcode or subscription selector
      * @return the registered handler list, or an empty list if none are visible

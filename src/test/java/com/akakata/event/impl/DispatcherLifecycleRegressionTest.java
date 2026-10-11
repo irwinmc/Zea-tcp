@@ -5,14 +5,10 @@ import com.akakata.app.impl.DefaultSession;
 import com.akakata.event.Event;
 import com.akakata.event.EventHandler;
 import com.akakata.event.Events;
-import org.agrona.concurrent.AgentRunner;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.EnumSource;
 
-import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.CompletableFuture;
@@ -29,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @Timeout(15)
 class DispatcherLifecycleRegressionTest {
+
     /**
      * Creates a dispatcher lifecycle regression test instance.
      */
@@ -40,26 +37,15 @@ class DispatcherLifecycleRegressionTest {
      */
     @TempDir
     Path tempDir;
+
     /**
-     * Releases the resources used by this test fixture.
-     *
-     * @throws Exception if the operation fails
+     * Rejects initialization after terminal dispatcher closure.
      */
     @Test
-    void closedDispatcherRejectsInitialization() throws Exception {
-        var dispatcher = new AgronaEventDispatcher();
+    void closedDispatcherRejectsInitialization() {
+        var dispatcher = new NettyEventDispatcher();
         dispatcher.close();
-        try {
-            assertThrows(IllegalStateException.class, dispatcher::initialize);
-        } finally {
-            // Also clean up the pre-fix leaked runner so the red test JVM can exit.
-            Field field = AgronaEventDispatcher.class.getDeclaredField("agentRunner");
-            field.setAccessible(true);
-            AgentRunner runner = (AgentRunner) field.get(dispatcher);
-            if (runner != null) {
-                runner.close();
-            }
-        }
+        assertThrows(IllegalStateException.class, dispatcher::initialize);
     }
 
     /**
@@ -67,7 +53,7 @@ class DispatcherLifecycleRegressionTest {
      */
     @Test
     void closedDispatcherDoesNotRetainNewEvents() {
-        var dispatcher = new AgronaEventDispatcher();
+        var dispatcher = new NettyEventDispatcher();
         dispatcher.close();
 
         dispatcher.fireEvent(Events.event("discard", Events.START));
@@ -80,7 +66,7 @@ class DispatcherLifecycleRegressionTest {
      */
     @Test
     void closedDispatcherRejectsNewHandlers() {
-        var dispatcher = new AgronaEventDispatcher();
+        var dispatcher = new NettyEventDispatcher();
         dispatcher.close();
         assertThrows(IllegalStateException.class, () -> dispatcher.addHandler(handler(Events.START, () -> {})));
         assertTrue(dispatcher.getHandlers(Events.START).isEmpty());
@@ -93,7 +79,7 @@ class DispatcherLifecycleRegressionTest {
      */
     @Test
     void concurrentPublishersCannotLeaveEventsAfterClose() throws Exception {
-        var dispatcher = new AgronaEventDispatcher();
+        var dispatcher = new NettyEventDispatcher();
         CountDownLatch start = new CountDownLatch(1);
         var tasks = new ArrayList<CompletableFuture<Void>>();
         for (int i = 0; i < 4; i++) {
@@ -128,66 +114,68 @@ class DispatcherLifecycleRegressionTest {
      */
     @Test
     void handlerSnapshotDoesNotInvokeAClosedSession() throws Exception {
-        runProbe(AgronaEventDispatcher.ExecutionMode.SERIAL, true);
+        runProbe(true);
     }
 
     /**
      * Verifies the regression scenario: session can close its dedicated dispatcher from inside a
      * handler.
      *
-     * @param mode the mode
      * @throws Exception if the operation fails
      */
-    @ParameterizedTest
-    @EnumSource(AgronaEventDispatcher.ExecutionMode.class)
-    void sessionCanCloseItsDedicatedDispatcherFromInsideAHandler(AgronaEventDispatcher.ExecutionMode mode) throws Exception {
-        runProbe(mode, false);
+    @Test
+    void sessionCanCloseItsDedicatedDispatcherFromInsideAHandler() throws Exception {
+        runProbe(false);
     }
 
     /**
      * Verifies the regression scenario: run probe.
      *
-     * @param mode the mode
      * @param snapshot the snapshot
      * @throws Exception if the operation fails
      */
-    private void runProbe(AgronaEventDispatcher.ExecutionMode mode, boolean snapshot) throws Exception {
-        runProbe(mode, snapshot, ShutdownProbe.class.getName());
+    private void runProbe(boolean snapshot) throws Exception {
+        runProbe(snapshot, ShutdownProbe.class.getName());
     }
 
     /**
      * Verifies the regression scenario: handlers can close each others dispatchers without
      * deadlocking.
      *
-     * @param mode the mode
      * @throws Exception if the operation fails
      */
-    @ParameterizedTest
-    @EnumSource(AgronaEventDispatcher.ExecutionMode.class)
-    void handlersCanCloseEachOthersDispatchersWithoutDeadlocking(AgronaEventDispatcher.ExecutionMode mode) throws Exception {
-        runProbe(mode, false, CrossCloseProbe.class.getName());
+    @Test
+    void handlersCanCloseEachOthersDispatchersWithoutDeadlocking() throws Exception {
+        runProbe(false, CrossCloseProbe.class.getName());
+    }
+
+    /**
+     * Lets a running callback close a session while an external closer waits for that callback.
+     *
+     * @throws Exception if the isolated probe deadlocks or leaks its executor
+     */
+    @Test
+    void callbackSessionCloseDoesNotJoinAnExternalCloser() throws Exception {
+        runProbe(false, ReentrantCloseProbe.class.getName());
     }
 
     /**
      * Verifies the regression scenario: run probe.
      *
-     * @param mode the mode
      * @param snapshot the snapshot
      * @param probeClass the probe class
      * @throws Exception if the operation fails
      */
-    private void runProbe(AgronaEventDispatcher.ExecutionMode mode, boolean snapshot, String probeClass) throws Exception {
-        Path output = tempDir.resolve(mode.name() + snapshot + ".log");
+    private void runProbe(boolean snapshot, String probeClass) throws Exception {
+        Path output = tempDir.resolve(probeClass.substring(probeClass.lastIndexOf('$') + 1) + snapshot + ".log");
         Process process = new ProcessBuilder(
                 Path.of(System.getProperty("java.home"), "bin", "java").toString(),
-                "--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED",
-                "--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED",
                 "-cp", System.getProperty("surefire.test.class.path", System.getProperty("java.class.path")),
-                probeClass, mode.name(), Boolean.toString(snapshot))
+                probeClass, Boolean.toString(snapshot))
                 .redirectErrorStream(true).redirectOutput(output.toFile()).start();
         try {
             assertTrue(process.waitFor(7, TimeUnit.SECONDS),
-                    () -> "Handler close deadlocked or leaked a runner: " + read(output));
+                    () -> "Handler close deadlocked or leaked an executor: " + read(output));
             assertEquals(0, process.exitValue(), () -> read(output));
         } finally {
             if (process.isAlive()) {
@@ -201,6 +189,7 @@ class DispatcherLifecycleRegressionTest {
      * Runs a cross-dispatcher close scenario in an isolated JVM.
      */
     public static class CrossCloseProbe {
+
         /**
          * Creates a cross close probe instance.
          */
@@ -214,9 +203,8 @@ class DispatcherLifecycleRegressionTest {
          * @throws Exception if the operation fails
          */
         public static void main(String[] args) throws Exception {
-            var mode = AgronaEventDispatcher.ExecutionMode.valueOf(args[0]);
-            var first = new AgronaEventDispatcher(mode);
-            var second = new AgronaEventDispatcher(mode);
+            var first = new NettyEventDispatcher();
+            var second = new NettyEventDispatcher();
             var firstClosed = new CompletableFuture<Void>();
             var secondClosed = new CompletableFuture<Void>();
             var bothStarted = new CountDownLatch(2);
@@ -243,7 +231,7 @@ class DispatcherLifecycleRegressionTest {
          * @param bothStarted the both started
          * @param done the done
          */
-        private static void crossClose(AgronaEventDispatcher other, CountDownLatch bothStarted,
+        private static void crossClose(NettyEventDispatcher other, CountDownLatch bothStarted,
                                        CompletableFuture<Void> done) {
             bothStarted.countDown();
             try {
@@ -252,6 +240,59 @@ class DispatcherLifecycleRegressionTest {
                 done.complete(null);
             } catch (Throwable failure) {
                 done.completeExceptionally(failure);
+            }
+        }
+    }
+
+    /**
+     * Runs a callback/external-session-close race in a separate JVM.
+     */
+    public static class ReentrantCloseProbe {
+
+        /**
+         * Creates this isolated probe.
+         */
+        public ReentrantCloseProbe() {
+        }
+
+        /**
+         * Coordinates an external dispatcher close with a reentrant session callback.
+         *
+         * @param args unused command-line arguments
+         * @throws Exception if shutdown fails to complete
+         */
+        public static void main(String[] args) throws Exception {
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch closing = new CountDownLatch(1);
+            var dispatcher = new NettyEventDispatcher() {
+                @Override
+                public void close() {
+                    closing.countDown();
+                    super.close();
+                }
+            };
+            Session session = new DefaultSession.SessionBuilder().eventDispatcher(dispatcher).build();
+            CompletableFuture<Void> callback = new CompletableFuture<>();
+            dispatcher.addHandler(handler(Events.STOP, () -> {
+                entered.countDown();
+                try {
+                    assertTrue(closing.await(2, TimeUnit.SECONDS));
+                    session.close();
+                    callback.complete(null);
+                } catch (Throwable failure) {
+                    callback.completeExceptionally(failure);
+                }
+            }));
+            try {
+                session.onEvent(Events.event(null, Events.STOP));
+                assertTrue(entered.await(2, TimeUnit.SECONDS));
+                CompletableFuture<Void> external = CompletableFuture.runAsync(session::close);
+                CompletableFuture.allOf(callback, external).get(3, TimeUnit.SECONDS);
+                assertEquals(Session.Status.CLOSED, session.getStatus());
+                dispatcher.close();
+            } finally {
+                dispatcher.close();
+                EventDispatchers.shutdownSharedDispatcher();
             }
         }
     }
@@ -274,6 +315,7 @@ class DispatcherLifecycleRegressionTest {
      * Runs lifecycle shutdown checks in a separate JVM to isolate global dispatchers.
      */
     public static class ShutdownProbe {
+
         /**
          * Creates a shutdown probe instance.
          */
@@ -287,9 +329,9 @@ class DispatcherLifecycleRegressionTest {
          * @throws Exception if the operation fails
          */
         public static void main(String[] args) throws Exception {
-            var dispatcher = new AgronaEventDispatcher(AgronaEventDispatcher.ExecutionMode.valueOf(args[0]));
+            var dispatcher = new NettyEventDispatcher();
             Session session = new DefaultSession.SessionBuilder().eventDispatcher(dispatcher).build();
-            boolean snapshot = Boolean.parseBoolean(args[1]);
+            boolean snapshot = Boolean.parseBoolean(args[0]);
             AtomicInteger deliveries = new AtomicInteger();
             var closed = new CompletableFuture<Void>();
             dispatcher.addHandler(handler(snapshot ? Events.ANY : Events.LOG_OUT, () -> {

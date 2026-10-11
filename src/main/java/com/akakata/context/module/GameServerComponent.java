@@ -46,6 +46,7 @@ public interface GameServerComponent {
      */
     @Component.Builder
     interface Builder {
+
         /**
          * Binds the configuration instance used by the component.
          *

@@ -31,10 +31,12 @@ public class AdvancedTestServer extends CommandLine {
      * Daemon-thread scheduler for periodic metric sampling.
      */
     private ScheduledExecutorService scheduler;
+
     /**
      * Connection count used by this regression fixture.
      */
     private final AtomicInteger connectionCount = new AtomicInteger(0);
+
     /**
      * Message count used by this regression fixture.
      */

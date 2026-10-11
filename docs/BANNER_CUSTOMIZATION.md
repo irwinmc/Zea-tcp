@@ -41,13 +41,13 @@ Override `printBanner()` to replace or suppress this behavior.
 
 ## Displayed Version
 
-The Maven project version is **0.7.8**. The current `Banner.getVersion()` looks for
+The Maven project version is **0.8.0**. The current `Banner.getVersion()` looks for
 `META-INF/maven/com.akakata/Zea-tcp/pom.properties`, with an uppercase `Z`, and falls
 back to `1.0-SNAPSHOT` if that resource is absent or cannot be read.
 
 The library artifact ID in the POM is lowercase `zea-tcp`, so its normal Maven
 metadata is under `META-INF/maven/com.akakata/zea-tcp/pom.properties`. Consequently,
-the current default banner can display `1.0-SNAPSHOT` even for the 0.7.8 library.
+the current default banner can display `1.0-SNAPSHOT` even for the 0.8.0 library.
 This display value does not describe the actual dependency version. An application
 that needs its own accurate version line can print it explicitly in an override.
 
@@ -68,7 +68,7 @@ public final class BrandedServer extends CommandLine {
     @Override
     protected void printBanner() {
         System.out.println("MY GAME SERVER — application version 1.0.0");
-        System.out.println("Transport dependency: Zea TCP 0.7.8");
+        System.out.println("Transport dependency: Zea TCP 0.8.0");
     }
 }
 ```

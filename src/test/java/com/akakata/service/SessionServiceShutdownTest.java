@@ -33,6 +33,7 @@ class SessionServiceShutdownTest {
      * Game used by this regression fixture.
      */
     private DefaultGame game;
+
     /**
      * Service used by this regression fixture.
      */

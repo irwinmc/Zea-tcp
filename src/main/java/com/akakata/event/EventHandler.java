@@ -3,7 +3,9 @@ package com.akakata.event;
 /**
  * Handles an event type, or all event types when registered with {@link Events#ANY}.
  *
- * <p>Handlers used by concurrent dispatchers must coordinate their own shared state.
+ * <p>Callbacks run serially on one Netty business executor. Global handlers
+ * registered on multiple session shards may run concurrently and must coordinate
+ * their shared state. A callback must not block or wait for its own executor.
  * Native payloads are borrowed during a callback; asynchronous work started by a
  * handler must retain any payload it needs after the callback returns.
  *

@@ -38,6 +38,7 @@ public class JsonDecoder extends MessageToMessageDecoder<ByteBuf> {
      */
     private final TypeReference<HashMap<String, Object>> typeRef = new TypeReference<HashMap<String, Object>>() {
     };
+
     /**
      * JSON mapper configured for this codec.
      */

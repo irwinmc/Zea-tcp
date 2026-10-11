@@ -4,9 +4,10 @@ import com.akakata.app.PlayerSession;
 import com.akakata.event.impl.DefaultSessionEventHandler;
 
 /**
- * Registers the default session event handler for every logged-in player.
+ * Provides the default application Game and registers handlers for logged-in players.
  *
- * <p>The default handler broadcasts incoming session messages to connected players.
+ * <p>The default handler queues incoming session messages on the Game's serial
+ * executor for broadcasting to connected players.
  * Applications can subclass the game to install their own handlers.
  *
  * @author Kelvin

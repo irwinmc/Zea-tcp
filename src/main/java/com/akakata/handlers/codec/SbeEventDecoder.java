@@ -5,7 +5,6 @@ import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandler.Sharable;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.MessageToMessageDecoder;
-import org.agrona.concurrent.UnsafeBuffer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -37,10 +36,12 @@ public class SbeEventDecoder extends MessageToMessageDecoder<ByteBuf> {
      * Size of the SBE-style message header in bytes.
      */
     private static final int HEADER_SIZE = 8;
+
     /**
      * Schema identifier encoded in the SBE-style header.
      */
     private static final int SCHEMA_ID = 1;
+
     /**
      * Protocol schema version or application version identifier.
      */

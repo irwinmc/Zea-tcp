@@ -21,6 +21,7 @@ public abstract class AbstractCache<T> implements Cache<T> {
      * Concurrent identifier-to-entry map backing the cache.
      */
     protected final ConcurrentHashMap<Object, T> store;
+
     /**
      * Name used to register this cache in a cache store.
      */

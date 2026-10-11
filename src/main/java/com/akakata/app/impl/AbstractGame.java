@@ -4,9 +4,8 @@ import com.akakata.app.Game;
 import com.akakata.app.PlayerSession;
 import com.akakata.app.Session;
 import com.akakata.event.Event;
-import com.akakata.event.EventDispatcher;
 import com.akakata.event.NetworkEvent;
-import com.akakata.event.impl.AgronaEventDispatcher;
+import com.akakata.event.impl.NettyEventDispatcher;
 import com.akakata.event.impl.EventDispatchers;
 import com.akakata.service.IdGeneratorService;
 import org.slf4j.Logger;
@@ -16,11 +15,14 @@ import java.util.Set;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CompletableFuture;
 
 /**
- * Implements concurrent session membership and a dedicated dispatcher for game events.
+ * Provides application-wide session membership and ordered game-event processing.
  *
- * <p>Connection takes the session monitor before the game monitor. Shutdown marks
+ * <p>The default server context owns one Game for the application. Its single business
+ * executor serializes game events and broadcasts independently of the session shards.
+ * Connection takes the session monitor before the game monitor. Shutdown marks
  * the game closed under its monitor and releases sessions outside that monitor.
  * Subclasses provide application behavior in {@link #onLogin(com.akakata.app.PlayerSession)}.
  *
@@ -32,6 +34,7 @@ public abstract class AbstractGame implements Game {
      * Logger for component lifecycle and diagnostic messages.
      */
     private static final Logger LOG = LoggerFactory.getLogger(AbstractGame.class);
+
     /**
      * Identifier generator used for new game instances.
      */
@@ -52,22 +55,32 @@ public abstract class AbstractGame implements Game {
     /**
      * Live set of sessions associated with the game.
      */
-    protected Set<PlayerSession> sessions;
+    protected final Set<PlayerSession> sessions;
 
     /**
-     * Dispatcher used for event delivery; ownership depends on whether it is shared.
+     * Application-owned dispatcher with one ordered business executor.
      */
-    protected EventDispatcher eventDispatcher;
+    protected final NettyEventDispatcher eventDispatcher;
 
     /**
      * Flag indicating that resource shutdown has started.
      */
     protected volatile boolean isShuttingDown;
 
+    /**
+     * Completion of application membership and dispatcher cleanup.
+     */
+    private final CompletableFuture<Void> closeCompletion = new CompletableFuture<>();
+
+    /**
+     * Initiating cleanup thread, used to avoid reentrant waits.
+     */
+    private volatile Thread closingThread;
+
     // ==================== 构造函数 ====================
 
     /**
-     * Creates a game with an empty concurrent session set and starts its dedicated dispatcher.
+     * Creates an application game with concurrent membership and one business executor.
      *
      * @param gameName the diagnostic game name
      */
@@ -76,10 +89,7 @@ public abstract class AbstractGame implements Game {
         this.gameName = gameName;
         this.sessions = ConcurrentHashMap.newKeySet();
 
-        // 创建房间专用的 EventDispatcher
-        AgronaEventDispatcher dispatcher = new AgronaEventDispatcher();
-        dispatcher.initialize();
-        this.eventDispatcher = dispatcher;
+        this.eventDispatcher = new NettyEventDispatcher();
 
         this.isShuttingDown = false;
 
@@ -104,6 +114,20 @@ public abstract class AbstractGame implements Game {
      */
     public String getGameName() {
         return gameName;
+    }
+
+    /**
+     * Returns the application dispatcher used to register ordered game-event handlers.
+     *
+     * <p>This game owns the dispatcher and closes its business executor during shutdown.
+     * Player sessions use the separate shared session shards.
+     *
+     * @return the game's fixed business dispatcher
+     * @since 0.8.0
+     */
+    @Override
+    public NettyEventDispatcher getEventDispatcher() {
+        return eventDispatcher;
     }
 
     /**
@@ -222,7 +246,7 @@ public abstract class AbstractGame implements Game {
             EventDispatchers.release(playerSession.getEventDispatcher(), playerSession);
         }
 
-        // 从房间移除会话
+        // Remove the session from the application membership set.
         boolean removed = sessions.remove(playerSession);
 
         if (removed) {
@@ -247,11 +271,12 @@ public abstract class AbstractGame implements Game {
     }
 
     /**
-     * Submits the outbound event to each connected session.
+     * Queues a broadcast on the game's fixed executor before targeting player sessions.
      *
      * <p>Each accepted delivery retains its own native payload reference. The caller
      * retains ownership of the original event payload and may release that reference
-     * after this method returns.
+     * after this method returns. Broadcast actions and game events execute in game
+     * submission order; each recipient's outbound event follows its session queue.
      *
      * @param networkEvent the outbound event to broadcast
      */
@@ -261,7 +286,18 @@ public abstract class AbstractGame implements Game {
             return;
         }
 
-        // 遍历所有 PlayerSession
+        eventDispatcher.execute(networkEvent, event -> broadcastToSessions((NetworkEvent) event));
+    }
+
+    /**
+     * Publishes one game-ordered broadcast to its currently connected sessions.
+     *
+     * @param networkEvent the borrowed outbound event
+     */
+    private void broadcastToSessions(NetworkEvent networkEvent) {
+        if (isShuttingDown) {
+            return;
+        }
         for (PlayerSession session : sessions) {
             if (session.isConnected()) {
                 session.onEvent(networkEvent);
@@ -275,35 +311,46 @@ public abstract class AbstractGame implements Game {
      * Stops accepting sessions, closes connected sessions and releases the game dispatcher.
      *
      * <p>The default implementation continues closing remaining sessions when an
-     * individual session fails, and performs cleanup outside the game monitor.
+     * individual session fails, and performs cleanup outside the game monitor. External
+     * concurrent callers wait for cleanup; reentrant and dispatcher-callback callers
+     * avoid waiting on callbacks involved in shutdown.
      */
     @Override
     public void close() {
-        List<PlayerSession> sessionsToClose;
+        List<PlayerSession> sessionsToClose = null;
         synchronized (this) {
-            if (isShuttingDown) {
-                return;
+            if (!isShuttingDown) {
+                closingThread = Thread.currentThread();
+                isShuttingDown = true;
+                sessionsToClose = new ArrayList<>(sessions);
             }
-            LOG.info("Closing game: id={}, name={}, sessions={}", id, gameName, sessions.size());
-            isShuttingDown = true;
-            sessionsToClose = new ArrayList<>(sessions);
+        }
+        if (sessionsToClose == null) {
+            if (closingThread != Thread.currentThread() && !NettyEventDispatcher.isDispatchThread()) {
+                closeCompletion.join();
+                eventDispatcher.close();
+            }
+            return;
         }
 
-        // 关闭所有玩家会话
-        for (PlayerSession session : sessionsToClose) {
+        LOG.info("Closing game: id={}, name={}, sessions={}", id, gameName, sessionsToClose.size());
+        try {
+            for (PlayerSession session : sessionsToClose) {
+                try {
+                    session.close();
+                } catch (Exception e) {
+                    LOG.error("Error closing session {} in game {}", session.getId(), id, e);
+                }
+            }
+        } finally {
+            sessions.clear();
             try {
-                session.close();
-            } catch (Exception e) {
-                LOG.error("Error closing session {} in game {}", session.getId(), id, e);
+                eventDispatcher.close();
+            } finally {
+                closeCompletion.complete(null);
+                closingThread = null;
             }
         }
-        sessions.clear();
-
-        // 关闭房间的 EventDispatcher
-        if (eventDispatcher != null) {
-            eventDispatcher.close();
-        }
-
         LOG.info("Game closed: id={}, name={}", id, gameName);
     }
 }

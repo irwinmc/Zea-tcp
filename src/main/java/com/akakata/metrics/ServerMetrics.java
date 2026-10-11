@@ -23,38 +23,46 @@ public class ServerMetrics {
     private static final ServerMetrics INSTANCE = new ServerMetrics();
 
     // Connection metrics
+
     /**
      * Cumulative number of recorded connection openings.
      */
     private final AtomicLong totalConnections = new AtomicLong(0);
+
     /**
      * Recorded connection openings minus recorded disconnections.
      */
     private final AtomicLong activeConnections = new AtomicLong(0);
+
     /**
      * Cumulative number of recorded inbound messages.
      */
     private final AtomicLong totalMessagesReceived = new AtomicLong(0);
+
     /**
      * Cumulative number of recorded outbound messages.
      */
     private final AtomicLong totalMessagesSent = new AtomicLong(0);
+
     /**
      * Cumulative number of recorded inbound bytes.
      */
     private final AtomicLong totalBytesReceived = new AtomicLong(0);
+
     /**
      * Cumulative number of recorded outbound bytes.
      */
     private final AtomicLong totalBytesSent = new AtomicLong(0);
 
     // Error metrics
+
     /**
      * Cumulative number of recorded errors.
      */
     private final AtomicLong totalErrors = new AtomicLong(0);
 
     // Server start time
+
     /**
      * Collector creation time in epoch milliseconds.
      */

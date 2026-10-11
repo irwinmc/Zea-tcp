@@ -1,18 +1,17 @@
 # Event Loops, Dispatch and Lifecycle
 
-This guide describes the threading and resource ownership of Zea TCP Transport
-0.7.8 with Netty 4.2.19.Final, Agrona 2.6.1 and Java 21. Configuration keys are
-listed in the [configuration guide](CONFIGURATION.md).
+This guide describes Zea TCP Transport 0.8.0 with Netty 4.2.19.Final and Java 21.
+See [configuration](CONFIGURATION.md) for consumed properties and wire formats.
 
 ## Resource Layout
 
 ```text
 ServerContext
   NetworkBootstrap
-    shared boss EventLoopGroup       TCP / HTTP / WebSocket accepts
-    shared worker EventLoopGroup     accepted-channel I/O and pipelines
-  Game (DefaultGame)
-    dedicated AgronaEventDispatcher  game-level events
+    shared boss I/O group             TCP / HTTP / WebSocket accepts
+    shared worker I/O group           channel I/O and pipelines
+  Game (one application instance)
+    NettyEventDispatcher              one ordered business executor
     connected player sessions
   SessionService
     Caffeine registry and owned sessions
@@ -22,213 +21,207 @@ ServerContext
 
 EventDispatchers (process-wide)
   shared ShardedEventDispatcher
-    Agrona shard 0 ... shard S-1
-      queue + agent platform thread
-      virtual-thread callbacks in CONCURRENT mode
+    DefaultEventExecutorGroup
+      fixed session shard 0 ... S-1    one ordered executor per shard
 ```
 
-`ServerModule` assigns the same `NetworkBootstrap` groups to each listener's
-`NettyConfig`. No separate I/O group is created for each protocol in the default
-Dagger graph. A standalone `NettyConfig` can create its own groups if none are
-provided; the caller must establish ownership for those resources.
+The default Dagger graph creates one `Game` for the application. It is an
+application session container and a queue for shared business events and
+broadcasts. There is no room registry or room-ID routing. `DefaultGame` demonstrates
+broadcasting; subclass `AbstractGame` to register application handlers through
+`getEventDispatcher()` and submit shared work with `send()`.
 
-## Netty I/O Groups
+The Game owns its single business executor. Sessions use separate shared business
+executors, so a Game callback does not occupy a session shard. Business executors
+and network I/O groups are also separate. Their platform threads start lazily and
+are not daemon threads; owners must close them.
 
-The current `NetworkBootstrap` construction is equivalent to:
+## Network I/O Groups
 
-```java
-package com.example;
-
-import com.akakata.context.NetworkBootstrap;
-
-public final class NetworkGroupsExample {
-    public static void main(String[] args) {
-        try (NetworkBootstrap bootstrap = new NetworkBootstrap(2, 2)) {
-            System.out.println(bootstrap.getBossGroup());
-            System.out.println(bootstrap.getWorkerGroup());
-        }
-    }
-}
-```
-
-Internally each group uses `MultiThreadIoEventLoopGroup`, a
-`DefaultThreadFactory` with prefix `netty-boss` or `netty-worker`, and
-`NioIoHandler.newFactory()`. This replaces the deprecated `NioEventLoopGroup` API.
+`NetworkBootstrap` creates boss and worker `MultiThreadIoEventLoopGroup` instances
+with `NioIoHandler.newFactory()`. The thread prefixes are `netty-boss` and
+`netty-worker`. `ServerModule` assigns these same groups to TCP, HTTP and WebSocket
+listeners; the default graph does not allocate an I/O group per protocol.
 
 The bundled properties request two boss and two worker threads. Missing properties
-fall back to one boss and the JVM's available processor count for workers. These
-are group sizes; event-loop threads can be started lazily by Netty. Sharing groups
-means HTTP, WebSocket and TCP I/O can affect one another's latency.
+fall back to one boss thread and the JVM's available processor count for workers.
+Sharing groups means the protocols can affect one another's I/O latency.
 
-Network pipeline work includes decoding, login initialization and HTTP request
-handling. Event dispatch moves submitted application callbacks to dispatcher
-threads, but it does not move every pipeline operation. Avoid blocking I/O or long
-CPU work in Netty callbacks.
+Pipeline decoding, login initialization and HTTP routing still run on I/O threads.
+Only submitted business events move to a business executor. Keep pipeline
+callbacks short and avoid blocking database or network calls there.
 
-`NetworkBootstrap.close()` requests graceful shutdown of both groups before
-waiting uninterruptibly for both termination futures. Invoke context or network
-group shutdown from a thread outside these event loops.
+`NetworkBootstrap.close()` requests shutdown of both I/O groups and waits for both
+termination futures. Invoke context or network shutdown from outside the I/O loops.
+A standalone `NettyConfig` can allocate its own groups when none are supplied;
+its application must establish their shutdown ownership.
 
-## Shared Session Shards
+## Session Sharding and Routing
 
-The process-wide factory creates:
+The process-wide factory chooses:
 
 ```text
 S = max(2, Integer.highestOneBit(Runtime.getRuntime().availableProcessors()))
 ```
 
-For example, six available processors yield four shards, eight yield eight, and
-one yields two. A separately constructed `ShardedEventDispatcher(count)` rounds a
-positive count up to a power of two.
+A separately constructed `ShardedEventDispatcher(count)` rounds a positive count
+up to a power of two. Session IDs must remain immutable.
 
 | Operation | Route or Registration |
 | --- | --- |
 | `fireEvent(event, session)` | `session.getId().hashCode() & (S - 1)` |
-| `fireEvent(event)` | `event.getType() & (S - 1)` |
-| Register a `SessionEventHandler` | Its session's ID shard |
+| Unscoped `fireEvent(event)` on the facade | `event.getType() & (S - 1)` |
+| Register a `SessionEventHandler` | Its session's fixed shard |
 | Register an ordinary `EventHandler` | Every shard |
-| `removeHandlersForSession(session)` on the sharded dispatcher | Search every shard |
+| `getHandlers(type)` on the facade | Aggregate snapshot, global handlers deduplicated by identity |
+| `removeHandler` / `removeHandlersForEvent` on the facade | Remove registrations from every shard |
+| `removeHandlersForSession` on the facade | The session's fixed shard |
 
-`DefaultPlayerSession` resolves and stores its shared Agrona shard at construction,
-and `DefaultSession.onEvent()` supplies the target session when submitting. Inside
-that shard, session handlers are filtered to the target session; ordinary handlers
-remain observers of matching events. Two players sharing a shard therefore do not
-receive one another's targeted handler callbacks.
+`DefaultPlayerSession` stores its shared shard at construction.
+`DefaultSession.onEvent()` supplies the target session when publishing. Each shard
+indexes subscriptions by session object identity and event type; targeted delivery does not scan
+other sessions' handlers. Global observers can receive matching targeted events,
+while one player's handlers cannot receive another player's targeted events.
+Session instances remain separate even if custom `equals()` methods consider their
+business identifiers equal; closing one instance cancels only its own deliveries.
 
-An unscoped `fireEvent(event)` has no target-session filter. Use scoped submission
-for player work. `getHandlers()` on the sharded dispatcher selects one shard rather
-than aggregating every subscription. For session-handler removal through the
-sharded facade, use `removeHandlersForSession`; the typed `removeHandler` route is
-based on event type and can differ from the session's registration shard.
+An unscoped event on a shard reaches matching global and session subscriptions on
+that shard. Unscoped facade events of different types can run on different shards;
+they have no common ordering guarantee. Use targeted delivery for session work and
+`Game.send()` for ordered application-wide events.
 
-`EventDispatchers.newDedicatedDispatcher()` constructs two shards. In contrast,
-`AbstractGame` directly creates and initializes one `AgronaEventDispatcher` for
-its own game events.
+Subscriptions are captured when registered. Remove and register a handler again
+if changing its event type or session association. Registering the same handler
+instance twice on the same dispatcher is idempotent. Removed subscriptions are
+checked again before callback invocation; removal does not interrupt a callback
+that has already started.
 
-## Agrona Queue and Callback Execution
+`EventDispatchers.newDedicatedDispatcher()` creates a separately owned two-shard
+group. Close that group when finished. `NettyEventDispatcher` creates one ordered
+executor; it starts automatically on submission. Its `initialize()` method only
+validates that it is open and is optional.
 
-Each Agrona dispatcher uses a `ManyToOneConcurrentArrayQueue` with capacity
-**32,768**, supports multiple publishing threads and has one consumer agent. The
-agent processes at most **256** deliveries per work cycle and uses an Agrona
-`BackoffIdleStrategy` when idle. Its platform thread is named
-`agrona-event-dispatcher` and is not a daemon, so owners must close it.
+## Ordering and State Ownership
 
-A standalone `AgronaEventDispatcher` must be initialized explicitly.
-`ShardedEventDispatcher` initializes its shards during construction.
+A `NettyEventDispatcher` invokes matching handlers synchronously on its fixed
+executor. One callback must return before the next delivery starts. All event
+types for one session share this order. Reentrant submissions join the queue
+behind work already accepted; they do not execute inline.
 
-| Mode | Callback Execution | Waiting Behavior |
-| --- | --- | --- |
-| `SERIAL` | Matching handlers run in sequence on the agent thread | A blocking handler blocks that shard |
-| `CONCURRENT` (default) | A new virtual thread runs each matching handler | The agent waits up to 5,000 ms for that event's handlers |
+With concurrent producers, ordering follows successful queue publication. There
+is no ordering by event timestamp or across separate executors. Global observers
+registered on multiple shards can run concurrently and must coordinate shared
+state. Several sessions assigned to one shard execute serially on that shard.
 
-Concurrent mode does not provide one reusable worker pool. A callback timeout is
-logged but does not interrupt or cancel unfinished handlers; they can overlap with
-later deliveries and continue after dispatcher closure. Separate shards run
-independently. Application handlers and shared payload objects must therefore
-coordinate concurrent access.
+The application Game uses one dispatcher for both `send()` events and
+`sendBroadcast()` actions. A broadcast waits for earlier Game work, then submits
+one targeted outbound event to each currently connected player. Each recipient
+processes accepted broadcasts in this order on its own session queue. Membership
+is observed when the broadcast action executes; a player that closes before
+outbound processing can discard the delivery.
 
-Handlers receive the submitted `Event` object. Dispatch metadata records the
-session and retained native reference, but there is no deep copy of the event or
-its source. Avoid mutating an event after submission. Handler registration uses
-concurrent maps and copy-on-write lists; removing a handler does not revoke a
-callback that has already been selected or started.
+Keep session-owned state on its session executor and shared business state on the
+Game executor. Post events between these boundaries. Login, connection,
+disconnection and direct lifecycle calls still use their existing monitors and
+caller threads; creating a Game does not move those methods onto its executor.
+Applications should submit shared state updates explicitly rather than assuming
+all callbacks already run on the Game thread.
 
-### Queue Saturation
+Callbacks must return promptly. Offload blocking work, retain any native payload
+needed by that work, and submit its result back to the owning queue. Asynchronous
+work started by a callback is outside the queue's serial guarantee until its
+completion is posted back. There is no automatic callback deadline or interruption.
+Never wait synchronously for work submitted to the same executor.
 
-`fireEvent` has no accepted/rejected return value. A full queue logs a warning and
-drops the submission. Submission after closure is ignored. Neither operation
-transfers the caller's original native-buffer reference. There is no automatic
-retry, overflow queue or reliable-delivery acknowledgment.
+## Bounded Queues and Rejection
 
-Sampled queue depths show waiting deliveries rather than all active callbacks.
-A zero-depth queue can coexist with running virtual threads. See
-[monitoring](MONITORING.md#dispatcher-queue-metrics) for sampling semantics.
+Each business executor accepts at most **32,768 pending tasks** by default.
+Standalone and sharded constructors accept a custom capacity of at least 16.
+There is no default properties key for this capacity. Sessions on the same shard
+share that shard's capacity; the Game has its own bounded queue.
 
-## Session and Game Lifecycle
+`NettyEventDispatcher.tryFireEvent()` and `execute()` return `true` when accepted
+and `false` when closed, saturated, or, for targeted delivery, the session is
+closing. Saturation uses Netty's rejecting policy: a callback never falls back to
+execution on the submitting thread. `getRejectedEventCount()` counts executor
+rejections; submissions ignored after dispatcher closure are excluded.
 
-The normal game connection path moves a session through `NOT_CONNECTED`,
-`CONNECTING` and `CONNECTED`. `DefaultSession.close()` makes `CLOSED` terminal,
-marks shutdown and disables writes. Events and new handlers are ignored afterward,
-and a sender offered after closure is immediately closed instead of attached.
+The existing `fireEvent()`, `Session.onEvent()` and Game methods return no delivery
+acknowledgment. They can discard work during saturation or shutdown. There is no
+automatic retry or overflow queue. Applications requiring admission control can
+use `tryFireEvent()` on their session's `NettyEventDispatcher`; for Game events use
+`game.getEventDispatcher().tryFireEvent(event)` on an `AbstractGame` instance.
 
-Login success write callbacks check channel activity and session shutdown under
-`synchronized (session)` before attaching the sender, connecting the game,
-installing the protocol and registering login handlers. Channel close listeners
-also close sessions whose success response or initialization is still pending.
-A failed login or callback cleans up the session and transport.
+`getQueueSize()` counts pending deliveries owned by one dispatcher. Shared queue
+metrics sample the physical Netty queues, excluding running callbacks and the
+Game's independent queue. Cancelled task shells may remain until the worker reaches
+them, but their event, session and payload references are cleared immediately.
+A zero queue depth does not mean the running callback has completed. See
+[monitoring](MONITORING.md#dispatcher-queue-metrics) for sampling behavior.
 
-The session monitor is deliberately shared by login, game connection, registry
-registration and session closure. Synchronizing on a method parameter locks the
-passed session object; a private lock in only one participant would not coordinate
-those operations. Custom code should avoid unrelated locking on the session and
-long-running work while holding its monitor. `afterSessionConnect` runs outside
-`connectSession`'s own synchronized blocks, but its login caller may still hold the
-session monitor.
+## Session and Application Lifecycle
 
-Session closure detaches its sender and snapshots close listeners under the
-monitor, then performs resource cleanup outside that critical section. Reentrant
-closure by the closing thread returns; another closing thread waits for completion.
-`DefaultPlayerSession.close()` also disconnects from its game.
+Normal connection moves a session through `NOT_CONNECTED`, `CONNECTING` and
+`CONNECTED`. `DefaultSession.close()` makes `CLOSED` terminal, disables writes and
+detaches the sender. New events and handlers are ignored after closure starts;
+a sender offered afterward is closed immediately.
 
-`EventDispatchers.release()` recognizes both the shared facade and individual
-shared shards. It removes the closing session's handlers while leaving the shared
-agent and queue available to other players. A privately owned dispatcher is closed.
+Login success callbacks check channel activity and session shutdown under the
+session monitor before connecting the Game, installing a protocol and registering
+handlers. Channel-close listeners also close sessions whose login initialization
+is still pending. Failed login or callbacks clean up the session and transport.
 
-`AbstractGame.close()` marks the game closed, snapshots connected sessions and
-closes them outside its game lock. It then clears membership and closes its
-dedicated dispatcher. New creation and connection are rejected once closure begins.
+Login, Game connection, registry registration and session closure share the
+session monitor. Synchronizing on a method parameter locks that session object;
+a separate private lock in only one participant would not coordinate these paths.
+Avoid unrelated locks and long work while holding the session monitor.
+`afterSessionConnect()` runs outside `connectSession()`'s synchronized blocks,
+but its login caller may still hold the session monitor.
 
-## Session Registry Ownership
+Session closure snapshots resources under its monitor and cleans up outside it.
+External concurrent closers wait for the initiating cleanup. Reentrant callers and
+Netty dispatcher callbacks avoid joining a closer that could be waiting for their
+own callback. `DefaultPlayerSession.close()` also disconnects from its Game.
 
-`SessionService` caches player sessions by `Credentials` with a maximum of 10,000
-entries, expiration after two hours of cache access inactivity and 24 hours after
-write. The default constructor schedules cache cleanup every minute on a virtual
-thread created for its single-thread scheduled executor.
+`EventDispatchers.release()` recognizes the shared facade and borrowed shards,
+including shards of custom groups. Closing one session removes only its handlers
+and queued targeted deliveries, preserving the shard for other sessions. A
+privately owned dispatcher is closed completely.
 
-Replacement closes the previous session synchronously. Registering the same
-session under the same key does not close it. Conditional removal and default
-session close callbacks compare the cached session by identity, preventing an old
-session callback from removing its replacement.
-
-A separate identity-based ownership set tracks sessions even when asynchronous
-cache removal notifications are pending. Service shutdown marks the registry
-closed and snapshots that ownership, stops the cleanup scheduler with a bounded
-wait, closes the owned sessions and invalidates the cache. Cleanup occurs outside
-the registry monitor to avoid holding it across session callbacks.
-
-Cache expiration is not an automatic client reconnect mechanism or a transport
-idle timeout. Applications define stable credential identities and their own
-reconnect policy.
+`AbstractGame.close()` marks the application Game closed, snapshots membership,
+closes players outside the Game monitor, clears membership and closes its own
+executor. It continues after individual session failures. External concurrent
+closers wait for cleanup; callback or reentrant callers avoid shutdown cycles.
+New session creation and connection are rejected after closure starts.
 
 ## Payload Ownership
 
-Netty native buffers are reference-counted. Treat event submission as a borrow of
-the caller's reference, with additional references retained by asynchronous owners.
+Netty native buffers are reference-counted. Event publication borrows the caller's
+reference and retains an additional reference for each accepted delivery.
 
 | Boundary | Ownership Rule |
 | --- | --- |
-| `Session.onEvent`, `fireEvent`, game broadcast | Caller retains its original reference; accepted delivery retains its own |
-| Queue rejection, cancellation or shutdown drain | Dispatcher releases any reference retained for the abandoned delivery |
-| Concurrent callback | Each worker retains a separate native reference and releases it in `finally` |
-| Handler callback | Payload is borrowed for callback duration; retain separately to keep it afterward |
-| `DefaultToServerHandler` | Releases the inbound native owner after forwarding to the session |
-| `SocketMessageSender` sending an `Event` | Retains its native source until write completion or failure |
-| `MessageBufferEventEncoder` | Uses a retained duplicate for each write, preserving the source reader index |
-| `NettyMessageBuffer` wrapping a `ByteBuf` | Does not add a reference; the caller releases the native buffer when finished |
-| `ByteBufHolder` | Owns an existing reference and releases it once on close; do not close it twice |
+| Session, dispatcher or Game submission | Caller keeps its original reference; each queued owner retains its own |
+| Game broadcast | Game task retains once; each accepted recipient delivery retains separately |
+| Rejection, cancellation or queued shutdown | Release the abandoned delivery's retained reference |
+| Handler or queued action | Borrow the payload until the synchronous callback returns |
+| Running callback during close | Keep its retained reference until the callback finishes |
+| Asynchronous work started by a handler | Retain and release an additional reference explicitly |
+| `DefaultToServerHandler` | Release the inbound native owner after session submission |
+| `SocketMessageSender` sending an event | Retain the native source until write completion or failure |
+| `MessageBufferEventEncoder` | Copy readable bytes without consuming the borrowed source reference |
 
-The dispatcher captures the native object retained at submission. Its cleanup does
-not depend on the event still pointing to that same source later. This prevents
-cleanup from releasing a replacement source, but does not make payload mutation
-safe for concurrent handlers.
+Events and payloads are not deep-copied. Do not mutate an event after publication.
+Payloads shared among broadcast recipients should be immutable or read-only.
+The dispatcher captures the retained native object separately, so cleanup still
+releases that original object if application code later changes the event source.
 
-`EventDecoder` and `MessageBufferEventDecoder` allocate copied payload buffers.
-`SbeEventDecoder` returns a retained slice. JSON decoders borrow input slices only
-for parsing. The SBE encoder copies readable bytes; this framework does not provide
-end-to-end zero-copy processing for every protocol.
+`EventDecoder` and `MessageBufferEventDecoder` copy payload bytes;
+`SbeEventDecoder` returns a retained slice. JSON decoders borrow slices for parsing.
+The SBE encoder copies readable bytes. End-to-end zero-copy behavior is not
+provided for every protocol.
 
-The following complete example releases the producer reference immediately after
-submission and lets the dispatcher manage the callback reference:
+This complete example runs without additional JVM options:
 
 ```java
 package com.example;
@@ -236,7 +229,7 @@ package com.example;
 import com.akakata.event.Event;
 import com.akakata.event.EventHandler;
 import com.akakata.event.Events;
-import com.akakata.event.impl.AgronaEventDispatcher;
+import com.akakata.event.impl.NettyEventDispatcher;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import java.util.concurrent.CountDownLatch;
@@ -244,10 +237,7 @@ import java.util.concurrent.TimeUnit;
 
 public final class DispatcherExample {
     public static void main(String[] args) throws Exception {
-        AgronaEventDispatcher dispatcher = new AgronaEventDispatcher(
-                AgronaEventDispatcher.ExecutionMode.SERIAL);
-        dispatcher.initialize();
-        try {
+        try (NettyEventDispatcher dispatcher = new NettyEventDispatcher()) {
             CountDownLatch handled = new CountDownLatch(1);
             dispatcher.addHandler(new EventHandler() {
                 @Override
@@ -265,68 +255,76 @@ public final class DispatcherExample {
 
             ByteBuf payload = Unpooled.buffer().writeInt(42);
             try {
-                dispatcher.fireEvent(Events.event(payload, 100));
+                if (!dispatcher.tryFireEvent(Events.event(payload, 100))) {
+                    throw new IllegalStateException("Event was rejected");
+                }
             } finally {
                 payload.release();
             }
             if (!handled.await(10, TimeUnit.SECONDS)) {
                 throw new IllegalStateException("Event was not handled");
             }
-        } finally {
-            dispatcher.close();
         }
     }
 }
 ```
 
-## Dispatcher and Context Shutdown
+## Migrating to 0.8.0
 
-Agrona closure prevents new publication, waits for active publishers to leave,
-stops the agent, clears subscriptions and releases queued payload references.
-Closure from a handler defers the final shutdown to a virtual thread so it does
-not wait for its own callback. The handler marker is shared across dispatcher
-instances, covering callbacks that close one another's dispatchers. An external
-caller waits for the completion of dispatcher cleanup.
+Use `NettyEventDispatcher` wherever a standalone business dispatcher is needed.
+There is no execution-mode parameter, callback worker per event, polling batch or
+manual `doWork()` consumer. Initialization is automatic. Existing targeted
+`EventDispatcher` and `Session.onEvent()` submissions remain available.
 
-This cleanup does not guarantee that every timed-out concurrent handler has
-finished. Application callbacks must cooperate with shutdown and release any
-references or resources they independently own.
+`Game` now extends `AutoCloseable` and exposes `getEventDispatcher()` for application
+handler registration. Custom direct implementations must provide that method.
+`AbstractGame` supplies it and owns a final dispatcher; register handlers on this
+dispatcher rather than replacing it. Game events and broadcasts are asynchronous
+and serial, so update code that assumed broadcasting completed before its method
+returned. Application lifecycle callbacks retain the caller-thread behavior
+described above.
 
-`ServerContext.close()` stops servers, closes the game and `SessionService`, stops
-the queue sampler, closes the shared dispatcher and finally terminates network
-groups. Each stage logs cleanup failures so later stages still run. A context that
-has not constructed application resources avoids creating the shared dispatcher
-just to close it. A closed context cannot be reinitialized.
+## Registry Ownership and Shutdown
 
-The shared dispatcher and metrics scheduler are static process-wide resources.
-Their shutdown is terminal; use a new JVM for another complete server lifecycle.
-Multiple independent application contexts in the same JVM are not isolated from
-these shared resources or the static channel group.
+`SessionService` caches sessions by `Credentials`, with a maximum of 10,000 entries,
+expiration after two hours of cache access inactivity and 24 hours after write.
+The default constructor schedules cleanup every minute on a virtual thread for
+its scheduled executor. Cache expiration is not a transport idle timeout or an
+automatic reconnect mechanism.
 
-## Verification and Tuning
+Replacement closes the previous session synchronously; registering the same
+session under the same key does not close it. Conditional removal and close
+callbacks compare session identity so an old callback cannot remove its successor.
+A separate identity-based set tracks owned sessions even when asynchronous cache
+removal notifications are pending. Service shutdown snapshots ownership, stops
+cleanup scheduling, closes sessions and invalidates the cache outside its monitor.
 
-Run the existing regression suite with `mvn test`. It covers targeted delivery on
-shared shards, session closure preserving other players, login and registry races,
-callback-triggered dispatcher closure, publication during shutdown and native
-payload cleanup.
+Dispatcher closure cancels queued tasks, releases their retained references and
+clears subscriptions. Running callbacks retain their references until completion.
+External callers wait for owned executor termination; closure inside any dispatcher
+callback initiates cleanup without joining executors, avoiding self or cross-group
+shutdown cycles. An external owner can call `close()` afterward to await termination.
 
-Inspect platform threads with `jcmd <PID> Thread.print`. Use the configured group
-sizes and actual thread dumps when estimating thread use: network threads,
-Agrona agents, the metrics scheduler and JVM threads all contribute. Virtual
-callbacks are not counted by the current `ThreadMXBean` metric.
+Netty shutdown uses a zero quiet period and a five-second shutdown timeout. This
+is an executor shutdown setting, not a deadline that can interrupt a running
+application callback. A callback that never returns can prevent external closure
+from finishing. Applications must give blocking work its own cancellation policy.
 
-Use the [local load-test command](../README.md#local-dispatcher-load-test) for a
-diagnostic run and inspect dropped-event warnings alongside throughput. This
-repository does not publish a reproducible capacity or latency guarantee. Measure
-HTTP, TCP and WebSocket workloads independently and together before changing
-thread counts or introducing application-specific executor isolation.
+`ServerContext.close()` stops listeners, closes the Game and SessionService, stops
+metrics sampling, closes shared session executors and then shuts down network I/O.
+The shared dispatcher and metrics singleton have terminal process-wide lifecycles;
+after complete shutdown, start a new JVM rather than trying to restart them.
+
+The local `SimpleLoadTest` counts accepted and rejected publications separately
+and waits for a completion barrier. Its throughput and mean latency describe a
+local diagnostic run, not a server capacity or tail-latency guarantee.
 
 ## Source References
 
 - [NetworkBootstrap](../src/main/java/com/akakata/context/NetworkBootstrap.java)
-- [AgronaEventDispatcher](../src/main/java/com/akakata/event/impl/AgronaEventDispatcher.java)
+- [NettyEventDispatcher](../src/main/java/com/akakata/event/impl/NettyEventDispatcher.java)
 - [ShardedEventDispatcher](../src/main/java/com/akakata/event/impl/ShardedEventDispatcher.java)
 - [EventDispatchers](../src/main/java/com/akakata/event/impl/EventDispatchers.java)
+- [AbstractGame](../src/main/java/com/akakata/app/impl/AbstractGame.java)
 - [DefaultSession](../src/main/java/com/akakata/app/impl/DefaultSession.java)
 - [SessionService](../src/main/java/com/akakata/service/SessionService.java)
-- [ServerContext](../src/main/java/com/akakata/context/ServerContext.java)

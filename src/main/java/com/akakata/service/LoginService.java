@@ -35,6 +35,7 @@ public class LoginService {
      * @param token the encrypted credential token
      */
     public record LoginResult(PlayerSession session, String token) {
+
         /**
          * Validates that the authenticated session and token are both nonnull.
          *
@@ -52,6 +53,7 @@ public class LoginService {
      * Credential-keyed session registry and session resource owner.
      */
     private final SessionService sessionService;
+
     /**
      * Service for encrypting and verifying credential tokens.
      */

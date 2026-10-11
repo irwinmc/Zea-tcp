@@ -31,10 +31,12 @@ public class JsonProtocol extends AbstractNettyProtocol {
      * Shared decoder for opcode and JSON payload frames.
      */
     private final JsonDecoder jsonDecoder;
+
     /**
      * Shared encoder for opcode and JSON payload frames.
      */
     private final JsonEncoder jsonEncoder;
+
     /**
      * Shared outbound TCP frame-length encoder.
      */

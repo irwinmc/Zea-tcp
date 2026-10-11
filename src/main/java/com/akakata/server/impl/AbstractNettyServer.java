@@ -28,14 +28,17 @@ public abstract class AbstractNettyServer implements NettyServer {
      * Shared channel group containing registered server channels across server instances.
      */
     public static final ChannelGroup ALL_CHANNELS = new DefaultChannelGroup("ZEALSERVER-CHANNELS", GlobalEventExecutor.INSTANCE);
+
     /**
      * Logger for component lifecycle and diagnostic messages.
      */
     private static final Logger LOG = LoggerFactory.getLogger(AbstractNettyServer.class);
+
     /**
      * Server bind settings, channel options and shared event-loop references.
      */
     protected final NettyConfig nettyConfig;
+
     /**
      * Pipeline initializer used for accepted channels.
      */

@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @Timeout(10)
 class SessionLifecycleRegressionTest {
+
     /**
      * Creates a session lifecycle regression test instance.
      */
@@ -227,6 +228,7 @@ class SessionLifecycleRegressionTest {
      * Records outbound messages and close calls for lifecycle assertions.
      */
     static class RecordingSender implements MessageSender {
+
         /**
          * Creates a recording sender instance.
          */

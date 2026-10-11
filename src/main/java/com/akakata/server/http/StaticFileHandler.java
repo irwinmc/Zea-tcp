@@ -42,22 +42,27 @@ public class StaticFileHandler {
      * HTTP date pattern used for cache response headers.
      */
     public static final String HTTP_DATE_FORMAT = "EEE, dd MMM yyyy HH:mm:ss zzz";
+
     /**
      * Time-zone identifier used for HTTP date formatting.
      */
     public static final String HTTP_DATE_GMT_TIMEZONE = "GMT";
+
     /**
      * Static-resource cache lifetime in seconds.
      */
     public static final int HTTP_CACHE_SECONDS = 60;
+
     /**
      * Static-resource directory relative to the working directory.
      */
     public static final String HTML_FILE_DIR = "html";
+
     /**
      * Logger for component lifecycle and diagnostic messages.
      */
     private static final Logger LOG = LoggerFactory.getLogger(StaticFileHandler.class);
+
     /**
      * Normalized static-resource root path.
      */
@@ -261,6 +266,7 @@ public class StaticFileHandler {
      * Logs asynchronous file-transfer progress and completion.
      */
     private static class FileTransferProgressListener implements ChannelProgressiveFutureListener {
+
         /**
          * Creates a file transfer progress listener instance.
          */

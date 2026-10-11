@@ -6,6 +6,7 @@ import com.akakata.event.Event;
 import com.akakata.event.EventDispatcher;
 import com.akakata.event.EventHandler;
 import com.akakata.event.impl.EventDispatchers;
+import com.akakata.event.impl.NettyEventDispatcher;
 import com.akakata.service.IdGeneratorService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,18 +29,22 @@ import java.util.concurrent.CompletableFuture;
  * @author Kelvin
  */
 public class DefaultSession implements Session {
+
     /**
      * Logger for component lifecycle and diagnostic messages.
      */
     private static final Logger LOG = LoggerFactory.getLogger(DefaultSession.class);
+
     /**
      * Pending close callbacks, guarded by the session monitor.
      */
     private final List<Runnable> closeListeners = new ArrayList<>();
+
     /**
      * Completion signal for resource cleanup and concurrent close callers.
      */
     private final CompletableFuture<Void> closeCompletion = new CompletableFuture<>();
+
     /**
      * Thread initiating session cleanup, used to recognize reentrant close calls.
      */
@@ -319,8 +324,9 @@ public class DefaultSession implements Session {
     /**
      * Marks the session closed and releases its owned resources once.
      *
-     * <p>Concurrent callers wait for the initiating cleanup. Reentrant calls from the
-     * closing thread return immediately. Close listeners run even if dispatcher or sender
+     * <p>External concurrent callers wait for the initiating cleanup. Reentrant calls
+     * from the closing thread or a dispatcher callback return immediately to avoid
+     * waiting on the callback being closed. Close listeners run even if dispatcher or sender
      * cleanup throws; listener failures are logged individually.
      */
     @Override
@@ -348,7 +354,7 @@ public class DefaultSession implements Session {
         }
         if (alreadyClosing) {
             // Reentrant close callbacks must not wait for themselves.
-            if (owner != Thread.currentThread() && owner != null) {
+            if (owner != Thread.currentThread() && owner != null && !NettyEventDispatcher.isDispatchThread()) {
                 closeCompletion.join();
             }
             return;
@@ -486,6 +492,7 @@ public class DefaultSession implements Session {
      * dispatcher. Attribute maps are wrapped by the built session rather than copied.
      */
     public static class SessionBuilder {
+
         /**
          * Creates a builder with the default initial configuration.
          */
@@ -496,34 +503,42 @@ public class DefaultSession implements Session {
          * Identifier generator used when a builder has no explicit identifier.
          */
         protected static final IdGeneratorService ID_GENERATOR_SERVICE = new IdGeneratorService();
+
         /**
          * Identifier used for session identity.
          */
         protected Object id = null;
+
         /**
          * Dispatcher used for event delivery; ownership depends on whether it is shared.
          */
         protected EventDispatcher eventDispatcher = null;
+
         /**
          * Live attribute map wrapped for synchronized individual operations.
          */
         protected Map<String, Object> sessionAttributes = null;
+
         /**
          * Creation time in epoch milliseconds.
          */
         protected long creationTime = 0L;
+
         /**
          * Last recorded activity time in epoch milliseconds.
          */
         protected long lastReadWriteTime = 0L;
+
         /**
          * Connection state used to initialize or report session lifecycle.
          */
         protected Status status = Status.NOT_CONNECTED;
+
         /**
          * Flag controlling whether the session is eligible for outbound writes.
          */
         protected boolean isWritable = true;
+
         /**
          * Flag indicating that resource shutdown has started.
          */

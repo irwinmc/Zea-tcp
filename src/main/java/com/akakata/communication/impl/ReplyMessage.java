@@ -28,12 +28,14 @@ public class ReplyMessage implements Serializable {
      * @serial Identifier used for request identity.
      */
     private int id;
+
     /**
      * Application response code.
      *
      * @serial Application response code.
      */
     private int code;
+
     /**
      * Optional serializable reply payload.
      *

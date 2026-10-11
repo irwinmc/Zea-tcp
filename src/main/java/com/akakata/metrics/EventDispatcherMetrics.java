@@ -14,7 +14,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Periodically samples queue depths of the process-wide shared dispatcher.
+ * Periodically samples pending Netty tasks on the process-wide session shards.
+ *
+ * <p>Running callbacks and the separately owned application Game queue are excluded.
+ * Cancelled task shells can remain counted until their executor removes them.
  *
  * <p>A daemon-thread scheduler updates the singleton's cached values. A nonpositive
  * sampling interval disables scheduling. Stopping shuts down the scheduler; the
@@ -28,6 +31,7 @@ public final class EventDispatcherMetrics {
      * Logger for component lifecycle and diagnostic messages.
      */
     private static final Logger LOG = LoggerFactory.getLogger(EventDispatcherMetrics.class);
+
     /**
      * Process-wide singleton instance.
      */

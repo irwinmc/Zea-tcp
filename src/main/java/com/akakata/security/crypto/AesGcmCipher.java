@@ -21,14 +21,17 @@ public final class AesGcmCipher {
      * Cipher transformation used for authenticated encryption.
      */
     private static final String TRANSFORMATION = "AES/GCM/NoPadding";
+
     /**
      * Authentication-tag size in bits.
      */
     private static final int TAG_LENGTH_BIT = 128;
+
     /**
      * Initialization-vector size in bytes.
      */
     private static final int IV_LENGTH = 12;
+
     /**
      * Key bytes used by the default cipher implementation.
      */
@@ -38,6 +41,7 @@ public final class AesGcmCipher {
      * Secure random source for initialization vectors.
      */
     private static final SecureRandom RANDOM = new SecureRandom();
+
     /**
      * Cipher key constructed from the configured default key bytes.
      */

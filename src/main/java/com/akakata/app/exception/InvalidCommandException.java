@@ -19,6 +19,7 @@ public class InvalidCommandException extends Exception {
      * Diagnostic-map key used to store an invalid-command problem description.
      */
     private static final String INVALID_COMMAND_PROBLEM = "invalid_param_problem";
+
     /**
      * Named diagnostic or request parameters.
      *

@@ -36,14 +36,17 @@ public class Banner {
      * Protocol schema version or application version identifier.
      */
     private static final String VERSION = getVersion();
+
     /**
      * Java runtime version captured from system properties.
      */
     private static final String JAVA_VERSION = System.getProperty("java.version");
+
     /**
      * Operating-system name captured from system properties.
      */
     private static final String OS_NAME = System.getProperty("os.name");
+
     /**
      * Operating-system architecture captured from system properties.
      */

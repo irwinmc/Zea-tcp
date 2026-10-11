@@ -25,7 +25,7 @@ import io.netty.util.ReferenceCountUtil;
  *     buffer.getNativeBuffer().release();
  * }
  * }</pre>
-
+ *
  * @author Kelvin
  */
 public class NettyMessageBuffer implements MessageBuffer<ByteBuf> {

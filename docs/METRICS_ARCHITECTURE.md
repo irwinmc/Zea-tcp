@@ -152,6 +152,12 @@ also calls getters independently, so the fields can briefly reflect different
 observations. Check freshness and trends instead of assuming a single atomic queue
 snapshot. A stale sample can miss a short queue spike.
 
+Game admission reports, dispatcher rejection counters and per-socket pending-write
+counts are direct application APIs. They are not collected by this sampler or
+exported in the current HTTP metric schemas. Socket backpressure may close a
+connection even after its recipient queue accepted an event; admission counts
+must not be interpreted as successful network delivery.
+
 ### Configuration and Lifecycle
 
 ```properties

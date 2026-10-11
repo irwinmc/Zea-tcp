@@ -43,11 +43,16 @@ The **bundled value** is the value in this checkout's default resource.
 | `tcp.nodelay` | `true` | `true` | Accepted channel's `TCP_NODELAY` |
 | `protocol.type` | `SBE` | `JSON` | TCP login decoder and post-login protocol |
 | `metrics.event.interval.seconds` | `30` | Absent | Shared-dispatcher queue sampling period in seconds |
+| `session.maximum` | `10000` | `10000` | Positive credential-slot admission limit; full capacity rejects new logins |
+| `game.queue.capacity` | `32768` | `32768` | Maximum pending Game tasks; must be at least 16 |
+| `socket.maximum.pending.writes` | `1024` | `1024` | Positive maximum admitted socket writes awaiting completion |
+| `socket.maximum.pending.bytes` | `1048576` | `1048576` | Positive maximum encoded bytes awaiting socket completion |
 
 These values are read by
 [ServerContext](../src/main/java/com/akakata/context/ServerContext.java),
 [ServerModule](../src/main/java/com/akakata/context/module/ServerModule.java),
-[ProtocolModule](../src/main/java/com/akakata/context/module/ProtocolModule.java) and
+[ProtocolModule](../src/main/java/com/akakata/context/module/ProtocolModule.java),
+[ServiceModule](../src/main/java/com/akakata/context/module/ServiceModule.java) and
 [ServerManagerImpl](../src/main/java/com/akakata/server/impl/ServerManagerImpl.java).
 
 ### Server Selection and Binding
@@ -85,6 +90,34 @@ WebSocket always uses its WebSocket JSON event codec. HTTP API routing and healt
 or metrics JSON are independent of `protocol.type`. `StringProtocol` and
 `MessageBufferProtocol` exist for programmatic use, but the default module does not
 select them through this property.
+
+### Admission and Socket Budgets
+
+```properties
+session.maximum=10000
+game.queue.capacity=32768
+socket.maximum.pending.writes=1024
+socket.maximum.pending.bytes=1048576
+```
+
+These limits are consumed by the default Dagger service and TCP/WebSocket login
+providers. Nonpositive slot/write/byte budgets and Game capacities below 16 fail
+initialization. Malformed integer strings follow the loader's ordinary fallback rule.
+Budgets are not automatically resized or reloaded.
+
+The session limit applies to registered credentials, including logins awaiting
+protocol initialization. At capacity, a new credential fails login while existing
+players remain registered. A reconnect for an existing credential replaces its
+session using the same slot. Online registry entries have no size-based eviction
+or cache TTL. Use explicit lifecycle operations or application transport idle
+handling to release sessions.
+
+Socket write and encoded-byte budgets work alongside Channel write-buffer water
+marks. Overflow or a nonwritable write fails the write and closes that connection;
+there is no unlimited retry queue. Inbound reads pause above queue high water marks
+and resume below low water marks. The bridge's default five-second pause deadline
+is separate from callback execution and is only customizable programmatically.
+See [backpressure](EVENT_LOOP.md#network-backpressure) for ownership and recovery.
 
 ### Queue Sampling
 
@@ -272,12 +305,14 @@ in the current Netty API. These values are code settings, not properties.
 
 | Setting | Current Value or Rule |
 | --- | --- |
-| Session-cache maximum size | 10,000 entries |
-| Session-cache expiration after access | 2 hours |
-| Session-cache expiration after write | 24 hours |
+| Session registry TTL and size eviction | None; explicit lifecycle cleanup |
+| Session admission budget | `session.maximum`, default 10,000 credential slots |
 | Periodic cache cleanup | Every minute; enabled by the default `SessionService` constructor |
 | Shared dispatcher shard count | `max(2, highestOneBit(availableProcessors))` |
-| Pending-task capacity per Netty business executor | 32,768 tasks |
+| Shared session pending-task capacity | 32,768 tasks per executor; custom constructors accept another value |
+| Game pending-task capacity | `game.queue.capacity`, default 32,768 tasks |
+| Inbound queue high / low thresholds | 75% / below 50% of pending-task capacity |
+| Sustained inbound read-pause deadline | Five seconds; custom bridge constructor can change it |
 | Application Game count in the default context | One |
 | Application Game business executors | One, separate from the session shards |
 | Handler execution | Serial on the assigned business executor |
@@ -285,10 +320,10 @@ in the current Netty API. These values are code settings, not properties.
 | HTTP request aggregation | 65,536 bytes |
 | Static-file root | `html` under the process working directory |
 
-These settings are not exposed as properties by the current default modules.
-In particular, cache access expiration tracks cache access; it is not a network
-idle timeout. See [event loops and lifecycle](EVENT_LOOP.md) for ownership,
-saturation and shutdown behavior.
+Settings without a property name in this table remain fixed or programmatic.
+Registry lifetime is independent of cache access and is not a network idle timeout.
+See [event loops and lifecycle](EVENT_LOOP.md) for ownership, admission, saturation
+and shutdown behavior.
 
 ## Troubleshooting
 

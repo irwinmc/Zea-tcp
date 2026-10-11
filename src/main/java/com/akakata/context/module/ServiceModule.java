@@ -2,6 +2,8 @@ package com.akakata.context.module;
 
 import com.akakata.app.Game;
 import com.akakata.app.impl.DefaultGame;
+import com.akakata.context.ConfigurationManager;
+import com.akakata.communication.OutboundLimits;
 import com.akakata.security.SimpleCredentialsVerifier;
 import com.akakata.service.LoginService;
 import com.akakata.service.SecurityService;
@@ -43,12 +45,28 @@ public final class ServiceModule {
     /**
      * Provides the session service dependency for the application component.
      *
+     * @param configuration the application properties
      * @return the session service instance
      */
     @Provides
     @Singleton
-    static SessionService provideSessionService() {
-        return new SessionService(new SimpleCredentialsVerifier());
+    static SessionService provideSessionService(ConfigurationManager configuration) {
+        return new SessionService(new SimpleCredentialsVerifier(), true,
+                configuration.getInt("session.maximum", SessionService.DEFAULT_MAXIMUM_SESSIONS));
+    }
+
+    /**
+     * Provides per-connection application-write and encoded-buffer budgets.
+     *
+     * @param configuration the application properties
+     * @return the validated socket outbound limits
+     */
+    @Provides
+    @Singleton
+    static OutboundLimits provideOutboundLimits(ConfigurationManager configuration) {
+        return new OutboundLimits(
+                configuration.getInt("socket.maximum.pending.writes", OutboundLimits.DEFAULT.maximumPendingWrites()),
+                configuration.getInt("socket.maximum.pending.bytes", OutboundLimits.DEFAULT.maximumPendingBytes()));
     }
 
     /**
@@ -67,11 +85,13 @@ public final class ServiceModule {
     /**
      * Provides the game dependency for the application component.
      *
+     * @param configuration the application properties
      * @return the game instance
      */
     @Provides
     @Singleton
-    static Game provideGame() {
-        return new DefaultGame();
+    static Game provideGame(ConfigurationManager configuration) {
+        return new DefaultGame(configuration.getInt("game.queue.capacity",
+                com.akakata.event.impl.NettyEventDispatcher.DEFAULT_QUEUE_CAPACITY));
     }
 }

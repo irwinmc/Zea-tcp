@@ -77,6 +77,7 @@ public class LoginService {
      *
      * <p>Replacing an existing session closes it synchronously. Failures release the
      * new session and return null. The input buffer remains owned by the caller.
+     * Full registry capacity rejects new credentials without removing an existing player.
      *
      * @param buffer the source native buffer
      * @param game the associated game
@@ -116,6 +117,16 @@ public class LoginService {
 
             LOG.info("Login successful: sessionId={}, credentials={}", newSession.getId(), credentials);
             return new LoginResult(newSession, token);
+        } catch (SessionCapacityException full) {
+            if (newSession != null) {
+                try {
+                    newSession.close();
+                } catch (Exception cleanupFailure) {
+                    LOG.warn("Failed to close a capacity-rejected session", cleanupFailure);
+                }
+            }
+            LOG.info("Login rejected because session capacity is exhausted");
+            return null;
         } catch (Exception e) {
             if (newSession != null) {
                 try {
@@ -188,9 +199,9 @@ public class LoginService {
     }
 
     /**
-     * Returns the cache's estimated session count.
+     * Returns the current number of registered credential slots.
      *
-     * @return the estimated cached session count
+     * @return the current credential registry size
      */
     public long getSessionCount() {
         return sessionService.size();

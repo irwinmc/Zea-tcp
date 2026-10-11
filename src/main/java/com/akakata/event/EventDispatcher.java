@@ -18,7 +18,8 @@ import java.util.List;
  * <p>Dispatching borrows the caller's payload reference. An accepted asynchronous
  * delivery retains its own native reference and releases it after processing or
  * discarding the delivery. The caller can release its original reference after the
- * submission returns. Queue saturation or shutdown may cause a delivery to be dropped.
+ * submission returns. The {@code fireEvent} methods return whether the dispatcher
+ * accepted the delivery; a full or closed queue returns false without retaining it.
  *
  * <p>The default Netty implementation invokes callbacks serially on each fixed
  * business executor. Targeted events for a session share one executor across all
@@ -29,7 +30,7 @@ import java.util.List;
  * <pre>{@code
  * EventDispatcher dispatcher = EventDispatchers.sharedDispatcher();
  * dispatcher.addHandler(handler);
- * dispatcher.fireEvent(event, session);
+ * boolean accepted = dispatcher.fireEvent(event, session);
  * dispatcher.removeHandlersForSession(session);
  * }</pre>
  *
@@ -100,8 +101,9 @@ public interface EventDispatcher {
      * remains with the caller; accepted deliveries retain their own references.
      *
      * @param event the event to process
+     * @return true if accepted, or false when the queue is full or closed
      */
-    void fireEvent(Event event);
+    boolean fireEvent(Event event);
 
     /**
      * Submits an event for asynchronous delivery.
@@ -113,9 +115,11 @@ public interface EventDispatcher {
      *
      * @param event the event to process
      * @param session the session associated with the operation
+     * @return true if accepted, or false when the queue is full, the scope is closed
+     *         or the target session is closing
      */
-    default void fireEvent(Event event, Session session) {
-        fireEvent(event);
+    default boolean fireEvent(Event event, Session session) {
+        return fireEvent(event);
     }
 
     // ==================== 生命周期方法 ====================

@@ -14,7 +14,6 @@ import io.netty.buffer.ByteBuf;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
@@ -24,15 +23,16 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Owns cached player sessions and releases them on replacement, removal, eviction and shutdown.
+ * Owns player sessions with atomic credential-slot admission and explicit lifecycle cleanup.
  *
- * <p>The cache expires entries after two hours of inactivity or 24 hours of age
- * and holds at most 10,000 entries. Cache statistics are recorded. An optional
- * periodic cleanup task drives expiration when traffic is idle.
+ * <p>The default admission limit is 10,000 credentials. Full capacity rejects new
+ * credentials and never evicts existing players. Reconnecting an existing credential
+ * reuses its slot. Online sessions have no cache TTL; transport idle handling and
+ * explicit session closure determine their lifetime. Cache statistics are recorded.
  *
  * <p>Registration takes the session monitor before the service monitor. Resource
  * cleanup runs outside the service monitor. Identity-based ownership tracks sessions
- * awaiting asynchronous eviction callbacks, and close listeners remove default
+ * awaiting asynchronous removal callbacks, and close listeners remove default
  * sessions without deleting newer replacements for the same credential key.
  *
  * @author Kelvin
@@ -46,7 +46,17 @@ public class SessionService {
     private static final Logger LOG = LoggerFactory.getLogger(SessionService.class);
 
     /**
-     * Credential-keyed session cache with expiration, capacity and removal notifications.
+     * Default number of simultaneously registered credential slots.
+     */
+    public static final int DEFAULT_MAXIMUM_SESSIONS = 10_000;
+
+    /**
+     * Admission budget checked atomically with registry publication.
+     */
+    private final int maximumSessions;
+
+    /**
+     * Credential-keyed registry cache with statistics and removal notifications.
      */
     private final Cache<Credentials, PlayerSession> sessions;
 
@@ -56,7 +66,7 @@ public class SessionService {
     private final CredentialsVerifier verifier;
 
     /**
-     * Optional scheduler that drives cache expiration during idle periods.
+     * Optional scheduler that runs registry-cache maintenance during idle periods.
      */
     private final ScheduledExecutorService cleanupExecutor;
 
@@ -82,18 +92,27 @@ public class SessionService {
      * @param enablePeriodicCleanup whether to schedule cache cleanup every minute
      */
     public SessionService(CredentialsVerifier verifier, boolean enablePeriodicCleanup) {
+        this(verifier, enablePeriodicCleanup, DEFAULT_MAXIMUM_SESSIONS);
+    }
+
+    /**
+     * Creates a registry with a strict credential-slot budget and optional maintenance.
+     *
+     * @param verifier the credential verifier
+     * @param enablePeriodicCleanup whether to run cache maintenance every minute
+     * @param maximumSessions the positive number of admitted credentials
+     * @throws IllegalArgumentException if the admission limit is not positive
+     */
+    public SessionService(CredentialsVerifier verifier, boolean enablePeriodicCleanup, int maximumSessions) {
+        if (maximumSessions <= 0) {
+            throw new IllegalArgumentException("Maximum sessions must be positive");
+        }
         this.verifier = verifier;
+        this.maximumSessions = maximumSessions;
 
         this.sessions = Caffeine.newBuilder()
-                // 容量限制：最大10K会话
-                .maximumSize(10_000)
-                // 访问过期：2小时无活动
-                .expireAfterAccess(Duration.ofHours(2))
-                // 写入过期：24小时绝对过期
-                .expireAfterWrite(Duration.ofHours(24))
-                // 移除监听器：自动清理
+                // Online players are never evicted by cache size or cache-access age.
                 .removalListener(this::onSessionRemoved)
-                // 启用统计
                 .recordStats()
                 .build();
 
@@ -123,8 +142,8 @@ public class SessionService {
     }
 
     /**
-     * Handles cache eviction notifications. Expiration and size eviction clean up on the callback
-     * thread; replacement cleanup is handled by registration.
+     * Handles registry-cache removal notifications while registration owns replacement cleanup.
+     * The configured registry has no expiration or size-based eviction policy.
      *
      * @param credentials the verified credential identity
      * @param session the session associated with the operation
@@ -214,7 +233,7 @@ public class SessionService {
     }
 
     /**
-     * Looks up a player session and updates the cache access time.
+     * Looks up the session currently registered for the credential and records cache statistics.
      *
      * @param key the attribute or cache key
      * @return the cached session, or {@code null} if absent
@@ -302,6 +321,7 @@ public class SessionService {
      * @return the previous session, or {@code null} if no entry existed
      * @throws IllegalArgumentException if the credentials or replacement is null
      * @throws IllegalStateException if the service or replacement session is closed
+     * @throws SessionCapacityException if a new credential would exceed the admission limit
      */
     public PlayerSession replaceSession(Credentials credentials, PlayerSession newSession) {
         if (credentials == null || newSession == null) {
@@ -331,7 +351,11 @@ public class SessionService {
                 if (closed) {
                     throw new IllegalStateException("SessionService is closed");
                 }
-                oldSession = sessions.asMap().put(credentials, newSession);
+                oldSession = sessions.asMap().get(credentials);
+                if (oldSession == null && sessions.asMap().size() >= maximumSessions) {
+                    throw new SessionCapacityException(maximumSessions);
+                }
+                sessions.asMap().put(credentials, newSession);
                 ownedSessions.add(newSession);
                 if (oldSession != newSession && newSession instanceof DefaultSession defaultSession) {
                     defaultSession.addCloseListener(() -> onSessionClosed(credentials, newSession));
@@ -354,12 +378,21 @@ public class SessionService {
     }
 
     /**
-     * Returns the estimated number of cached sessions.
+     * Returns the current number of registered credential slots.
      *
-     * @return the estimated cache size
+     * @return the credential registry size
      */
     public long size() {
-        return sessions.estimatedSize();
+        return sessions.asMap().size();
+    }
+
+    /**
+     * Returns the maximum number of simultaneously admitted credentials.
+     *
+     * @return the positive credential-slot budget
+     */
+    public int maximumSessions() {
+        return maximumSessions;
     }
 
     /**

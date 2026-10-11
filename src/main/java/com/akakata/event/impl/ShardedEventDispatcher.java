@@ -170,23 +170,26 @@ public class ShardedEventDispatcher implements EventDispatcher, AutoCloseable {
     }
 
     /**
-     * {@inheritDoc}
+     * Attempts an unscoped publication to the opcode-selected executor.
+     *
+     * @param event the event to publish
+     * @return whether the selected shard accepted the event
      */
     @Override
-    public void fireEvent(Event event) {
-        if (event != null) {
-            shards[event.getType() & mask].fireEvent(event);
-        }
+    public boolean fireEvent(Event event) {
+        return event != null && shards[event.getType() & mask].fireEvent(event);
     }
 
     /**
-     * {@inheritDoc}
+     * Attempts publication to the target session's stable executor.
+     *
+     * @param event the event to publish
+     * @param session the target session
+     * @return whether the target shard accepted the event
      */
     @Override
-    public void fireEvent(Event event, Session session) {
-        if (event != null) {
-            selectSession(Objects.requireNonNull(session, "session")).fireEvent(event, session);
-        }
+    public boolean fireEvent(Event event, Session session) {
+        return event != null && selectSession(Objects.requireNonNull(session, "session")).fireEvent(event, session);
     }
 
     /**

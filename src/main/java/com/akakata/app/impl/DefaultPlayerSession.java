@@ -130,10 +130,11 @@ public class DefaultPlayerSession extends DefaultSession implements PlayerSessio
      * Submits an event to the associated game dispatcher.
      *
      * @param event the event to process
+     * @return whether the associated Game accepted the event
      */
     @Override
-    public void sendToGame(Event event) {
-        game.send(event);
+    public boolean sendToGame(Event event) {
+        return game.send(event);
     }
 
     /**

@@ -56,6 +56,7 @@ public interface PlayerSession extends Session {
      * Submits an event to the associated game dispatcher.
      *
      * @param event The event to send to the {@link Game}
+     * @return true if the Game accepted the event, or false when its queue is full or closed
      */
-    void sendToGame(Event event);
+    boolean sendToGame(Event event);
 }

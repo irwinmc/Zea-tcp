@@ -1,6 +1,7 @@
 package com.akakata.communication.impl;
 
 import com.akakata.communication.MessageSender;
+import com.akakata.communication.OutboundLimits;
 import com.akakata.event.Event;
 import com.akakata.event.Events;
 import com.akakata.event.EventResources;
@@ -13,15 +14,28 @@ import com.akakata.util.NettyUtils;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelPipeline;
+import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelPromise;
+import io.netty.util.ReferenceCountUtil;
 import io.netty.handler.codec.MessageToMessageEncoder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.channels.ClosedChannelException;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.Objects;
+import java.util.concurrent.RejectedExecutionException;
+
 /**
- * Writes messages to a Netty channel and closes it after a disconnect message.
+ * Sends ordered socket writes with bounded admission and encoded-buffer accounting.
  *
  * <p>Event writes retain the native payload until the write future completes.
- * For raw Netty messages, normal pipeline ownership rules apply. Closing selects an
+ * Writes always enter the channel event-loop queue in admission order. A full write
+ * budget, encoded-byte budget or nonwritable channel fails the write and closes the
+ * connection. This prevents later updates from following a rejected state update.
+ * For raw Netty messages, normal pipeline ownership rules apply, including release
+ * on admission rejection. Closing selects an
  * event encoder when available and otherwise writes a one-byte disconnect opcode.
  *
  * @author Kelvin
@@ -39,13 +53,39 @@ public class SocketMessageSender implements MessageSender {
     private final Channel channel;
 
     /**
+     * Per-connection application-write and encoded-buffer limits.
+     */
+    private final OutboundLimits limits;
+
+    /**
+     * Admitted writes, including queued event-loop tasks; guarded by this sender.
+     */
+    private final Set<PendingWrite> pending = new HashSet<>();
+
+    /**
+     * Terminal sender flag published before overload or explicit closure.
+     */
+    private volatile boolean closed;
+
+    /**
      * Associates an outbound sender with a Netty channel.
      *
      * @param channel the Netty transport channel
      */
     public SocketMessageSender(Channel channel) {
-        super();
-        this.channel = channel;
+        this(channel, OutboundLimits.DEFAULT);
+    }
+
+    /**
+     * Creates a sender with explicit per-connection outbound budgets.
+     *
+     * @param channel the transport channel
+     * @param limits the positive application-write and encoded-byte limits
+     */
+    public SocketMessageSender(Channel channel, OutboundLimits limits) {
+        this.channel = Objects.requireNonNull(channel, "channel");
+        this.limits = Objects.requireNonNull(limits, "limits");
+        channel.closeFuture().addListener(ignored -> failPendingWrites());
     }
 
     /**
@@ -59,18 +99,114 @@ public class SocketMessageSender implements MessageSender {
      * @return the channel write future
      */
     @Override
-    public Object sendMessage(Object message) {
-        if (message instanceof Event event) {
-            Object payloadReference = EventResources.retainPayload(event);
-            try {
-                return channel.writeAndFlush(message).addListener(future ->
-                        EventResources.releasePayload(payloadReference));
-            } catch (Throwable failure) {
-                EventResources.releasePayload(payloadReference);
-                throw failure;
+    public synchronized ChannelFuture sendMessage(Object message) {
+        Objects.requireNonNull(message, "message");
+        if (closed || !channel.isActive()) {
+            releaseRawMessage(message);
+            return channel.newFailedFuture(new ClosedChannelException());
+        }
+        if (pending.size() >= limits.maximumPendingWrites() || !channel.isWritable()) {
+            closed = true;
+            releaseRawMessage(message);
+            channel.close();
+            return channel.newFailedFuture(new RejectedExecutionException("Socket write budget or water mark exceeded"));
+        }
+        Object payload = message instanceof Event event ? EventResources.retainPayload(event) : null;
+        ChannelPromise promise = channel.newPromise();
+        promise.setUncancellable();
+        PendingWrite write = new PendingWrite(message, payload, promise);
+        pending.add(write);
+        promise.addListener(ignored -> completeWrite(write));
+        try {
+            channel.eventLoop().execute(() -> writeOnEventLoop(write));
+        } catch (Throwable failure) {
+            promise.tryFailure(failure);
+            // A stopped event loop may also reject the promise's cleanup listener.
+            completeWrite(write);
+        }
+        return promise;
+    }
+
+    /**
+     * Performs a previously admitted write without bypassing older event-loop tasks.
+     *
+     * @param write the retained application write
+     */
+    private void writeOnEventLoop(PendingWrite write) {
+        if (write.promise.isDone()) {
+            return;
+        }
+        if (closed || !channel.isActive() || !channel.isWritable()) {
+            write.promise.tryFailure(new RejectedExecutionException("Socket stopped accepting ordered writes"));
+            closed = true;
+            channel.close();
+            return;
+        }
+        try {
+            if (channel.pipeline().get(OutboundBufferLimiter.class) == null) {
+                channel.pipeline().addFirst("zeaOutboundBudget", new OutboundBufferLimiter(limits));
+            }
+            write.forwarded = true;
+            channel.writeAndFlush(write.message, write.promise);
+        } catch (Throwable failure) {
+            write.promise.tryFailure(failure);
+            channel.close();
+        }
+    }
+
+    /**
+     * Releases one admitted write after transport completion or pre-write rejection.
+     *
+     * @param write the completed application write
+     */
+    private void completeWrite(PendingWrite write) {
+        synchronized (this) {
+            if (!pending.remove(write)) {
+                return;
             }
         }
-        return channel.writeAndFlush(message);
+        EventResources.releasePayload(write.payload);
+        if (!write.forwarded) {
+            releaseRawMessage(write.message);
+        }
+        if (!write.promise.isSuccess()) {
+            closed = true;
+            channel.close();
+        }
+    }
+
+    /**
+     * Resolves queued writes when transport closure precedes their event-loop task.
+     */
+    private void failPendingWrites() {
+        PendingWrite[] writes;
+        synchronized (this) {
+            closed = true;
+            writes = pending.toArray(PendingWrite[]::new);
+        }
+        for (PendingWrite write : writes) {
+            write.promise.tryFailure(new ClosedChannelException());
+        }
+    }
+
+    /**
+     * Releases ownership-transferred raw messages without releasing an Event's caller-owned source.
+     *
+     * @param message the rejected or cancelled application message
+     */
+    private static void releaseRawMessage(Object message) {
+        if (!(message instanceof Event)) {
+            ReferenceCountUtil.release(message);
+        }
+    }
+
+    /**
+     * Returns admitted writes awaiting their channel completion.
+     *
+     * @return the bounded pending application-write count
+     */
+    public synchronized int pendingWrites() {
+        return pending.size();
     }
 
     /**
@@ -88,7 +224,8 @@ public class SocketMessageSender implements MessageSender {
     @Override
     public void close() {
         LOG.debug("Going to close tcp connection in class: {}", this.getClass().getName());
-        if (!channel.isOpen()) {
+        closed = true;
+        if (!channel.isOpen() || !channel.isWritable() || pendingWrites() != 0) {
             channel.close();
             return;
         }
@@ -156,5 +293,44 @@ public class SocketMessageSender implements MessageSender {
             }
         }
         return false;
+    }
+
+    /**
+     * Captures an application write and its independently retained Event source.
+     */
+    private static final class PendingWrite {
+
+        /**
+         * Original message retained until its event-loop task has run.
+         */
+        private final Object message;
+
+        /**
+         * Captured native Event source, or null for ownership-transferred raw writes.
+         */
+        private final Object payload;
+
+        /**
+         * Uncancellable completion preventing premature native payload release.
+         */
+        private final ChannelPromise promise;
+
+        /**
+         * Whether ownership has been transferred to the outbound pipeline.
+         */
+        private volatile boolean forwarded;
+
+        /**
+         * Captures one admitted write.
+         *
+         * @param message the application message
+         * @param payload the independently retained Event source
+         * @param promise the transport completion
+         */
+        private PendingWrite(Object message, Object payload, ChannelPromise promise) {
+            this.message = message;
+            this.payload = payload;
+            this.promise = promise;
+        }
     }
 }

@@ -112,6 +112,13 @@ final class DispatcherTestSupport {
         }
 
         /**
+         * Releases the paused worker without closing its borrowed registration scope.
+         */
+        void resume() {
+            release.countDown();
+        }
+
+        /**
          * Releases the paused worker after cancelling any remaining scope deliveries.
          */
         @Override

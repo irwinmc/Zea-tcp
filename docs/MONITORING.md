@@ -218,6 +218,13 @@ per-shard depths are read separately, so their sums need not match during concur
 publication. Use `last_update_timestamp` to assess freshness. A growing maximum
 can identify a hot shard; a zero queue does not prove that all handlers have finished.
 
+Game sends provide per-operation `DeliveryReport` admission counts, and
+`SocketMessageSender.pendingWrites()` exposes a connection's pending application
+writes. These are not added to the current HTTP or Prometheus metric schemas.
+Queue rejection counts remain available directly from Netty dispatchers. Monitor
+write failures and connection closure alongside queue depth when diagnosing
+backpressure; a send report is not a client delivery acknowledgment.
+
 ## Prometheus Output
 
 `GET /metrics/prometheus` emits the following exact names and types:

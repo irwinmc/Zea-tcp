@@ -1,6 +1,7 @@
 package com.akakata.app.impl;
 
 import com.akakata.app.Game;
+import com.akakata.app.DeliveryReport;
 import com.akakata.app.PlayerSession;
 import com.akakata.app.Session;
 import com.akakata.event.Event;
@@ -14,6 +15,11 @@ import org.slf4j.LoggerFactory;
 import java.util.Set;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.Objects;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
 
@@ -85,11 +91,21 @@ public abstract class AbstractGame implements Game {
      * @param gameName the diagnostic game name
      */
     protected AbstractGame(String gameName) {
+        this(gameName, NettyEventDispatcher.DEFAULT_QUEUE_CAPACITY);
+    }
+
+    /**
+     * Creates a Game with a configurable bounded business queue.
+     *
+     * @param gameName the diagnostic game name
+     * @param queueCapacity the pending task capacity, at least 16
+     */
+    protected AbstractGame(String gameName, int queueCapacity) {
         this.id = String.valueOf(ID_GENERATOR.generateFor(AbstractGame.class));
         this.gameName = gameName;
         this.sessions = ConcurrentHashMap.newKeySet();
 
-        this.eventDispatcher = new NettyEventDispatcher();
+        this.eventDispatcher = new NettyEventDispatcher(queueCapacity);
 
         this.isShuttingDown = false;
 
@@ -259,15 +275,14 @@ public abstract class AbstractGame implements Game {
     // ==================== 事件处理 ====================
 
     /**
-     * Submits an event to the game dispatcher. A closed default game ignores the event.
+     * Submits an event to the ordered Game queue without waiting for available capacity.
      *
-     * @param event the event to process
+     * @param event the event whose original payload remains owned by the caller
+     * @return whether this open Game accepted the event
      */
     @Override
-    public void send(Event event) {
-        if (!isShuttingDown && eventDispatcher != null) {
-            eventDispatcher.fireEvent(event);
-        }
+    public boolean send(Event event) {
+        return !isShuttingDown && eventDispatcher.fireEvent(event);
     }
 
     /**
@@ -279,30 +294,85 @@ public abstract class AbstractGame implements Game {
      * submission order; each recipient's outbound event follows its session queue.
      *
      * @param networkEvent the outbound event to broadcast
+     * @return completion reporting admission to recipient session queues
      */
     @Override
-    public void sendBroadcast(NetworkEvent networkEvent) {
-        if (isShuttingDown) {
-            return;
-        }
-
-        eventDispatcher.execute(networkEvent, event -> broadcastToSessions((NetworkEvent) event));
+    public CompletableFuture<DeliveryReport> sendBroadcast(NetworkEvent networkEvent) {
+        return queueSend(networkEvent, null);
     }
 
     /**
-     * Publishes one game-ordered broadcast to its currently connected sessions.
-     *
-     * @param networkEvent the borrowed outbound event
+     * {@inheritDoc}
      */
-    private void broadcastToSessions(NetworkEvent networkEvent) {
-        if (isShuttingDown) {
-            return;
-        }
-        for (PlayerSession session : sessions) {
-            if (session.isConnected()) {
-                session.onEvent(networkEvent);
+    @Override
+    public CompletableFuture<DeliveryReport> sendToPlayer(NetworkEvent networkEvent, PlayerSession recipient) {
+        return sendToPlayers(networkEvent, List.of(recipient));
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public CompletableFuture<DeliveryReport> sendToPlayers(NetworkEvent networkEvent,
+                                                          Collection<? extends PlayerSession> recipients) {
+        Set<PlayerSession> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        List<PlayerSession> selected = new ArrayList<>();
+        for (PlayerSession recipient : Objects.requireNonNull(recipients, "recipients")) {
+            Objects.requireNonNull(recipient, "recipient");
+            if (recipient.getGame() != this) {
+                throw new IllegalArgumentException("Recipient belongs to another Game");
+            }
+            if (seen.add(recipient)) {
+                selected.add(recipient);
             }
         }
+        return queueSend(networkEvent, List.copyOf(selected));
+    }
+
+    /**
+     * Publishes a retained recipient action on the same executor as Game events.
+     *
+     * @param event the outbound event
+     * @param selected the explicit recipients, or null for current Game membership
+     * @return completion of recipient admission, including scope cancellation
+     */
+    private CompletableFuture<DeliveryReport> queueSend(NetworkEvent event, List<PlayerSession> selected) {
+        Objects.requireNonNull(event, "event");
+        if (isShuttingDown) {
+            return CompletableFuture.failedFuture(new RejectedExecutionException("Game is closed"));
+        }
+        DeliveryReport[] result = new DeliveryReport[1];
+        return eventDispatcher.submit(event,
+                delivered -> result[0] = deliverToSessions((NetworkEvent) delivered,
+                        selected == null ? sessions : selected)).thenApply(ignored -> result[0]);
+    }
+
+    /**
+     * Publishes one Game-ordered send, closing recipients that cannot admit an update.
+     *
+     * @param networkEvent the borrowed outbound event
+     * @param recipients the selected session instances
+     * @return recipient queue admission counts
+     */
+    private DeliveryReport deliverToSessions(NetworkEvent networkEvent, Collection<PlayerSession> recipients) {
+        int accepted = 0;
+        int rejected = 0;
+        int skipped = 0;
+        for (PlayerSession session : recipients) {
+            if (isShuttingDown || session.getGame() != this || !session.isConnected() || session.isShuttingDown()) {
+                skipped++;
+            } else if (session.onEvent(networkEvent)) {
+                accepted++;
+            } else {
+                rejected++;
+                try {
+                    session.close();
+                } catch (Exception failure) {
+                    LOG.error("Failed to close overloaded recipient {}", session.getId(), failure);
+                }
+            }
+        }
+        return new DeliveryReport(accepted, rejected, skipped);
     }
 
     // ==================== 生命周期 ====================

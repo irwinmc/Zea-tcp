@@ -64,7 +64,7 @@ public final class SimpleLoadTest {
                         for (int j = 0; j < eventsPerProducer; j++) {
                             Event event = Events.event(null, 1001);
                             event.setTimeStamp(System.nanoTime());
-                            if (dispatcher.tryFireEvent(event)) {
+                            if (dispatcher.fireEvent(event)) {
                                 accepted.incrementAndGet();
                             }
                         }

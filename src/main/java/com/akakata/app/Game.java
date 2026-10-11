@@ -5,6 +5,8 @@ import com.akakata.event.EventDispatcher;
 import com.akakata.event.NetworkEvent;
 
 import java.util.Set;
+import java.util.Collection;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Defines application-wide player membership, shared events and outbound broadcasts.
@@ -87,11 +89,15 @@ public interface Game extends AutoCloseable {
     EventDispatcher getEventDispatcher();
 
     /**
-     * Submits an event to the game dispatcher. A closed default game ignores the event.
+     * Submits an event to the Game's ordered business queue without waiting for capacity.
      *
-     * @param event the event to process
+     * <p>Accepted deliveries retain their own native payload reference. The caller
+     * remains responsible for its original reference, including rejected submissions.
+     *
+     * @param event the event whose original payload remains owned by the caller
+     * @return true if accepted, or false when the Game queue is full or closed
      */
-    void send(Event event);
+    boolean send(Event event);
 
     /**
      * Queues an outbound broadcast before submitting targeted recipient deliveries.
@@ -100,11 +106,38 @@ public interface Game extends AutoCloseable {
      * retains ownership of the original event payload and may release that reference
      * after this method returns. The default implementation serializes broadcasts
      * with Game events, then queues each connected recipient's delivery on its own
-     * session executor. Saturation or shutdown can discard a delivery.
+     * session executor. The completion reports recipient queue admission and does
+     * not acknowledge socket delivery. Game rejection or cancellation completes
+     * exceptionally; recipient rejection is counted and closes that recipient.
      *
      * @param networkEvent the outbound event to broadcast
+     * @return the asynchronous recipient admission report
      */
-    void sendBroadcast(NetworkEvent networkEvent);
+    CompletableFuture<DeliveryReport> sendBroadcast(NetworkEvent networkEvent);
+
+    /**
+     * Queues an explicit unicast alongside other Game events and broadcasts.
+     *
+     * @param networkEvent the outbound event borrowed by the delivery
+     * @param recipient the player belonging to this Game
+     * @return the asynchronous recipient admission report
+     * @throws IllegalArgumentException if the recipient belongs to another Game
+     */
+    CompletableFuture<DeliveryReport> sendToPlayer(NetworkEvent networkEvent, PlayerSession recipient);
+
+    /**
+     * Queues a send to an identity-deduplicated snapshot of selected players.
+     *
+     * <p>All selected players must belong to this Game. The same payload ownership
+     * and completion rules as {@link #sendBroadcast(NetworkEvent)} apply.
+     *
+     * @param networkEvent the outbound event borrowed by the delivery
+     * @param recipients the selected players, copied before returning
+     * @return the asynchronous recipient admission report
+     * @throws IllegalArgumentException if any recipient belongs to another Game
+     */
+    CompletableFuture<DeliveryReport> sendToPlayers(NetworkEvent networkEvent,
+                                                   Collection<? extends PlayerSession> recipients);
 
     /**
      * Stops accepting sessions, closes connected sessions and releases the game dispatcher.

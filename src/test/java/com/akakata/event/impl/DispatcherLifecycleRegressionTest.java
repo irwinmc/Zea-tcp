@@ -56,7 +56,7 @@ class DispatcherLifecycleRegressionTest {
         var dispatcher = new NettyEventDispatcher();
         dispatcher.close();
 
-        dispatcher.fireEvent(Events.event("discard", Events.START));
+        assertFalse(dispatcher.fireEvent(Events.event("discard", Events.START)));
 
         assertEquals(0, dispatcher.getQueueSize());
     }

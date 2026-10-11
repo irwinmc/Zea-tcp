@@ -3,6 +3,7 @@ package com.akakata.handlers;
 import com.akakata.app.Game;
 import com.akakata.app.PlayerSession;
 import com.akakata.communication.impl.SocketMessageSender;
+import com.akakata.communication.OutboundLimits;
 import com.akakata.event.Event;
 import com.akakata.event.Events;
 import com.akakata.protocols.Protocol;
@@ -61,19 +62,39 @@ public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocket
     private final LoginService loginService;
 
     /**
+     * Per-connection write admission and encoded-buffer budgets.
+     */
+    private final OutboundLimits outboundLimits;
+
+    /**
      * Creates a web socket login handler instance with the supplied dependencies.
      *
      * @param protocol the protocol to install or associate
      * @param game the associated game
      * @param loginService the authentication coordinator
      */
-    @Inject
     public WebSocketLoginHandler(Protocol protocol,
                                  Game game,
                                  LoginService loginService) {
+        this(protocol, game, loginService, OutboundLimits.DEFAULT);
+    }
+
+    /**
+     * Creates a login handler with configured socket backpressure budgets.
+     *
+     * @param protocol the protocol to install
+     * @param game the application Game
+     * @param loginService the authentication coordinator
+     * @param outboundLimits the socket write and byte budgets
+     */
+    @Inject
+    public WebSocketLoginHandler(Protocol protocol,
+                                 Game game,
+                                 LoginService loginService, OutboundLimits outboundLimits) {
         this.protocol = protocol;
         this.game = game;
         this.loginService = loginService;
+        this.outboundLimits = outboundLimits;
     }
 
     /**
@@ -174,7 +195,7 @@ public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocket
             if (!channel.isActive() || session.isShuttingDown()) {
                 throw new IllegalStateException("Login completed after session or channel closure");
             }
-            session.setSender(new SocketMessageSender(channel));
+            session.setSender(new SocketMessageSender(channel, outboundLimits));
             if (!game.connectSession(session)) {
                 throw new IllegalStateException("Game rejected the login session");
             }

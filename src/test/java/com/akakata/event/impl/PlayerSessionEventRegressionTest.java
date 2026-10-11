@@ -118,23 +118,24 @@ class PlayerSessionEventRegressionTest {
     }
 
     /**
-     * Verifies the regression scenario: inbound message broadcasts only once.
+     * Verifies that inbound input reaches the Game without choosing any outbound recipients.
      *
      * @throws InterruptedException if the operation is interrupted
      */
     @Test
-    void inboundMessageBroadcastsOnlyOnce() throws InterruptedException {
+    void inboundMessageReachesGameWithoutAutomaticBroadcast() throws InterruptedException {
         Map<String, Object> payload = Map.of("message", "from client");
 
+        List<Event> received = new CopyOnWriteArrayList<>();
+        game.getEventDispatcher().addHandler(DispatcherTestSupport.handler(Events.SESSION_MESSAGE, received::add));
         first.onEvent(Events.dataInEvent(payload));
-        // The inbound handler enqueues broadcast deliveries behind the first barrier.
-        drain(first.getEventDispatcher());
         drain(first.getEventDispatcher());
 
-        assertEquals(1, firstSender.messages.size());
-        assertEquals(1, secondSender.messages.size());
-        assertSame(payload, ((NetworkEvent) firstSender.messages.getFirst()).getSource());
-        assertSame(payload, ((NetworkEvent) secondSender.messages.getFirst()).getSource());
+        assertEquals(1, received.size());
+        assertSame(first, ((PlayerMessageEvent) received.getFirst()).getPlayerSession());
+        assertSame(payload, received.getFirst().getSource());
+        assertTrue(firstSender.messages.isEmpty());
+        assertTrue(secondSender.messages.isEmpty());
     }
 
     /**

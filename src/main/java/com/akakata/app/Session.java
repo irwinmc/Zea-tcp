@@ -59,14 +59,15 @@ public interface Session {
     void removeAttribute(String key);
 
     /**
-     * Submits an event for this session. A closed default session ignores the submission.
+     * Submits an event to this session's ordered queue without waiting for capacity.
      *
      * <p>Accepted asynchronous deliveries retain their own native payload reference;
      * the caller remains responsible for its original reference.
      *
-     * @param event event to proceed
+     * @param event the event whose original payload remains owned by the caller
+     * @return true if accepted, or false when the session or dispatcher cannot accept it
      */
-    void onEvent(Event event);
+    boolean onEvent(Event event);
 
     /**
      * Returns the dispatcher used by this session. It may be shared with other sessions.

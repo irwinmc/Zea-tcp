@@ -278,28 +278,13 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
     }
 
     /**
-     * {@inheritDoc}
-     */
-    @Override
-    public void fireEvent(Event event) {
-        tryFireEvent(event);
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    @Override
-    public void fireEvent(Event event, Session session) {
-        tryFireEvent(event, Objects.requireNonNull(session, "session"));
-    }
-
-    /**
      * Attempts an unscoped delivery without blocking the submitting thread.
      *
      * @param event the immutable-after-publication event
      * @return true if accepted, or false when closed or saturated
      */
-    public boolean tryFireEvent(Event event) {
+    @Override
+    public boolean fireEvent(Event event) {
         return enqueue(event, null, null);
     }
 
@@ -310,7 +295,8 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
      * @param session the target session
      * @return true if accepted, or false when closed, saturated or the session is closing
      */
-    public boolean tryFireEvent(Event event, Session session) {
+    @Override
+    public boolean fireEvent(Event event, Session session) {
         return enqueue(event, Objects.requireNonNull(session, "session"), null);
     }
 
@@ -330,6 +316,25 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
     }
 
     /**
+     * Submits an ordered action with observable execution, rejection and cancellation.
+     *
+     * <p>Completion follows payload cleanup. Closing the dispatcher fails queued
+     * actions rather than leaving their futures pending. Accepted actions retain
+     * their own payload reference. The returned future cannot interrupt a callback.
+     *
+     * @param event the event borrowed by the action
+     * @param action the synchronous action on this executor
+     * @return completion of the action, or an exceptional admission or closure result
+     */
+    public CompletableFuture<Void> submit(Event event, Consumer<Event> action) {
+        CompletableFuture<Void> completion = new CompletableFuture<>();
+        if (!enqueue(event, null, Objects.requireNonNull(action, "action"), completion)) {
+            completion.completeExceptionally(new RejectedExecutionException("Dispatcher queue is full or closed"));
+        }
+        return completion;
+    }
+
+    /**
      * Publishes a retained task atomically with respect to dispatcher closure.
      *
      * @param event   the submitted event
@@ -337,12 +342,26 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
      * @param action  the optional queued action
      * @return whether the executor accepted the task
      */
-    private synchronized boolean enqueue(Event event, Session session, Consumer<Event> action) {
+    private boolean enqueue(Event event, Session session, Consumer<Event> action) {
+        return enqueue(event, session, action, null);
+    }
+
+    /**
+     * Publishes a retained task and optional completion under the admission monitor.
+     *
+     * @param event the submitted event
+     * @param session the optional target session
+     * @param action the optional queued action
+     * @param completion the optional action completion
+     * @return whether the executor accepted the task
+     */
+    private synchronized boolean enqueue(Event event, Session session, Consumer<Event> action,
+                                         CompletableFuture<Void> completion) {
         Objects.requireNonNull(event, "event");
         if (closed || (session != null && session.isShuttingDown())) {
             return false;
         }
-        Delivery delivery = new Delivery(event, session, action, EventResources.retainPayload(event));
+        Delivery delivery = new Delivery(event, session, action, EventResources.retainPayload(event), completion);
         deliveries.add(delivery);
         queued++;
         try {
@@ -546,18 +565,26 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
         private Object payload;
 
         /**
+         * Optional action completion, resolved after this delivery releases its payload.
+         */
+        private final CompletableFuture<Void> completion;
+
+        /**
          * Captures one accepted task and its retained payload.
          *
          * @param event   the event to deliver
          * @param session the optional target session
          * @param action  the optional queued action
          * @param payload the retained native reference
+         * @param completion the optional action completion
          */
-        private Delivery(Event event, Session session, Consumer<Event> action, Object payload) {
+        private Delivery(Event event, Session session, Consumer<Event> action, Object payload,
+                         CompletableFuture<Void> completion) {
             this.event = event;
             this.session = session;
             this.action = action;
             this.payload = payload;
+            this.completion = completion;
         }
 
         /**
@@ -570,10 +597,12 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
             }
             Boolean previous = IN_CALLBACK.get();
             IN_CALLBACK.set(true);
+            Throwable outcome = null;
             try {
                 synchronized (NettyEventDispatcher.this) {
                     queued--;
                     if (closed || (session != null && session.isShuttingDown())) {
+                        outcome = new RejectedExecutionException("Delivery scope closed before execution");
                         return;
                     }
                 }
@@ -590,12 +619,14 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
                         }
                     }
                 }
-            } catch (Exception failure) {
+            } catch (Throwable failure) {
+                outcome = failure;
                 LOG.error("Event action failed for type {}", event.getType(), failure);
             } finally {
                 try {
                     finish(false);
                 } finally {
+                    complete(outcome);
                     if (previous == null) {
                         IN_CALLBACK.remove();
                     } else {
@@ -610,7 +641,26 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
          */
         private void cancel() {
             if (state.compareAndSet(0, 2)) {
-                finish(true);
+                try {
+                    finish(true);
+                } finally {
+                    complete(new RejectedExecutionException("Queued delivery was cancelled"));
+                }
+            }
+        }
+
+        /**
+         * Resolves an optional action future after native resource cleanup.
+         *
+         * @param failure the execution or cancellation failure, or null for success
+         */
+        private void complete(Throwable failure) {
+            if (completion != null) {
+                if (failure == null) {
+                    completion.complete(null);
+                } else {
+                    completion.completeExceptionally(failure);
+                }
             }
         }
 

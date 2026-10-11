@@ -303,7 +303,7 @@ class OrderedDispatchRegressionTest {
             assertEquals(1, payload.refCnt());
             assertEquals(0, game.getEventDispatcher().getQueueSize());
             assertTrue(game.isShuttingDown());
-            assertFalse(game.getEventDispatcher().tryFireEvent(Events.event(null, 701)));
+            assertFalse(game.getEventDispatcher().fireEvent(Events.event(null, 701)));
         } finally {
             release.countDown();
             game.close();
@@ -378,7 +378,7 @@ class OrderedDispatchRegressionTest {
                 first.close();
                 assertEquals(1, payload.refCnt());
                 assertEquals(0, paused.dispatcher.getQueueSize());
-                assertTrue(paused.dispatcher.tryFireEvent(Events.event(null, 761), second));
+                assertTrue(paused.dispatcher.fireEvent(Events.event(null, 761), second));
                 second.close();
                 assertEquals(0, paused.dispatcher.getQueueSize());
             } finally {
@@ -559,7 +559,7 @@ class OrderedDispatchRegressionTest {
             group.close();
             assertEquals(0, group.aggregateQueueSize());
             assertThrows(IllegalStateException.class, () -> group.addHandler(handler(1000, event -> {})));
-            assertFalse(shard.tryFireEvent(Events.event(null, 1000)));
+            assertFalse(shard.fireEvent(Events.event(null, 1000)));
         } finally {
             group.close();
         }

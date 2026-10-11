@@ -27,8 +27,8 @@ EventDispatchers (process-wide)
 
 The default Dagger graph creates one `Game` for the application. It is an
 application session container and a queue for shared business events and
-broadcasts. There is no room registry or room-ID routing. `DefaultGame` demonstrates
-broadcasting; subclass `AbstractGame` to register application handlers through
+broadcasts. There is no room registry or room-ID routing. `DefaultGame` forwards
+input without choosing recipients; register application handlers through
 `getEventDispatcher()` and submit shared work with `send()`.
 
 The Game owns its single business executor. Sessions use separate shared business
@@ -113,12 +113,25 @@ is no ordering by event timestamp or across separate executors. Global observers
 registered on multiple shards can run concurrently and must coordinate shared
 state. Several sessions assigned to one shard execute serially on that shard.
 
-The application Game uses one dispatcher for both `send()` events and
-`sendBroadcast()` actions. A broadcast waits for earlier Game work, then submits
-one targeted outbound event to each currently connected player. Each recipient
-processes accepted broadcasts in this order on its own session queue. Membership
-is observed when the broadcast action executes; a player that closes before
-outbound processing can discard the delivery.
+The application Game uses one dispatcher for `send()` events, `sendToPlayer()`
+unicasts, `sendToPlayers()` selections and `sendBroadcast()` actions. Sends wait for
+earlier Game work before submitting targeted outbound events. Each recipient
+processes accepted sends in that order on its own session queue. Full broadcasts
+observe membership when their action executes. Selected sends copy their collection
+at submission, deduplicate session instances and reject players from other Games.
+Disconnected selections are skipped. Closure can cancel work that has not started.
+
+The default `SESSION_MESSAGE` callback posts a `PlayerMessageEvent` to the Game.
+Its `getPlayerSession()` identifies the authenticated sender; `getSource()` remains
+the decoded payload. Register a Game handler for `Events.SESSION_MESSAGE` and choose
+recipients explicitly. The default does not echo or broadcast inbound data.
+
+All three outbound Game methods return `CompletableFuture<DeliveryReport>`.
+`accepted`, `rejected` and `skipped` describe recipient queue admission, not callback
+completion, successful socket writes or client acknowledgment. A rejected open
+recipient is closed. Game admission failure or queued shutdown completes the future
+exceptionally. Do not wait for these futures inside the Game executor; attach a
+completion callback or observe them from an external thread.
 
 Keep session-owned state on its session executor and shared business state on the
 Game executor. Post events between these boundaries. Login, connection,
@@ -130,27 +143,38 @@ all callbacks already run on the Game thread.
 Callbacks must return promptly. Offload blocking work, retain any native payload
 needed by that work, and submit its result back to the owning queue. Asynchronous
 work started by a callback is outside the queue's serial guarantee until its
-completion is posted back. There is no automatic callback deadline or interruption.
+completion is posted back. Results can complete in a different order from their
+requests; sequence dependent work explicitly. There is no automatic callback
+deadline or interruption.
 Never wait synchronously for work submitted to the same executor.
 
 ## Bounded Queues and Rejection
 
 Each business executor accepts at most **32,768 pending tasks** by default.
 Standalone and sharded constructors accept a custom capacity of at least 16.
-There is no default properties key for this capacity. Sessions on the same shard
-share that shard's capacity; the Game has its own bounded queue.
+`game.queue.capacity` configures the default Game's capacity. Shared session shards
+still use the default capacity; construct a custom sharded group to choose another.
+Sessions on the same shard share its budget. The Game has a separate bounded queue.
 
-`NettyEventDispatcher.tryFireEvent()` and `execute()` return `true` when accepted
+`NettyEventDispatcher.fireEvent()` and `execute()` return `true` when accepted
 and `false` when closed, saturated, or, for targeted delivery, the session is
 closing. Saturation uses Netty's rejecting policy: a callback never falls back to
 execution on the submitting thread. `getRejectedEventCount()` counts executor
 rejections; submissions ignored after dispatcher closure are excluded.
 
-The existing `fireEvent()`, `Session.onEvent()` and Game methods return no delivery
-acknowledgment. They can discard work during saturation or shutdown. There is no
-automatic retry or overflow queue. Applications requiring admission control can
-use `tryFireEvent()` on their session's `NettyEventDispatcher`; for Game events use
-`game.getEventDispatcher().tryFireEvent(event)` on an `AbstractGame` instance.
+`EventDispatcher.fireEvent()`, `Session.onEvent()` and `Game.send()` expose
+admission through their existing names: `true` means queued, and `false` means
+full or closed. `PlayerSession.sendToGame()` forwards the Game's result. These
+methods return immediately with the admission result, without waiting for available
+capacity or callback completion. There is no automatic retry or overflow queue.
+`NettyEventDispatcher.submit()` resolves an action future after payload cleanup and
+fails it if admission, execution or queued closure fails. Cancelling a future does
+not interrupt or roll back an action.
+
+The default inbound session callback closes the submitting session when the Game
+cannot admit its message. A network bridge closes the connection if its session
+queue rejects input. Disconnect/error processing has direct cleanup fallback when
+the queue cannot accept a lifecycle event.
 
 `getQueueSize()` counts pending deliveries owned by one dispatcher. Shared queue
 metrics sample the physical Netty queues, excluding running callbacks and the
@@ -159,11 +183,41 @@ them, but their event, session and payload references are cleared immediately.
 A zero queue depth does not mean the running callback has completed. See
 [monitoring](MONITORING.md#dispatcher-queue-metrics) for sampling behavior.
 
+## Network Backpressure
+
+`DefaultToServerHandler` examines both the assigned session queue and the separate
+Game queue. It pauses an enabled `autoRead` flag at 75% pending-task capacity or
+when the Channel becomes unwritable. It probes recovery every 10 ms and resumes
+reads only below 50% capacity with a writable Channel. It preserves an auto-read
+flag that the application disabled before the bridge. Recovery tasks are cancelled
+on handler removal or channel closure.
+
+Already decoded input from the current read batch can still arrive while reads are
+paused. A full queue closes that connection rather than silently dropping input.
+A pause lasting five seconds also closes the connection. This is a pressure deadline,
+not a callback execution deadline. The two-argument bridge constructor accepts a
+custom positive pause duration; there is no default properties key for that duration.
+
+`SocketMessageSender` caps pending application writes before adding I/O tasks:
+`socket.maximum.pending.writes` defaults to 1,024. Every accepted write is scheduled
+on the Channel event loop in admission order. The transport-side buffer limiter
+also caps encoded pending bytes using `socket.maximum.pending.bytes`, defaulting
+to 1,048,576 bytes. Channel write-buffer water marks remain an additional limit.
+No retry queue is created. A budget violation, unwritable write or transport-write
+failure completes the write exceptionally and closes the connection.
+
+A write future is uncancellable so cancellation cannot release a native source
+while an encoder still uses it. Event sources are independently retained until
+completion. Raw Netty messages transfer ownership even when admission rejects
+them; rejected Event sources remain owned by their caller. Channel closure fails
+queued futures and releases their captured references. `pendingWrites()` exposes
+the admitted write count but is not exported by the HTTP metrics endpoints.
+
 ## Session and Application Lifecycle
 
 Normal connection moves a session through `NOT_CONNECTED`, `CONNECTING` and
 `CONNECTED`. `DefaultSession.close()` makes `CLOSED` terminal, disables writes and
-detaches the sender. New events and handlers are ignored after closure starts;
+detaches the sender. New events return `false` and handlers are ignored after closure starts;
 a sender offered afterward is closed immediately.
 
 Login success callbacks check channel activity and session shutdown under the
@@ -255,7 +309,7 @@ public final class DispatcherExample {
 
             ByteBuf payload = Unpooled.buffer().writeInt(42);
             try {
-                if (!dispatcher.tryFireEvent(Events.event(payload, 100))) {
+                if (!dispatcher.fireEvent(Events.event(payload, 100))) {
                     throw new IllegalStateException("Event was rejected");
                 }
             } finally {
@@ -284,13 +338,32 @@ and serial, so update code that assumed broadcasting completed before its method
 returned. Application lifecycle callbacks retain the caller-thread behavior
 described above.
 
+The default inbound behavior also changed: messages no longer imply a full broadcast.
+Register a Game business handler and call an explicit send method when needed.
+`Game.sendBroadcast()` now returns `CompletableFuture<DeliveryReport>`; callers may
+ignore the result, but custom Game implementations must update the return type and
+implement the selected-recipient methods. Recompile callers against the new API.
+`EventDispatcher.fireEvent()`, `Session.onEvent()`, `Game.send()` and
+`PlayerSession.sendToGame()` retain their original names and now return a boolean
+admission result. Callers may ignore the result where appropriate; overload-aware
+code must handle `false`. Custom implementations must update these return types,
+and all callers must recompile against the new API.
+
 ## Registry Ownership and Shutdown
 
-`SessionService` caches sessions by `Credentials`, with a maximum of 10,000 entries,
-expiration after two hours of cache access inactivity and 24 hours after write.
-The default constructor schedules cleanup every minute on a virtual thread for
-its scheduled executor. Cache expiration is not a transport idle timeout or an
-automatic reconnect mechanism.
+`SessionService` registers sessions by `Credentials` with an atomic admission
+budget. `session.maximum` defaults to 10,000 credential slots and includes pending
+logins. Existing credentials can reconnect while full; a new credential is rejected
+with `SessionCapacityException` by `replaceSession()` or false by `putSession()`.
+Rejected direct registrations retain caller ownership. `LoginService.login()`
+closes the newly created session on rejection and returns null, allowing TCP and
+WebSocket login handlers to send their normal login-failure response.
+
+There is no cache-size eviction, access TTL or absolute TTL for online sessions.
+The registry remains populated until explicit removal, replacement, session closure
+or service shutdown. Applications may install transport idle handlers according to
+their own activity policy. The default constructor still schedules cache maintenance
+every minute; the boolean constructor flag disables that scheduler.
 
 Replacement closes the previous session synchronously; registering the same
 session under the same key does not close it. Conditional removal and close

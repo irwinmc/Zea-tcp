@@ -75,12 +75,15 @@ public class Replys {
 
     /**
      * Queues an error reply for the request through the session's outbound event path.
+     * A rejected reply closes the session so later updates cannot follow a missing response.
      *
      * @param session the session associated with the operation
      * @param request the inbound request
      * @param code the response code
      */
     public static void error(PlayerSession session, RequestMessage request, int code) {
-        session.onEvent(Events.networkEvent(errorReply(request.getId(), code)));
+        if (!session.onEvent(Events.networkEvent(errorReply(request.getId(), code)))) {
+            session.close();
+        }
     }
 }

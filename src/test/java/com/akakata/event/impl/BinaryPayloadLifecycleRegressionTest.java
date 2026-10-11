@@ -53,6 +53,8 @@ class BinaryPayloadLifecycleRegressionTest {
             player(game, "BBBB", secondChannel);
 
             if (inbound) {
+                game.getEventDispatcher().addHandler(DispatcherTestSupport.handler(Events.SESSION_MESSAGE,
+                        event -> game.sendBroadcast(Events.networkEvent(event.getSource()))));
                 firstChannel.pipeline().addLast(new DefaultToServerHandler(first));
                 firstChannel.writeInbound(Events.event(new NettyMessageBuffer(payload), Events.SESSION_MESSAGE));
             } else {
@@ -119,7 +121,7 @@ class BinaryPayloadLifecycleRegressionTest {
         dispatcher.close();
         ByteBuf payload = Unpooled.buffer().writeByte(1);
         try {
-            dispatcher.fireEvent(Events.event(payload, Events.START));
+            assertFalse(dispatcher.fireEvent(Events.event(payload, Events.START)));
             assertEquals(1, payload.refCnt());
         } finally {
             release(payload);
@@ -185,7 +187,7 @@ class BinaryPayloadLifecycleRegressionTest {
             }
             assertEquals(dispatcher.getQueueCapacity() + 1, payload.refCnt());
 
-            assertFalse(dispatcher.tryFireEvent(event));
+            assertFalse(dispatcher.fireEvent(event));
 
             assertEquals(1, dispatcher.getRejectedEventCount());
             assertEquals(dispatcher.getQueueCapacity(), dispatcher.getQueueSize());

@@ -18,11 +18,15 @@ checkout. Dependency versions below come from [pom.xml](pom.xml).
 - Ordered Netty business executors with stable session-based sharding.
 - One application Game with a serial queue for shared events and broadcasts.
 - Session-targeted delivery that isolates player handlers on shared shards.
+- Explicit unicast, selected-recipient sends and broadcasts with admission reports.
+- Bounded business queues, socket write budgets and automatic read-pressure control.
+- Configurable session admission that preserves existing players when full.
 - Coordinated session, game, cache, dispatcher and network shutdown.
 - Dagger compile-time dependency injection and Caffeine session caching.
 - Health checks, JSON metrics, Prometheus text output and structured logging.
 
-The default game demonstrates broadcasting. Applications supply their game rules,
+The default game forwards inbound messages to its ordered Game queue. Applications
+explicitly select outbound recipients and supply their game rules,
 authentication and persistence. The bundled credentials verifier accepts incoming
 login payloads without validating an account, and the default token cipher uses a
 built-in key. Replace these components for application authentication. Automatic
@@ -150,6 +154,11 @@ tcp.nodelay=true
 
 reconnect.delay=300000
 protocol.type=JSON
+
+session.maximum=10000
+game.queue.capacity=32768
+socket.maximum.pending.writes=1024
+socket.maximum.pending.bytes=1048576
 ```
 
 `reconnect.delay` is present in the resource but is currently unused. Queue sampling
@@ -179,8 +188,8 @@ returning from it does not itself invoke shutdown.
 
 The default context creates one `Game` for the application. `Game` is the
 application's session container and shared event boundary; no room registry, room
-selection or room-specific configuration is needed. `DefaultGame` supplies a
-broadcasting example, and applications can subclass `AbstractGame` to implement
+selection or room-specific configuration is needed. `DefaultGame` forwards input
+to registered Game handlers, and applications can subclass `AbstractGame` to implement
 shared business behavior. Register application-wide event handlers through
 `Game.getEventDispatcher().addHandler(...)` and submit them with `Game.send(...)`.
 
@@ -216,25 +225,85 @@ The SBE implementation provides an envelope rather than generated schema-specifi
 message codecs. WebSocket application messages are binary frames containing the
 opcode and length-prefixed JSON, without the TCP frame-length prefix.
 
-For the default game, TCP clients send `SESSION_MESSAGE` (`0x33`) to request a
-broadcast. The default session handler wraps the message in a `NETWORK_MESSAGE`
-(`0x34`) for outbound delivery. The WebSocket decoder also translates incoming
-`0x34` into `0x33`. TCP JSON and SBE decoders preserve the received opcode.
+TCP clients send `SESSION_MESSAGE` (`0x33`) for application input. The default
+session handler forwards it to the Game queue as a `PlayerMessageEvent`, preserving
+the payload and authenticated sender identity. No automatic echo or broadcast occurs.
+Business handlers explicitly create `NETWORK_MESSAGE` (`0x34`) events for replies.
+The WebSocket decoder translates incoming `0x34` into `0x33`; TCP JSON and SBE
+decoders preserve the received opcode.
+
+For an explicit reply to the authenticated sender, register a Game handler:
+
+```java
+import com.akakata.app.impl.DefaultGame;
+import com.akakata.event.Event;
+import com.akakata.event.EventHandler;
+import com.akakata.event.Events;
+import com.akakata.event.impl.PlayerMessageEvent;
+
+public final class ApplicationGameExample extends DefaultGame {
+    public ApplicationGameExample() {
+        getEventDispatcher().addHandler(new EventHandler() {
+            @Override
+            public int getEventType() {
+                return Events.SESSION_MESSAGE;
+            }
+
+            @Override
+            public void onEvent(Event event) {
+                PlayerMessageEvent message = (PlayerMessageEvent) event;
+                sendToPlayer(Events.networkEvent(message.getSource()), message.getPlayerSession())
+                        .whenComplete((report, failure) -> {
+                            if (failure != null) {
+                                message.getPlayerSession().close();
+                            }
+                        });
+            }
+        });
+    }
+}
+```
+
+Use `sendToPlayers(event, selectedPlayers)` for a selected set and
+`sendBroadcast(event)` when every connected player should receive the update.
+The default Dagger graph still supplies `DefaultGame`; a standalone application
+can instantiate the example subclass, or replace the Game provider in its own graph.
 
 Each session is bound to a fixed Netty business executor, so accepted events of
 all types run serially in submission order. The application's Game owns one
-additional business executor for `send()` and `sendBroadcast()`. A broadcast first
-runs in the Game queue, then enters each recipient's session queue. Network I/O
-uses separate Netty event-loop groups.
+additional business executor for `send()`, `sendToPlayer()`, `sendToPlayers()` and
+`sendBroadcast()`. Explicit sends first run in the Game queue, then enter each
+recipient's session queue. Socket writes enter their I/O loop in admission order.
+Selected-recipient collections are snapshotted and deduplicated by session identity.
+Network I/O uses separate Netty event-loop groups.
 
 Callbacks run synchronously on their business executor. Keep them short; move
 blocking work elsewhere and submit its completion back to the owning queue.
 There is no automatic callback timeout. Queues are bounded to 32,768 pending tasks
 per executor by default. Saturation rejects submissions without running callbacks
-on the publishing thread. `NettyEventDispatcher.tryFireEvent()` and `execute()`
-report acceptance; the existing `fireEvent()` and Game methods do not acknowledge
-delivery or retry. Session state belongs to its session executor; application-wide
-state belongs to the Game executor. Posting work between these queues is asynchronous.
+on the publishing thread. `EventDispatcher.fireEvent()`, `Session.onEvent()`
+and `Game.send()` return `true` when accepted and `false` when full or closed;
+`PlayerSession.sendToGame()` forwards the Game's admission result. These methods
+do not wait for capacity or callback completion. Explicit Game recipient sends
+return `CompletableFuture<DeliveryReport>` with accepted, rejected and
+skipped recipient counts. These counts acknowledge queue admission, not processing
+or client receipt. Game queue rejection or cancellation fails the future. A rejected
+recipient is closed so later updates cannot silently follow a missing update.
+Session state belongs to its session executor; application-wide state belongs to
+the Game executor. Never block either queue waiting for work queued to itself.
+
+Network input pauses when a business queue reaches 75% capacity or the Channel
+becomes unwritable. Reads resume below 50% capacity when the Channel is writable.
+A full input queue or a pause lasting five seconds closes the affected connection.
+Socket sends are bounded before I/O scheduling and again by encoded bytes; exceeding
+write limits or writing to an unwritable Channel fails the write and closes it.
+There is no unbounded overflow queue or automatic retry.
+
+`session.maximum` controls registered credential slots, including pending logins.
+Full capacity rejects new credentials; reconnecting an existing credential reuses
+its slot. There is no cache-size eviction or cache TTL for online sessions. Explicit
+closure and application-configured transport idle handling determine their lifetime.
+See [flow control and ownership](docs/EVENT_LOOP.md) for failure and resource rules.
 
 For native `ByteBuf` or `MessageBuffer` payloads, asynchronous dispatch retains its
 own reference and the caller releases its original reference after submission.
@@ -300,7 +369,9 @@ mvn clean install
 The regression suite covers player-event isolation, shared-shard preservation,
 session and cache shutdown, replacement and login races, callback-triggered
 closure, serial session and Game ordering, reentrant publication, queue rejection,
-and native-buffer ownership. Examples with `main` methods are executable
+native-buffer ownership, recipient snapshots and reports, read pause/recovery,
+TCP/WebSocket write order, socket byte budgets and concurrent capacity admission.
+Examples with `main` methods are executable
 helpers rather than JUnit tests.
 
 The POM configures Maven Compiler 3.13.0, Surefire 3.2.5, JavaDoc 3.12.0,

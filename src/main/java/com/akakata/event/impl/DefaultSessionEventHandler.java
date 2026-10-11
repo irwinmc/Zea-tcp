@@ -11,8 +11,8 @@ import org.slf4j.LoggerFactory;
 /**
  * Dispatches session events to overridable callbacks by opcode.
  *
- * <p>The default inbound callback broadcasts the payload through the player's
- * application Game's serial queue. Outbound callbacks send through the session sender, and disconnect, logout
+ * <p>The default inbound callback forwards the event to the player's Game queue.
+ * It never implicitly broadcasts. Outbound callbacks send through the session sender, and disconnect, logout
  * and exception callbacks close the session.
  *
  * @author Kyia
@@ -94,7 +94,8 @@ public class DefaultSessionEventHandler implements SessionEventHandler {
     }
 
     /**
-     * Wraps the inbound event as a network event and queues it for broadcasting through the application Game.
+     * Forwards inbound work to the ordered Game queue without choosing recipients.
+     * An overloaded Game closes the submitting session rather than silently losing input.
      *
      * @param event the event to process
      */
@@ -103,9 +104,9 @@ public class DefaultSessionEventHandler implements SessionEventHandler {
 
         if (session != null) {
             PlayerSession playerSession = (PlayerSession) session;
-            NetworkEvent networkEvent = new DefaultNetworkEvent(event);
-            // networkEvent.setConnectStrategy(IConnectStrategy.ConnectStrategy.HOLD);
-            playerSession.getGame().sendBroadcast(networkEvent);
+            if (!playerSession.sendToGame(new PlayerMessageEvent(playerSession, event))) {
+                session.close();
+            }
         }
     }
 
@@ -119,7 +120,14 @@ public class DefaultSessionEventHandler implements SessionEventHandler {
 
         MessageSender sender = session.getSender();
         if (sender != null) {
-            sender.sendMessage(event);
+            Object completion = sender.sendMessage(event);
+            if (completion instanceof io.netty.channel.ChannelFuture write) {
+                write.addListener(future -> {
+                    if (!future.isSuccess()) {
+                        session.close();
+                    }
+                });
+            }
         } else {
             LOG.warn("Going to discard event: {} since sender is null in session: {}", event, session);
         }

@@ -169,18 +169,21 @@ public class DefaultSession implements Session {
     }
 
     /**
-     * Submits an event for this session. A closed default session ignores the submission.
+     * Publishes to the fixed session executor and records accepted activity.
      *
      * <p>Accepted asynchronous deliveries retain their own native payload reference;
      * the caller remains responsible for its original reference.
      *
      * @param event the event to process
+     * @return whether the open session's dispatcher accepted the event
      */
     @Override
-    public synchronized void onEvent(Event event) {
-        if (!isShuttingDown) {
-            eventDispatcher.fireEvent(event, this);
+    public synchronized boolean onEvent(Event event) {
+        if (isShuttingDown || !eventDispatcher.fireEvent(event, this)) {
+            return false;
         }
+        lastReadWriteTime = System.currentTimeMillis();
+        return true;
     }
 
     /**

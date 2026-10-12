@@ -5,6 +5,8 @@ import com.akakata.communication.OutboundLimits;
 import com.akakata.communication.impl.SocketMessageSender;
 import com.akakata.handlers.LoginHandler;
 import com.akakata.handlers.TransportLifecycleHandler;
+import com.akakata.handlers.TransportMetricsHandler;
+import com.akakata.metrics.ServerMetrics;
 import com.akakata.server.ConnectionAdmission;
 import com.akakata.server.TransportLimits;
 import io.netty.channel.ChannelHandler;
@@ -134,6 +136,7 @@ public class LoginChannelInitializer extends ChannelInitializer<SocketChannel> {
         // Create a default pipeline implementation.
         ChannelPipeline pipeline = ch.pipeline();
         SocketMessageSender.installOutboundBudget(pipeline, outboundLimits, budget);
+        pipeline.addFirst("zeaTransportMetrics", new TransportMetricsHandler(ServerMetrics.getInstance()));
         TransportLifecycleHandler.install(pipeline, admission);
         pipeline.addLast(createLengthBasedFrameDecoder());
         pipeline.addLast(eventDecoder);

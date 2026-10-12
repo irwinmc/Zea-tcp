@@ -1,7 +1,7 @@
 # Configuration Guide
 
-This guide describes the configuration consumed by Zea TCP Transport 0.8.3,
-including component, security and expanded resource policies.
+This guide describes the configuration consumed by Zea TCP Transport 0.8.4,
+including component, security, resource, lifecycle and health policies.
 Dependency versions and build commands are listed in the [README](../README.md).
 
 ## Loading Configuration
@@ -57,6 +57,8 @@ The **bundled value** is the value in this checkout's default resource.
 | `tcp.nodelay` | `true` | `true` | Accepted channel's `TCP_NODELAY` |
 | `protocol.type` | `SBE` | `JSON` | TCP login decoder and post-login protocol |
 | `metrics.event.interval.seconds` | `30` | Absent | Shared-dispatcher queue sampling period in seconds |
+| `server.shutdown.timeout.millis` | `5000` | `5000` | Positive shared context shutdown observation budget; timeout does not cancel cleanup |
+| `health.maximum.event.delay.millis` | `5000` | `5000` | Positive maximum age of queued or running Game/session events before readiness is withdrawn |
 | `session.maximum` | `10000` | `10000` | Positive credential-slot admission limit; full capacity rejects new logins |
 | `session.dispatcher.shards` | `max(2, highestOneBit(availableProcessors))` | `2` | Shared session executors, positive and rounded up to a power of two |
 | `session.queue.capacity` | `32768` | `32768` | Pending tasks per fixed session executor, at least 16 |
@@ -107,8 +109,8 @@ selection to Netty in the parameterless startup path.
 
 TCP, HTTP and WebSocket share one boss group and one worker group owned by
 `NetworkBootstrap`. Counts apply once to those groups, not once per listener.
-A count of zero requests Netty's default sizing. Negative counts are unsupported
-by `NetworkBootstrap`; the properties loader does not validate their range.
+A count of zero requests Netty's default sizing. Negative counts are rejected
+by `NetworkBootstrap` before groups are created.
 
 The groups use Netty 4.2's `MultiThreadIoEventLoopGroup` with
 `NioIoHandler.newFactory()`. Socket options apply to all three listeners. Tune counts
@@ -525,3 +527,25 @@ mvn test-compile exec:java -Dexec.mainClass=com.akakata.TestServer
 ```
 
 See the [launch instructions](../README.md#run-in-intellij-idea).
+
+## Shutdown, Health and Static Resources
+
+See [lifecycle](LIFECYCLE.md) for nonblocking requests, bounded external waits and
+actual completion. The two new shutdown/health intervals must be positive; malformed
+values fail construction or initialization with their configuration key.
+
+[Monitoring](MONITORING.md) defines automatic traffic accounting and lifecycle-driven
+health responses. Initializing a context is not equivalent to starting its listeners.
+
+Static resources are regular files under the working-directory `html` root.
+Traversal, hidden path segments, backslash separators and symbolic links, including
+a linked root, are forbidden. URI query parameters do not become part of a filename.
+Missing files return 404, forbidden paths return 403 and malformed cache dates return
+400. File handles close after transfer, rejection or a conditional 304 response.
+
+Directory descriptors anchor traversal on filesystems supporting
+`SecureDirectoryStream`. Other filesystems use canonical containment, no-follow
+opening and before/after identity checks. Keep the root's parents and directory
+structure application-controlled; portable path checks cannot protect against an
+adversary concurrently replacing directories with an ABA swap. Publish ordinary
+files rather than symlinked assets.

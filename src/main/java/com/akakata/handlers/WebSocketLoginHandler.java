@@ -2,11 +2,12 @@ package com.akakata.handlers;
 
 import com.akakata.app.Game;
 import com.akakata.app.PlayerSession;
-import com.akakata.communication.OutboundLimits;
 import com.akakata.communication.OutboundBudget;
+import com.akakata.communication.OutboundLimits;
 import com.akakata.communication.impl.SocketMessageSender;
 import com.akakata.event.Event;
 import com.akakata.event.Events;
+import com.akakata.metrics.ServerMetrics;
 import com.akakata.protocols.Protocol;
 import com.akakata.service.LoginService;
 import com.akakata.util.ByteBufHolder;
@@ -30,9 +31,9 @@ import javax.inject.Inject;
  * by the session monitor, and channel closure releases pending or connected sessions.
  *
  * @author Kelvin
- * @since 0.7.8
  * @see LoginHandler
  * @see LoginService
+ * @since 0.7.8
  */
 @Sharable
 public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocketFrame> {
@@ -75,8 +76,8 @@ public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocket
     /**
      * Creates a web socket login handler instance with the supplied dependencies.
      *
-     * @param protocol the protocol to install or associate
-     * @param game the associated game
+     * @param protocol     the protocol to install or associate
+     * @param game         the associated game
      * @param loginService the authentication coordinator
      */
     public WebSocketLoginHandler(Protocol protocol,
@@ -88,9 +89,9 @@ public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocket
     /**
      * Creates a login handler with configured socket backpressure budgets.
      *
-     * @param protocol the protocol to install
-     * @param game the application Game
-     * @param loginService the authentication coordinator
+     * @param protocol       the protocol to install
+     * @param game           the application Game
+     * @param loginService   the authentication coordinator
      * @param outboundLimits the socket write and byte budgets
      */
     public WebSocketLoginHandler(Protocol protocol,
@@ -102,11 +103,11 @@ public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocket
     /**
      * Creates authentication handling with context-wide outbound accounting.
      *
-     * @param protocol the session protocol
-     * @param game the application Game
-     * @param loginService the selected authentication coordinator
+     * @param protocol       the session protocol
+     * @param game           the application Game
+     * @param loginService   the selected authentication coordinator
      * @param outboundLimits the per-channel write allowances
-     * @param budget the context-wide write reservation owner
+     * @param budget         the context-wide write reservation owner
      */
     @Inject
     public WebSocketLoginHandler(Protocol protocol,
@@ -169,7 +170,7 @@ public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocket
      *
      * @param channel the Netty transport channel
      * @param session the session associated with the operation
-     * @param token the encrypted login token
+     * @param token   the encrypted login token
      */
     private void handleLoginSuccess(Channel channel, PlayerSession session, String token) {
         channel.closeFuture().addListener(future -> cleanupAndClose(session, channel));
@@ -209,7 +210,7 @@ public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocket
      * @param channel the Netty transport channel
      * @param session the session associated with the operation
      * @throws IllegalStateException if the channel or session is closed, or the game rejects the
-     * connection
+     *                               connection
      */
     private void initializeSession(Channel channel, PlayerSession session) {
         // Share DefaultSession.close()'s monitor through sender, protocol and game installation.
@@ -305,6 +306,7 @@ public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocket
      */
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+        ServerMetrics.getInstance().recordError();
         LOG.error("Exception in WebSocketLoginHandler for {}", ctx.channel().id(), cause);
         ctx.close();
     }

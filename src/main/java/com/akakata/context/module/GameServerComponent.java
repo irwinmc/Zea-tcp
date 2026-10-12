@@ -1,17 +1,19 @@
 package com.akakata.context.module;
 
 import com.akakata.app.Game;
+import com.akakata.communication.OutboundBudget;
 import com.akakata.context.ConfigurationManager;
 import com.akakata.context.NetworkBootstrap;
+import com.akakata.metrics.ServerHealth;
+import com.akakata.security.CredentialsVerifier;
 import com.akakata.server.ServerManager;
-import com.akakata.service.SessionService;
 import com.akakata.service.LoginService;
 import com.akakata.service.SecurityService;
-import com.akakata.security.CredentialsVerifier;
-import com.akakata.communication.OutboundBudget;
+import com.akakata.service.SessionService;
 import com.akakata.service.task.BlockingTaskExecutor;
 import dagger.BindsInstance;
 import dagger.Component;
+
 import javax.inject.Singleton;
 
 /**
@@ -80,6 +82,13 @@ public interface GameServerComponent {
      * @return the bounded task executor
      */
     BlockingTaskExecutor blockingTaskExecutor();
+
+    /**
+     * Returns the composed nonblocking health provider.
+     *
+     * @return application health snapshots
+     */
+    ServerHealth serverHealth();
 
     /**
      * Binds configuration and network resources before creating the application component.

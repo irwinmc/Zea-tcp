@@ -1,5 +1,7 @@
 package com.akakata.app.impl;
 
+import com.akakata.lifecycle.ShutdownSupport;
+
 import com.akakata.app.DeliveryReport;
 import com.akakata.app.Game;
 import com.akakata.app.PlayerSession;
@@ -169,6 +171,7 @@ public abstract class AbstractGame implements Game {
      *
      * @return {@code true} once the game is marked closed
      */
+    @Override
     public boolean isShuttingDown() {
         return isShuttingDown;
     }
@@ -440,7 +443,7 @@ public abstract class AbstractGame implements Game {
         }
         if (sessionsToClose == null) {
             if (closingThread != Thread.currentThread() && !NettyEventDispatcher.isDispatchThread()) {
-                closeCompletion.join();
+                ShutdownSupport.await(closeCompletion, ShutdownSupport.DEFAULT_TIMEOUT_MILLIS, "Game cleanup");
                 eventDispatcher.close();
             }
             return;

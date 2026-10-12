@@ -9,7 +9,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Verifies real TCP/WebSocket pipelines in isolated JVMs with bounded completion deadlines.
@@ -19,13 +20,72 @@ class NetworkTransportRegressionTest {
     /**
      * Creates the real-network fixture.
      */
-    NetworkTransportRegressionTest() {}
+    NetworkTransportRegressionTest() {
+    }
 
     /**
      * Isolated process output directory.
      */
     @TempDir
     Path directory;
+
+    /**
+     * Verifies production metrics after real bidirectional application traffic.
+     *
+     * @param transport TCP or WebSocket transport
+     * @throws Exception if the isolated metric probe fails
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"tcp", "websocket"})
+    @Timeout(20)
+    void actualTrafficUpdatesConnectionMessageAndByteCounters(String transport) throws Exception {
+        Path log = directory.resolve(transport + "-metrics.log");
+        String classpath = System.getProperty("surefire.test.class.path", System.getProperty("java.class.path"));
+        Process child = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                "-cp", classpath, MetricsProbe.class.getName(), transport)
+                .redirectErrorStream(true).redirectOutput(log.toFile()).start();
+        try {
+            assertTrue(child.waitFor(12, TimeUnit.SECONDS), () -> read(log));
+            assertEquals(0, child.exitValue(), () -> read(log));
+            assertTrue(read(log).contains("TRAFFIC_METRICS_OK"), () -> read(log));
+        } finally {
+            if (child.isAlive()) {
+                child.destroyForcibly();
+                child.waitFor(2, TimeUnit.SECONDS);
+            }
+        }
+    }
+
+    /**
+     * Keeps process-wide collectors and terminal context closure isolated from other tests.
+     */
+    public static final class MetricsProbe {
+
+        /**
+         * Prevents construction of this executable fixture.
+         */
+        private MetricsProbe() {
+        }
+
+        /**
+         * Runs real traffic and checks the framework's production counters.
+         *
+         * @param arguments selected transport
+         * @throws Exception if traffic or cleanup fails
+         */
+        public static void main(String[] arguments) throws Exception {
+            NetworkLoadTest.main(new String[]{"--transport=" + arguments[0], "--clients=2", "--messages=8",
+                    "--warmup-messages=0", "--timeout-seconds=6"});
+            com.akakata.metrics.ServerMetrics metrics = com.akakata.metrics.ServerMetrics.getInstance();
+            assertEquals(2, metrics.getTotalConnections());
+            assertEquals(0, metrics.getActiveConnections());
+            assertEquals(16, metrics.getTotalMessagesReceived());
+            assertEquals(16, metrics.getTotalMessagesSent());
+            assertTrue(metrics.getTotalBytesReceived() > 0);
+            assertTrue(metrics.getTotalBytesSent() > 0);
+            System.out.println("TRAFFIC_METRICS_OK");
+        }
+    }
 
     /**
      * Runs wire-order, malformed-input, login/idle timeout and encoded-budget regressions.

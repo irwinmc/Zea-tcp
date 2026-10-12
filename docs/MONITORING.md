@@ -1,147 +1,96 @@
 # Monitoring Endpoints
 
-Zea TCP Transport 0.8.3 serves health and metrics endpoints through its HTTP
-listener, whose bundled port is 8081. Enable `server.http.enabled` and use the
-configured `http.port`. The HTTP-only repository example uses port 18081 instead.
-See the [configuration guide](CONFIGURATION.md).
+This guide describes lifecycle and instrumentation in Zea TCP Transport 0.8.4.
+The bundled HTTP listener binds to loopback
+on port 8081. Enable `server.http.enabled` and use the configured `http.port`;
+the HTTP-only example uses 18081. See [configuration](CONFIGURATION.md).
 
-The following requests use the normal endpoint paths. A single trailing slash is
-accepted. Use query-free URLs for `/health` and `/metrics`: although the outer router
-normalizes the path, the health and metrics handlers inspect the original URI for
-these exact root matches. Sub-endpoints currently use prefix matching.
-
-Successful JSON responses use `application/json; charset=UTF-8`. Prometheus output
-uses `text/plain; charset=UTF-8`. Responses close the HTTP connection. These routes
-have no built-in authentication, and the default HTTP listener uses plaintext.
+Responses close the HTTP connection. JSON uses `application/json; charset=UTF-8`;
+Prometheus uses `text/plain; charset=UTF-8`. These routes have no built-in request
+authentication. Health routes accept query strings and a single trailing slash.
+For the exact root `/metrics`, continue using a query-free URL.
 
 ## Health Checks
 
-| Endpoint | Successful Body | Failure Behavior |
+| Endpoint | Availability Policy | HTTP Status |
 | --- | --- | --- |
-| `GET /health` | Status `OK`, message `Server is running` | Handler failures return an error response |
-| `GET /health/live` | Status `UP`, message `Server is alive` | HTTP 503 when the uptime check fails |
-| `GET /health/ready` | Status `UP`, message `Server is ready` | HTTP 503 when a resource check fails |
+| `GET /health` | Application readiness | 200 when ready, otherwise 503 |
+| `GET /health/live` | Initialized, starting, running or draining lifecycle | 200 when live, otherwise 503 |
+| `GET /health/ready` | Running lifecycle and all named checks | 200 when ready, otherwise 503 |
 
-Each successful body contains a Unix epoch timestamp in milliseconds:
+Both successful and unavailable health responses contain JSON:
 
 ```json
 {
   "status": "UP",
-  "message": "Server is ready",
-  "timestamp": 1729319400000
+  "phase": "RUNNING",
+  "checks": {
+    "game": true,
+    "session_dispatchers": true,
+    "session_registry": true,
+    "blocking_workers": true,
+    "network": true,
+    "heap": true
+  },
+  "timestamp": 1791820800000
 }
 ```
 
-`/health` responds when the request handler is reachable; it does not inspect all
-application components. Liveness requires `ServerMetrics.getUptimeSeconds() > 0`
-and can return 503 during the collector's first second.
+The response status becomes `DOWN` and HTTP 503 when its availability policy fails.
+An unbound `HealthCheckHandler()` reports unavailable; the default Dagger graph
+injects `ServerHealth`. `DefaultServerHealth` combines a `ServerLifecycle` with
+fast, nonblocking named checks. HTTP presentation owns no application resource.
 
-Readiness fails if:
+Readiness requires completed listener startup. It is withdrawn immediately on
+shutdown, even if cleanup is still running. Closing a Game, registry, worker pool
+or I/O owner withdraws readiness. The default checks also fail when any Game or
+session event has remained queued or running for
+`health.maximum.event.delay.millis`, default 5000, or used heap reaches 95% of
+maximum heap. A throwing check fails closed. Custom dispatchers implement
+`EventDispatcher.isHealthy(long)`; its default returns false.
 
-- Used heap divided by maximum heap, using the integer MiB getters, exceeds 0.95.
-- Recorded received messages exceed 100 and cumulative recorded errors divided by
-  those messages exceeds 0.5.
-- A check throws an exception.
-
-Values exactly at the two thresholds pass. No thread-count threshold, database
-check, queue-depth check or minimum connected-player count is enforced. Zero
-registered channels does not itself fail readiness. The error ratio is cumulative,
-not a rate over a time window. Counters remain zero unless an application adds
-instrumentation, so the default error-ratio check usually has no recorded traffic
-to evaluate.
-
-An unsuccessful liveness or readiness response is **plain text**, not a JSON
-`DOWN` object:
-
-```text
-Failure: 503 Service Unavailable
-```
+Liveness no longer waits for a whole second of uptime. Draining remains live while
+readiness is down. A failed or terminated lifecycle is not live. No automatic
+SQL, cache-server or remote-service check is inferred. Lifetime error counters do
+not determine readiness. See [lifecycle](LIFECYCLE.md) for completion and timeout rules.
 
 ## Metrics Availability and Units
 
-Connection, traffic and error counters depend on explicit
-`ServerMetrics.record*()` calls. The current default handlers and senders do not
-make those calls. Runtime heap, uptime, CPU, thread count and registered-channel
-readings are available independently; dispatcher depths are sampled.
+Default pipelines now populate `ServerMetrics` automatically:
+
+| Counter | Definition |
+| --- | --- |
+| Connections | Observed TCP, HTTP and WebSocket client sockets, excluding listener channels; duplicate activation is ignored |
+| Active connections | Observed sockets whose close future has not completed |
+| Received bytes | Raw bytes before transport codecs, including framing and handshakes |
+| Sent bytes | Encoded buffers and file-region bytes whose transport promises complete successfully |
+| Received messages | Decoded `SESSION_MESSAGE` events before Session admission; login/control opcodes and malformed frames are excluded |
+| Sent messages | `NetworkEvent` writes whose sender promise completes successfully; login acknowledgements are excluded |
+| Errors | Failed transport-write callbacks, recorded inbound pipeline failures and business callback failures |
+
+A received message can subsequently be rejected by admission. A successful send
+means transport completion, not acknowledgement by the peer application. One
+application message can produce several encoded writes; error callbacks are not
+unique failed-message counts and must not be used as a message failure probability.
+Admission denials and connection/pause deadlines retain their separate flow counters.
+
+`TransportMetricsHandler` survives protocol replacement using the
+`ConnectionScopedHandler` contract. Application message instrumentation is installed
+after each event decoder. Adding another handler that records the same socket or
+messages in the shared collector would double-count them. Use an independent
+`ServerMetrics` collector for separate application measurements.
 
 - All `timestamp` fields are epoch milliseconds at response generation.
-- Uptime starts when the singleton collector is constructed, not at listener bind.
-- `_mb` fields are truncated **MiB** values, using division by 1,024 squared.
-- `cpu_load` is system CPU utilization as a fraction, rounded to two decimals;
-  `0.25` means 25%. A negative value indicates an unavailable reading.
-- `thread_count` is the management bean's platform-thread count, excluding virtual
-  threads. Netty business executors use platform threads and are included.
-- Channel counts come from `AbstractNettyServer.ALL_CHANNELS`. The group includes
-  listening channels and explicitly registered TCP client channels; it is not a
-  complete HTTP or WebSocket client count.
+- Uptime starts when the process-wide collector is constructed.
+- `_mb` fields are truncated MiB values, using division by 1024 squared.
+- `cpu_load` is a system CPU fraction rounded independently of the default locale;
+  negative readings mean unavailable.
+- `thread_count` counts platform threads, excluding virtual threads.
+- Registered-channel readings use `AbstractNettyServer.ALL_CHANNELS` and can include
+  listener channels. They differ from observed client-socket counts and from
+  `FlowControlMetrics` admission counts, which exclude rejected sockets.
 
-The JSON examples below are illustrative. Real runtime values vary, and the
-examples' zero counters reflect an application without added instrumentation.
-
-## Application Instrumentation
-
-Use these public methods to populate the legacy application counters:
-
-| Method | Meaning |
-| --- | --- |
-| `recordConnection()` / `recordDisconnection()` | Record one connection and its matching disconnection |
-| `recordMessageReceived()` / `recordMessageSent()` | Record an application-defined received or sent message |
-| `recordBytesReceived(long)` / `recordBytesSent(long)` | Record bytes using a consistent frame or payload definition |
-| `recordError()` | Record an application-defined error |
-
-Count successful sends at write completion when that is the intended meaning.
-Instrumentation placement determines what is counted; preserve buffer ownership
-and avoid recording the same operation twice.
-
-
-The following handler demonstrates an application-owned instrumentation point.
-Install it in the application pipeline; it is not installed by default:
-
-```java
-package com.example;
-
-import com.akakata.metrics.ServerMetrics;
-import io.netty.buffer.ByteBuf;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelInboundHandlerAdapter;
-
-public final class InboundMetricsHandler extends ChannelInboundHandlerAdapter {
-    private final ServerMetrics metrics = ServerMetrics.getInstance();
-
-    @Override
-    public void channelActive(ChannelHandlerContext ctx) throws Exception {
-        metrics.recordConnection();
-        super.channelActive(ctx);
-    }
-
-    @Override
-    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
-        metrics.recordDisconnection();
-        super.channelInactive(ctx);
-    }
-
-    @Override
-    public void channelRead(ChannelHandlerContext ctx, Object message) throws Exception {
-        metrics.recordMessageReceived();
-        if (message instanceof ByteBuf buffer) {
-            metrics.recordBytesReceived(buffer.readableBytes());
-        }
-        super.channelRead(ctx, message);
-    }
-
-    @Override
-    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
-        metrics.recordError();
-        super.exceptionCaught(ctx, cause);
-    }
-}
-```
-
-Placement determines whether a received object represents a socket read, a frame
-or an application event. Place byte accounting where bytes are visible, and
-message accounting after the appropriate decoder. This handler forwards messages
-and leaves their ownership unchanged. Account for pipeline replacement after TCP
-login if installing custom handlers there.
+The following JSON examples are illustrative; runtime values vary.
 
 ## Combined Metrics
 
@@ -198,7 +147,7 @@ heap MiB getters. Multiple getter calls do not form an atomic snapshot.
 }
 ```
 
-`active_connections` is the explicitly recorded connection balance.
+`active_connections` is the observed client-socket balance.
 `active_channels` is the static channel group's size. Do not substitute one for
 the other when creating dashboards.
 
@@ -329,8 +278,8 @@ Prometheus exposes these scalar values as `zea_flow_outbound_<field>` and
 resources are retained. `outbound` and `blocking` are null outside an initialized
 context; a custom non-Netty Game dispatcher has no default Game timing snapshot.
 
-These counters are instrumented by the default pipelines and require no application
-`ServerMetrics.record*()` calls. They supplement the older explicit traffic counters.
+Flow-control counters are instrumented by the default pipelines and require no application
+`ServerMetrics.record*()` calls. They supplement the automatically populated traffic counters.
 `game` is null when no context Game is registered. Readings across queues are not
 an atomic process snapshot.
 
@@ -408,7 +357,7 @@ readinessProbe:
 ```
 
 Match the port to `http.port`. These probes expose the local checks described above;
-add application-specific dependency checks if your routing decisions require them.
+supply application-specific `ServerHealth` checks when your deployment requires dependency health.
 
 ## Inspect Endpoints
 

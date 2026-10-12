@@ -4,10 +4,74 @@ Release changes and migration requirements for Zea TCP Transport, with the newes
 release first. See the [repository README](README.md) for the quick start and
 [application guides](README.md#documentation) for supported APIs and configuration.
 
+- [0.8.4](#084): bounded shutdown, response ownership, operational health
+  and static-resource boundaries.
 - [0.8.3](#083): bounded socket backpressure, unicast allocation reduction,
   streaming JSON and migration from 0.8.2.
 - [0.8.2](#082): component injection, authentication defaults, resource budgets
   and migration from 0.8.1.
+
+## 0.8.4
+
+Version 0.8.4 hardens shutdown, HTTP resource ownership, operational monitoring
+and static-file boundaries while preserving ordered Session and Game events.
+
+### Changes
+
+- Split context, network and dispatcher shutdown requests from completion observation.
+  Avoid monitor-held waits, worker self-waits and reentrant cleanup cycles. Bound
+  external waits and continue initiating cleanup after stalled or failing stages.
+  Track partial assembly independently and close resources returned after shutdown.
+- Preserve active callback payloads and resource credits until actual completion,
+  including after a shutdown deadline expires.
+- Release HTTP response source buffers on success, write rejection and copy failure.
+- Record real socket lifetimes, encoded bytes, decoded application messages,
+  successful outbound messages and failure callbacks in the default pipelines.
+- Replace uptime and cumulative-error readiness heuristics with lifecycle and named
+  resource checks. Return JSON with HTTP 503 when readiness is unavailable; detect
+  closed resources and outstanding events older than the configured health deadline.
+- Reject static traversal, hidden paths and symbolic links. Open files without
+  following the final link, use directory handles where supported, and close acquired
+  file handles on failed transfers and conditional responses.
+- Add 51 regression cases and English lifecycle, monitoring, configuration and
+  JavaDoc contracts. Separate resource ownership, shutdown coordination, health
+  policy and static-resource resolution from their HTTP and application presenters.
+
+### Migration from 0.8.3
+
+1. Update the dependency to `com.akakata:zea-tcp:0.8.4`. Existing event and sending
+   method names, ordered delivery and network frame formats remain compatible.
+   Java 21 remains required and dependency versions are unchanged.
+2. External context `close()` waits up to `server.shutdown.timeout.millis`, default
+   5000, and throws `ShutdownTimeoutException` if cleanup is unfinished. Observe
+   `closeAsync()` for actual completion. Managed workers and lifecycle callbacks
+   request closure without waiting; an expired wait never releases active resources.
+3. Configure probes for HTTP 503 and JSON `DOWN` responses during unavailable
+   readiness. Readiness now requires successful listener startup and named resource
+   checks; `/health/live` remains live during draining. Review
+   `health.maximum.event.delay.millis`, default 5000, for application event deadlines.
+   Custom dispatchers implement `isHealthy(long)` and custom Games report shutdown.
+4. Default pipelines now record transport and decoded business traffic. Remove
+   duplicate application instrumentation from the shared `ServerMetrics` collector,
+   or use an independent collector. Errors count failure callbacks, not unique
+   failed messages.
+5. Static-file roots and their directory structure must remain application-controlled.
+   Symlinks, hidden paths and traversal are rejected, including links pointing inside
+   the root. Deploy actual files beneath the configured static directory.
+
+See [lifecycle](docs/LIFECYCLE.md), [monitoring](docs/MONITORING.md),
+[configuration](docs/CONFIGURATION.md) and [event ownership](docs/EVENT_LOOP.md)
+for the complete contracts and filesystem-specific boundary guarantees.
+
+### Validation
+
+The release checks include 301 regression cases and strict production and test
+JavaDoc. New coverage includes shutdown races and reentry, late factory ownership,
+observation deadlines, HTTP buffer and file-handle cleanup, health policy, static
+path boundaries and real TCP/WebSocket traffic counters. GitHub Actions validates
+and signs release artifacts before Maven Central publication.
+
+Maven coordinates: `com.akakata:zea-tcp:0.8.4`.
 
 ## 0.8.3
 

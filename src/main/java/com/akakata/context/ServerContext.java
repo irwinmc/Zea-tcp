@@ -7,8 +7,14 @@ import com.akakata.context.module.GameServerComponent;
 import com.akakata.context.module.ServiceModule;
 import com.akakata.event.impl.EventDispatchers;
 import com.akakata.event.impl.NettyEventDispatcher;
+import com.akakata.lifecycle.AsyncCloseable;
+import com.akakata.lifecycle.ServerLifecycle;
+import com.akakata.lifecycle.ShutdownRegistry;
+import com.akakata.lifecycle.ShutdownSupport;
+import com.akakata.lifecycle.ShutdownTimeoutException;
 import com.akakata.metrics.EventDispatcherMetrics;
 import com.akakata.metrics.FlowControlMetrics;
+import com.akakata.metrics.ServerHealth;
 import com.akakata.security.CredentialsVerifier;
 import com.akakata.server.ServerManager;
 import com.akakata.service.LoginService;
@@ -19,6 +25,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Owns configuration, network resources and the Dagger application component.
@@ -32,7 +39,7 @@ import java.io.IOException;
  *
  * @author Kelvin
  */
-public final class ServerContext implements AutoCloseable {
+public final class ServerContext implements AsyncCloseable {
 
     /**
      * Logger for component lifecycle and diagnostic messages.
@@ -58,6 +65,36 @@ public final class ServerContext implements AutoCloseable {
      * Immutable provider choices supplied by the application.
      */
     private final ServerComponents components;
+
+    /**
+     * Application state published independently of HTTP handlers.
+     */
+    private final ServerLifecycle lifecycle = new ServerLifecycle();
+
+    /**
+     * Shared external shutdown waiting budget in milliseconds.
+     */
+    private final long shutdownMillis;
+
+    /**
+     * Resource ownership shared by initialization and asynchronous cleanup.
+     */
+    private final ShutdownRegistry ownership;
+
+    /**
+     * Serializes initialization without delaying shutdown requests.
+     */
+    private final Object initializationLock = new Object();
+
+    /**
+     * Assembly thread, published under the context monitor.
+     */
+    private volatile Thread initializingThread;
+
+    /**
+     * Actual completion of all initiated cleanup stages.
+     */
+    private final CompletableFuture<Void> closeCompletion = new CompletableFuture<>();
 
     /**
      * Selected authentication implementation, exposed without lazy creation after shutdown.
@@ -97,12 +134,7 @@ public final class ServerContext implements AutoCloseable {
     /**
      * Terminal lifecycle flag, published when shutdown begins.
      */
-    private boolean closed = false;
-
-    /**
-     * Whether initialization acquired process-wide dispatcher ownership before service creation.
-     */
-    private boolean sharedDispatcherConfigured;
+    private volatile boolean closed = false;
 
     /**
      * Game associated with this session or component.
@@ -118,6 +150,11 @@ public final class ServerContext implements AutoCloseable {
      * Manager coordinating startup and shutdown of the configured servers.
      */
     private volatile ServerManager serverManager;
+
+    /**
+     * Nonblocking health provider retained after assembly.
+     */
+    private volatile ServerHealth health;
 
     /**
      * Loads configuration and creates network groups. Application resources are created by
@@ -158,7 +195,13 @@ public final class ServerContext implements AutoCloseable {
         int workerThreads = configManager.getInt("workerThreadCount",
                 Runtime.getRuntime().availableProcessors());
 
-        this.networkBootstrap = new NetworkBootstrap(bossThreads, workerThreads);
+        this.shutdownMillis = configManager.getLong("server.shutdown.timeout.millis", ShutdownSupport.DEFAULT_TIMEOUT_MILLIS);
+        if (shutdownMillis <= 0) {
+            throw new IllegalArgumentException("server.shutdown.timeout.millis must be positive");
+        }
+        this.ownership = new ShutdownRegistry(shutdownMillis);
+        this.networkBootstrap = ownership.own(new NetworkBootstrap(bossThreads, workerThreads, shutdownMillis),
+                "network", 70, resource -> resource.closeAsync().join());
 
         LOG.info("ServerContext created");
     }
@@ -167,53 +210,112 @@ public final class ServerContext implements AutoCloseable {
      * Builds and retains the application component resources once.
      *
      * <p>If initialization fails, closes resources already constructed and rethrows
-     * the failure. An already initialized open context is left unchanged.
+     * the failure. An already initialized open context is left unchanged. Shutdown
+     * does not wait for application factories; resources returned after a close
+     * request are accepted and immediately closed before completion is reported.
      *
      * @throws IllegalStateException if this context has been closed
      */
-    public synchronized void initialize() {
-        if (closed) {
-            throw new IllegalStateException("ServerContext is closed");
-        }
-        if (initialized) {
-            LOG.warn("ServerContext already initialized");
-            return;
-        }
-
-        LOG.info("Initializing ServerContext...");
+    public void initialize() {
+        boolean assembling = false;
         try {
-            EventDispatchers.configure(configManager.getInt("session.dispatcher.shards",
-                            Math.max(2, Integer.highestOneBit(Runtime.getRuntime().availableProcessors()))),
-                    configManager.getInt("session.queue.capacity", NettyEventDispatcher.DEFAULT_QUEUE_CAPACITY),
-                    configManager.getLong("session.queue.bytes", NettyEventDispatcher.DEFAULT_QUEUE_BYTES));
-            sharedDispatcherConfigured = true;
-            GameServerComponent component = DaggerGameServerComponent.builder()
-                    .configurationManager(configManager)
-                    .networkBootstrap(networkBootstrap)
-                    .serviceModule(new ServiceModule(components))
-                    .build();
+            requireOpen();
+            synchronized (initializationLock) {
+                synchronized (this) {
+                    requireOpen();
+                    if (initialized) {
+                        LOG.warn("ServerContext already initialized");
+                        return;
+                    }
+                    initializingThread = Thread.currentThread();
+                    assembling = true;
+                }
+                try {
+                    assembleComponents();
+                    synchronized (this) {
+                        requireOpen();
+                        initialized = true;
+                        lifecycle.initialized();
+                    }
+                    LOG.info("ServerContext initialization complete");
+                } finally {
+                    synchronized (this) {
+                        initializingThread = null;
+                    }
+                    ownership.seal();
+                }
+            }
+        } catch (RuntimeException | Error failure) {
+            if (assembling && !closed) {
+                lifecycle.failed();
+                try {
+                    close();
+                } catch (RuntimeException cleanupFailure) {
+                    failure.addSuppressed(cleanupFailure);
+                }
+            }
+            throw failure;
+        }
+    }
 
-            verifier = component.credentialsVerifier();
-            security = component.securityService();
-            outboundBudget = component.outboundBudget();
+    /**
+     * Builds the composition and accepts each returned resource before continuing.
+     *
+     * @throws IllegalStateException if closure is requested during assembly
+     */
+    private void assembleComponents() {
+        LOG.info("Initializing ServerContext...");
+        EventDispatchers.configure(configManager.getInt("session.dispatcher.shards",
+                        Math.max(2, Integer.highestOneBit(Runtime.getRuntime().availableProcessors()))),
+                configManager.getInt("session.queue.capacity", NettyEventDispatcher.DEFAULT_QUEUE_CAPACITY),
+                configManager.getLong("session.queue.bytes", NettyEventDispatcher.DEFAULT_QUEUE_BYTES));
+        ownership.own(EventDispatchers.sharedGroup(), "shared-events", 60,
+                resource -> EventDispatchers.shutdownSharedDispatcher());
+        requireOpen();
+        GameServerComponent component = DaggerGameServerComponent.builder()
+                .configurationManager(configManager)
+                .networkBootstrap(networkBootstrap)
+                .serviceModule(new ServiceModule(components, lifecycle))
+                .build();
 
-            // Retain ownership before building servers so partial initialization can be cleaned up.
-            game = component.game();
-            sessionService = component.sessionService();
-            blockingTasks = component.blockingTaskExecutor();
-            login = component.loginService();
+        verifier = component.credentialsVerifier();
+        security = component.securityService();
+        outboundBudget = component.outboundBudget();
 
-            // Initialize ServerManager (it manages all servers internally)
-            serverManager = component.serverManager();
+        // Retain ownership before building servers so partial initialization can be cleaned up.
+        game = ownership.own(component.game(), "game", 30, Game::close);
+        requireOpen();
+        sessionService = ownership.own(component.sessionService(), "sessions", 40, SessionService::close);
+        requireOpen();
+        blockingTasks = ownership.own(component.blockingTaskExecutor(), "blocking", 20, BlockingTaskExecutor::close);
+        requireOpen();
+        login = component.loginService();
 
+        serverManager = ownership.own(component.serverManager(), "servers", 10, resource -> {
+            try {
+                resource.stopServers();
+            } catch (Exception failure) {
+                throw new IllegalStateException("Server shutdown failed", failure);
+            }
+        });
+        requireOpen();
+        health = component.serverHealth();
+
+        try {
             FlowControlMetrics.gameDispatcher(game.getEventDispatcher() instanceof NettyEventDispatcher dispatcher ? dispatcher : null);
             FlowControlMetrics.resources(outboundBudget, blockingTasks);
             startDispatcherMetrics();
-            initialized = true;
-            LOG.info("ServerContext initialization complete");
-        } catch (RuntimeException | Error e) {
-            close();
-            throw e;
+        } finally {
+            ownership.own(this, "metrics", 50, ServerContext::stopMetrics);
+        }
+    }
+
+    /**
+     * Rejects assembly work after the terminal close request.
+     */
+    private void requireOpen() {
+        if (closed) {
+            throw new IllegalStateException("ServerContext is closed");
         }
     }
 
@@ -221,7 +323,8 @@ public final class ServerContext implements AutoCloseable {
      * Resolves one of the exposed application resources by type.
      *
      * <p>Supported types include Game, SessionService, ServerManager, CredentialsVerifier,
-     * SecurityService, LoginService, OutboundBudget and BlockingTaskExecutor. Before successful
+     * SecurityService, LoginService, OutboundBudget, BlockingTaskExecutor, NetworkBootstrap,
+     * ServerLifecycle and ServerHealth. Before successful
      * initialization, the corresponding field may be null.
      *
      * @param <T>  the requested value type
@@ -230,6 +333,15 @@ public final class ServerContext implements AutoCloseable {
      * @throws IllegalArgumentException if the requested type is not exposed
      */
     public <T> T getBean(Class<T> type) {
+        if (type == NetworkBootstrap.class) {
+            return type.cast(networkBootstrap);
+        }
+        if (type == ServerHealth.class) {
+            return type.cast(health);
+        }
+        if (type == ServerLifecycle.class) {
+            return type.cast(lifecycle);
+        }
         if (type == ServerManager.class) {
             return type.cast(serverManager);
         }
@@ -267,81 +379,71 @@ public final class ServerContext implements AutoCloseable {
     }
 
     /**
-     * Closes application and network resources in dependency order.
+     * Requests cleanup and waits outside managed workers within the configured budget.
      *
-     * <p>Repeated calls have no effect. Exceptions from individual cleanup stages are
-     * logged and do not prevent subsequent stages from running.
+     * <p>Cleanup failures are logged for compatibility. A waiting timeout is explicit;
+     * cleanup continues and its actual outcome remains available through closeAsync().
+     *
+     * @throws ShutdownTimeoutException if cleanup exceeds the waiting interval
      */
     @Override
-    public synchronized void close() {
-        if (closed) {
+    public void close() {
+        CompletableFuture<Void> completion = closeAsync();
+        if (ShutdownSupport.isCleanupAction() || Thread.currentThread() == initializingThread) {
             return;
         }
-        closed = true;
-        LOG.info("Shutting down ServerContext");
-
-        // Stop all servers via ServerManager
-        if (serverManager != null) {
-            try {
-                serverManager.stopServers();
-            } catch (Exception e) {
-                LOG.error("Error stopping servers", e);
-            }
-        }
-
-        // Stop blocking result producers before closing their Session and Game targets.
-        if (blockingTasks != null) {
-            try {
-                blockingTasks.close();
-            } catch (Exception e) {
-                LOG.error("Error closing blocking task executor", e);
-            }
-        }
-
-        // Close application resources while dispatchers and network event loops are available.
-        if (game != null) {
-            try {
-                game.close();
-            } catch (Exception e) {
-                LOG.error("Error closing game", e);
-            }
-        }
-        if (sessionService != null) {
-            try {
-                sessionService.close();
-            } catch (Exception e) {
-                LOG.error("Error closing session service", e);
-            }
-        }
-
-        // Stop producers before shutting down the shared dispatcher.
-        if (dispatcherMetrics != null) {
-            try {
-                dispatcherMetrics.stop();
-            } catch (Exception e) {
-                LOG.error("Error stopping dispatcher metrics", e);
-            }
-        }
-
-        FlowControlMetrics.gameDispatcher(null);
-        FlowControlMetrics.resources(null, null);
-
-        // Avoid creating the shared dispatcher when closing an uninitialized context.
-        if (sharedDispatcherConfigured || game != null || sessionService != null) {
-            try {
-                EventDispatchers.shutdownSharedDispatcher();
-            } catch (Exception e) {
-                LOG.error("Error closing shared event dispatcher", e);
-            }
-        }
-
         try {
-            networkBootstrap.close();
-        } catch (Exception e) {
-            LOG.error("Error closing network resources", e);
+            ShutdownSupport.await(completion, shutdownMillis, "server context");
+        } catch (ShutdownTimeoutException timeout) {
+            LOG.warn("ServerContext cleanup continues after the caller's deadline", timeout);
+            throw timeout;
+        } catch (IllegalStateException failure) {
+            LOG.error("ServerContext cleanup completed with failures", failure);
         }
+    }
 
-        LOG.info("ServerContext shutdown complete");
+    /**
+     * Withdraws readiness and initiates cleanup without holding the context monitor.
+     *
+     * <p>Every stage is initiated even when an earlier application cleanup stalls.
+     * Managed callbacks can request closure safely. The returned future observes
+     * actual actions and cannot cancel internal cleanup ownership.
+     *
+     * @return an independent observation of all cleanup actions
+     */
+    @Override
+    public CompletableFuture<Void> closeAsync() {
+        synchronized (this) {
+            if (closed) {
+                return closeCompletion.copy();
+            }
+            closed = true;
+            lifecycle.stopping();
+            if (initializingThread == null) {
+                ownership.seal();
+            }
+        }
+        LOG.info("Shutting down ServerContext");
+        ownership.closeAsync().whenComplete((ignored, failure) -> {
+            if (failure == null) {
+                lifecycle.terminated();
+                LOG.info("ServerContext shutdown complete");
+                ShutdownSupport.complete(closeCompletion, null);
+            } else {
+                lifecycle.failed();
+                ShutdownSupport.complete(closeCompletion, failure);
+            }
+        });
+        return closeCompletion.copy();
+    }
+
+    /**
+     * Exposes lifecycle state without exposing resource cleanup internals.
+     *
+     * @return application lifecycle signal
+     */
+    public ServerLifecycle getLifecycle() {
+        return lifecycle;
     }
 
     /**
@@ -351,5 +453,19 @@ public final class ServerContext implements AutoCloseable {
         long intervalSeconds = configManager.getInt("metrics.event.interval.seconds", 30);
         dispatcherMetrics = EventDispatcherMetrics.getInstance();
         dispatcherMetrics.start(intervalSeconds);
+    }
+
+    /**
+     * Stops context-owned sampling and clears references held by shared metrics.
+     */
+    private void stopMetrics() {
+        try {
+            if (dispatcherMetrics != null) {
+                dispatcherMetrics.stop();
+            }
+        } finally {
+            FlowControlMetrics.gameDispatcher(null);
+            FlowControlMetrics.resources(null, null);
+        }
     }
 }

@@ -54,7 +54,8 @@ factories remain the application's responsibility. Startup and shutdown hooks ca
 manage those resources; a startup failure also closes the initialized context.
 
 `getBean()` exposes `Game`, `SessionService`, `ServerManager`, `CredentialsVerifier`,
-`SecurityService`, `LoginService`, `OutboundBudget` and `BlockingTaskExecutor`.
+`SecurityService`, `LoginService`, `OutboundBudget`, `BlockingTaskExecutor`,
+`NetworkBootstrap`, `ServerLifecycle` and `ServerHealth`.
 It returns retained resources without creating new objects after shutdown.
 Configuration is available through `getConfigManager()`. This API is a fixed
 resource lookup, not a general-purpose container. A custom Game dispatcher need
@@ -139,3 +140,17 @@ connections with an application TLS pipeline or a suitable TLS gateway; setting 
 port to 443 does not enable TLS. Restrict monitoring access at the deployment
 boundary. Neither anonymous credentials nor token encryption encrypts transport
 traffic.
+
+## Lifecycle and Operational Contracts
+
+Zea TCP Transport 0.8.4 adds [lifecycle](LIFECYCLE.md) and
+[health](MONITORING.md) contracts. Context closure coordinates resources
+outside its monitor and preserves application close overrides. Named cleanup actions
+run separately so a stalled application hook cannot suppress later network cleanup.
+
+`ServerHealth` separates HTTP presentation from availability policy.
+`DefaultServerHealth` accepts named nonblocking checks; the Dagger composition root
+supplies Game, session registry, worker, network and heap checks through their public
+interfaces. Custom dispatchers implement `EventDispatcher.isHealthy(long)` and custom
+Games expose `isShuttingDown()`. Health checks must not perform remote I/O or wait for
+an executor. An unbound HTTP health presenter fails readiness.

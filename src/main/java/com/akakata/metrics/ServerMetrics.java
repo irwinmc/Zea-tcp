@@ -69,10 +69,9 @@ public class ServerMetrics {
     private final long startTime = System.currentTimeMillis();
 
     /**
-     * Prevents direct construction of this utility or singleton component.
+     * Creates an independent counter collector; framework pipelines use getInstance().
      */
-    private ServerMetrics() {
-        // Private constructor for singleton
+    public ServerMetrics() {
     }
 
     /**

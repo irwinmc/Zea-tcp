@@ -87,14 +87,39 @@ public abstract class AbstractHttpHandler {
      * @param contentType content type (e.g., "application/json; charset=UTF-8")
      */
     protected void sendHttpResponse(ChannelHandlerContext ctx, ByteBuf content, String contentType) {
-        FullHttpResponse response = new DefaultFullHttpResponse(HTTP_1_1, OK);
-        response.headers().set(CONTENT_TYPE, contentType);
-        response.headers().set(ACCESS_CONTROL_ALLOW_ORIGIN, "*");
-        response.headers().set(ACCESS_CONTROL_ALLOW_HEADERS, "Origin, X-Requested-With, Content-Type, Accept, Authorization");
-        response.headers().set(ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, PUT, DELETE, OPTIONS");
-        response.headers().set(ACCESS_CONTROL_MAX_AGE, "3600");
-        response.content().writeBytes(content);
+        sendHttpResponse(ctx, content, contentType, OK);
+    }
 
-        ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
+    /**
+     * Copies caller-owned content into a status-specific response and closes after the write.
+     *
+     * <p>The caller always releases its source. A construction failure releases the
+     * response locally; a completed handoff transfers response ownership to Netty.
+     *
+     * @param ctx         transport context
+     * @param content     borrowed source advanced by copying
+     * @param contentType response content type
+     * @param status      HTTP response status
+     */
+    protected void sendHttpResponse(ChannelHandlerContext ctx, ByteBuf content, String contentType,
+                                    HttpResponseStatus status) {
+        FullHttpResponse response = new DefaultFullHttpResponse(HTTP_1_1, status);
+        boolean transferred = false;
+        try {
+            response.headers().set(CONTENT_TYPE, contentType);
+            response.headers().set(ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+            response.headers().set(ACCESS_CONTROL_ALLOW_HEADERS, "Origin, X-Requested-With, Content-Type, Accept, Authorization");
+            response.headers().set(ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, PUT, DELETE, OPTIONS");
+            response.headers().set(ACCESS_CONTROL_MAX_AGE, "3600");
+            response.content().writeBytes(content);
+            response.headers().setInt(CONTENT_LENGTH, response.content().readableBytes());
+            var write = ctx.writeAndFlush(response);
+            transferred = true;
+            write.addListener(ChannelFutureListener.CLOSE);
+        } finally {
+            if (!transferred) {
+                response.release();
+            }
+        }
     }
 }

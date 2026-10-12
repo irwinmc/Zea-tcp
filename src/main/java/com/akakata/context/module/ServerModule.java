@@ -1,13 +1,19 @@
 package com.akakata.context.module;
 
+import com.akakata.app.Game;
 import com.akakata.communication.OutboundBudget;
 import com.akakata.communication.OutboundLimits;
 import com.akakata.context.AppContext;
 import com.akakata.context.ConfigurationManager;
 import com.akakata.context.NetworkBootstrap;
+import com.akakata.event.impl.EventDispatchers;
 import com.akakata.handlers.HttpRequestHandler;
 import com.akakata.handlers.LoginHandler;
 import com.akakata.handlers.WebSocketLoginHandler;
+import com.akakata.lifecycle.ServerLifecycle;
+import com.akakata.metrics.DefaultServerHealth;
+import com.akakata.metrics.ServerHealth;
+import com.akakata.metrics.ServerMetrics;
 import com.akakata.server.*;
 import com.akakata.server.http.*;
 import com.akakata.server.impl.NettyTCPServer;
@@ -15,6 +21,8 @@ import com.akakata.server.impl.ServerManagerImpl;
 import com.akakata.server.initializer.HttpServerChannelInitializer;
 import com.akakata.server.initializer.LoginChannelInitializer;
 import com.akakata.server.initializer.WebSocketServerChannelInitializer;
+import com.akakata.service.SessionService;
+import com.akakata.service.task.BlockingTaskExecutor;
 import dagger.Binds;
 import dagger.Module;
 import dagger.Provides;
@@ -28,7 +36,9 @@ import javax.inject.Named;
 import javax.inject.Singleton;
 import java.net.InetSocketAddress;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.function.BooleanSupplier;
 
 /**
  * Binds the server manager and provides server instances, HTTP handlers and channel initializers.
@@ -109,12 +119,46 @@ public abstract class ServerModule {
     /**
      * Provides the health check handler dependency for the application component.
      *
+     * @param health nonblocking application health provider
      * @return the health check handler instance
      */
     @Provides
     @Singleton
-    static HealthCheckHandler provideHealthCheckHandler() {
-        return new HealthCheckHandler();
+    static HealthCheckHandler provideHealthCheckHandler(ServerHealth health) {
+        return new HealthCheckHandler(health);
+    }
+
+    /**
+     * Composes named availability checks through public resource contracts.
+     *
+     * @param configuration loaded health policy
+     * @param lifecycle     application lifecycle
+     * @param game          application Game
+     * @param sessions      session registry
+     * @param blocking      detached worker pool
+     * @param network       network owner
+     * @return nonblocking health provider
+     */
+    @Provides
+    @Singleton
+    static ServerHealth provideServerHealth(ConfigurationManager configuration, ServerLifecycle lifecycle,
+                                            Game game, SessionService sessions, BlockingTaskExecutor blocking,
+                                            NetworkBootstrap network) {
+        long maximumDelay = configuration.getLong("health.maximum.event.delay.millis", 5_000);
+        if (maximumDelay <= 0) {
+            throw new IllegalArgumentException("health.maximum.event.delay.millis must be positive");
+        }
+        var shared = EventDispatchers.sharedGroup();
+        ServerMetrics metrics = ServerMetrics.getInstance();
+        Map<String, BooleanSupplier> checks = new LinkedHashMap<>();
+        checks.put("game", () -> !game.isShuttingDown() && game.getEventDispatcher().isHealthy(maximumDelay));
+        checks.put("session_dispatchers", () -> shared.isHealthy(maximumDelay));
+        checks.put("session_registry", () -> !sessions.isClosed());
+        checks.put("blocking_workers", () -> !blocking.isClosed());
+        checks.put("network", () -> !network.isClosing());
+        checks.put("heap", () -> metrics.getMaxMemoryMB() > 0
+                && metrics.getUsedMemoryMB() < metrics.getMaxMemoryMB() * 0.95);
+        return new DefaultServerHealth(lifecycle, checks);
     }
 
     /**

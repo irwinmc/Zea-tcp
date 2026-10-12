@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit;
  * Owns socket admission, the login deadline and read-idle expiry on the channel loop.
  * This handler and its idle detector survive the TCP login pipeline transition.
  */
-public final class TransportLifecycleHandler extends ChannelInboundHandlerAdapter {
+public final class TransportLifecycleHandler extends ChannelInboundHandlerAdapter implements ConnectionScopedHandler {
 
     /**
      * Shared socket admission budget.

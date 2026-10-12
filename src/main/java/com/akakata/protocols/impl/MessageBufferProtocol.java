@@ -1,9 +1,11 @@
 package com.akakata.protocols.impl;
 
 import com.akakata.app.PlayerSession;
+import com.akakata.handlers.ApplicationMetricsHandler;
 import com.akakata.handlers.DefaultToServerHandler;
 import com.akakata.handlers.codec.MessageBufferEventDecoder;
 import com.akakata.handlers.codec.MessageBufferEventEncoder;
+import com.akakata.metrics.ServerMetrics;
 import com.akakata.protocols.AbstractNettyProtocol;
 import com.akakata.util.NettyUtils;
 import io.netty.channel.ChannelPipeline;
@@ -64,6 +66,7 @@ public class MessageBufferProtocol extends AbstractNettyProtocol {
         // Upstream handlers or encoders (i.e towards server) are added to pipeline now.
         pipeline.addLast("lengthDecoder", createLengthBasedFrameDecoder(pipeline));
         pipeline.addLast("messageBufferEventDecoder", messageBufferEventDecoder);
+        pipeline.addLast("applicationMetrics", new ApplicationMetricsHandler(ServerMetrics.getInstance()));
         pipeline.addLast("eventHandler", new DefaultToServerHandler(playerSession));
 
         // Downstream handlers - Filter for data which flows from server to client.

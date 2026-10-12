@@ -2,6 +2,7 @@ package com.akakata.server.impl;
 
 import com.akakata.context.AppContext;
 import com.akakata.context.ConfigurationManager;
+import com.akakata.lifecycle.ServerLifecycle;
 import com.akakata.server.Server;
 import com.akakata.server.ServerManager;
 import org.slf4j.Logger;
@@ -50,6 +51,11 @@ public class ServerManagerImpl implements ServerManager {
     private final Set<Server> servers = new HashSet<>();
 
     /**
+     * Lifecycle signal shared with application health checks.
+     */
+    private final ServerLifecycle lifecycle;
+
+    /**
      * Creates a server manager impl instance with the supplied dependencies.
      *
      * @param tcpServer       the TCP server instance
@@ -57,11 +63,28 @@ public class ServerManagerImpl implements ServerManager {
      * @param webSocketServer the WebSocket server instance
      * @param configManager   the loaded configuration manager
      */
-    @Inject
     public ServerManagerImpl(@Named(AppContext.TCP_SERVER) Server tcpServer,
                              @Named(AppContext.HTTP_SERVER) Server httpServer,
                              @Named(AppContext.WEB_SOCKET_SERVER) Server webSocketServer,
                              ConfigurationManager configManager) {
+        this(tcpServer, httpServer, webSocketServer, configManager, new ServerLifecycle());
+    }
+
+    /**
+     * Creates a manager publishing startup and shutdown through an injected lifecycle.
+     *
+     * @param tcpServer       TCP listener
+     * @param httpServer      HTTP listener
+     * @param webSocketServer WebSocket listener
+     * @param configManager   loaded configuration
+     * @param lifecycle       shared application lifecycle
+     */
+    @Inject
+    public ServerManagerImpl(@Named(AppContext.TCP_SERVER) Server tcpServer,
+                             @Named(AppContext.HTTP_SERVER) Server httpServer,
+                             @Named(AppContext.WEB_SOCKET_SERVER) Server webSocketServer,
+                             ConfigurationManager configManager, ServerLifecycle lifecycle) {
+        this.lifecycle = java.util.Objects.requireNonNull(lifecycle);
         this.tcpServer = tcpServer;
         this.httpServer = httpServer;
         this.webSocketServer = webSocketServer;
@@ -81,25 +104,35 @@ public class ServerManagerImpl implements ServerManager {
      * @throws Exception if a selected server cannot start
      */
     @Override
-    public void startServers(int flashPort, int tcpPort, int httpPort, int webSocketPort) throws Exception {
+    public synchronized void startServers(int flashPort, int tcpPort, int httpPort, int webSocketPort) throws Exception {
         if (!servers.isEmpty()) {
             LOG.warn("Servers already started, skipping duplicate start");
             return;
         }
+        lifecycle.starting();
+        try {
+            if (tcpPort > 0) {
+                tcpServer.startServer(tcpPort);
+                servers.add(tcpServer);
+            }
 
-        if (tcpPort > 0) {
-            tcpServer.startServer(tcpPort);
-            servers.add(tcpServer);
-        }
+            if (httpPort > 0) {
+                httpServer.startServer(httpPort);
+                servers.add(httpServer);
+            }
 
-        if (httpPort > 0) {
-            httpServer.startServer(httpPort);
-            servers.add(httpServer);
-        }
-
-        if (webSocketPort > 0) {
-            webSocketServer.startServer(webSocketPort);
-            servers.add(webSocketServer);
+            if (webSocketPort > 0) {
+                webSocketServer.startServer(webSocketPort);
+                servers.add(webSocketServer);
+            }
+            if (!servers.isEmpty()) {
+                lifecycle.running();
+            } else {
+                lifecycle.initialized();
+            }
+        } catch (Exception failure) {
+            lifecycle.failed();
+            throw failure;
         }
     }
 
@@ -112,48 +145,58 @@ public class ServerManagerImpl implements ServerManager {
      * @throws Exception if a selected server cannot start
      */
     @Override
-    public void startServers() throws Exception {
+    public synchronized void startServers() throws Exception {
         if (!servers.isEmpty()) {
             LOG.warn("Servers already started, skipping duplicate start");
             return;
         }
+        lifecycle.starting();
+        try {
+            LOG.info("Starting servers based on configuration...");
 
-        LOG.info("Starting servers based on configuration...");
+            // Check TCP server
+            if (isServerEnabled("server.tcp.enabled")) {
+                LOG.info("Starting TCP server on port {}...", configManager.getRequiredInt("tcp.port"));
+                tcpServer.startServer();
+                servers.add(tcpServer);
+                LOG.info("TCP server started successfully");
+            } else {
+                LOG.info("TCP server disabled by configuration");
+            }
 
-        // Check TCP server
-        if (isServerEnabled("server.tcp.enabled")) {
-            LOG.info("Starting TCP server on port {}...", configManager.getRequiredInt("tcp.port"));
-            tcpServer.startServer();
-            servers.add(tcpServer);
-            LOG.info("TCP server started successfully");
-        } else {
-            LOG.info("TCP server disabled by configuration");
-        }
+            // Check HTTP server
+            if (isServerEnabled("server.http.enabled")) {
+                LOG.info("Starting HTTP server on port {}...", configManager.getRequiredInt("http.port"));
+                httpServer.startServer();
+                servers.add(httpServer);
+                LOG.info("HTTP server started successfully");
+            } else {
+                LOG.info("HTTP server disabled by configuration");
+            }
 
-        // Check HTTP server
-        if (isServerEnabled("server.http.enabled")) {
-            LOG.info("Starting HTTP server on port {}...", configManager.getRequiredInt("http.port"));
-            httpServer.startServer();
-            servers.add(httpServer);
-            LOG.info("HTTP server started successfully");
-        } else {
-            LOG.info("HTTP server disabled by configuration");
-        }
+            // Check WebSocket server
+            if (isServerEnabled("server.websocket.enabled")) {
+                LOG.info("Starting WebSocket server on port {}...", configManager.getRequiredInt("web.socket.port"));
+                webSocketServer.startServer();
+                servers.add(webSocketServer);
+                LOG.info("WebSocket server started successfully");
+            } else {
+                LOG.info("WebSocket server disabled by configuration");
+            }
 
-        // Check WebSocket server
-        if (isServerEnabled("server.websocket.enabled")) {
-            LOG.info("Starting WebSocket server on port {}...", configManager.getRequiredInt("web.socket.port"));
-            webSocketServer.startServer();
-            servers.add(webSocketServer);
-            LOG.info("WebSocket server started successfully");
-        } else {
-            LOG.info("WebSocket server disabled by configuration");
-        }
-
-        if (servers.isEmpty()) {
-            LOG.warn("No servers were started. All servers are disabled in configuration.");
-        } else {
-            LOG.info("Total servers started: {}", servers.size());
+            if (servers.isEmpty()) {
+                LOG.warn("No servers were started. All servers are disabled in configuration.");
+            } else {
+                LOG.info("Total servers started: {}", servers.size());
+            }
+            if (!servers.isEmpty()) {
+                lifecycle.running();
+            } else {
+                lifecycle.initialized();
+            }
+        } catch (Exception failure) {
+            lifecycle.failed();
+            throw failure;
         }
     }
 
@@ -172,14 +215,27 @@ public class ServerManagerImpl implements ServerManager {
      */
     @Override
     public void stopServers() throws Exception {
-        for (Server nettyServer : servers) {
+        lifecycle.stopping();
+        Set<Server> snapshot;
+        synchronized (this) {
+            snapshot = Set.copyOf(servers);
+            servers.clear();
+        }
+        Exception failure = null;
+        for (Server server : snapshot) {
             try {
-                nettyServer.stopServer();
-            } catch (Exception e) {
-                LOG.error("Unable to stop server {} due to error {}", nettyServer, e);
-                throw e;
+                server.stopServer();
+            } catch (Exception problem) {
+                LOG.error("Unable to stop server {}", server, problem);
+                if (failure == null) {
+                    failure = problem;
+                } else {
+                    failure.addSuppressed(problem);
+                }
             }
         }
-        servers.clear();
+        if (failure != null) {
+            throw failure;
+        }
     }
 }

@@ -3,7 +3,6 @@ package com.akakata.util;
 import com.akakata.app.PlayerSession;
 import com.akakata.communication.Transform;
 import com.akakata.communication.impl.SocketMessageSender;
-import com.akakata.handlers.TransportLifecycleHandler;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
@@ -79,8 +78,7 @@ public class NettyUtils {
         }
         for (String name : java.util.List.copyOf(pipeline.names())) {
             if (pipeline.get(name) != null && !name.equals("zeaReadIdle")
-                    && !name.equals("zeaOutboundBudget")
-                    && !(pipeline.get(name) instanceof TransportLifecycleHandler)) {
+                    && !(pipeline.get(name) instanceof com.akakata.handlers.ConnectionScopedHandler)) {
                 pipeline.remove(name);
             }
         }

@@ -89,6 +89,18 @@ public interface Game extends AutoCloseable {
     EventDispatcher getEventDispatcher();
 
     /**
+     * Exposes terminal application state to lifecycle and health consumers.
+     *
+     * <p>Custom implementations should report shutdown as soon as it is requested.
+     * Dispatcher availability is checked separately by the default health provider.
+     *
+     * @return whether Game closure has started
+     */
+    default boolean isShuttingDown() {
+        return false;
+    }
+
+    /**
      * Submits an event to the Game's ordered business queue without waiting for capacity.
      *
      * <p>Accepted deliveries retain their own native payload reference. The caller

@@ -5,6 +5,8 @@ import com.akakata.communication.OutboundLimits;
 import com.akakata.communication.impl.SocketMessageSender;
 import com.akakata.handlers.HttpLifecycleHandler;
 import com.akakata.handlers.HttpRequestHandler;
+import com.akakata.handlers.TransportMetricsHandler;
+import com.akakata.metrics.ServerMetrics;
 import com.akakata.server.ConnectionAdmission;
 import com.akakata.server.HttpAdmission;
 import com.akakata.server.HttpLimits;
@@ -89,6 +91,7 @@ public class HttpServerChannelInitializer extends ChannelInitializer<SocketChann
         // Create a default pipeline implementation.
         ChannelPipeline pipeline = ch.pipeline();
         SocketMessageSender.installOutboundBudget(pipeline, outboundLimits, budget);
+        pipeline.addFirst("zeaTransportMetrics", new TransportMetricsHandler(ServerMetrics.getInstance()));
         if (limits.readIdleMillis() > 0) {
             pipeline.addLast(new IdleStateHandler(limits.readIdleMillis(), 0, 0, TimeUnit.MILLISECONDS));
         }

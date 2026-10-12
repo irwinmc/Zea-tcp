@@ -2,6 +2,9 @@ package com.akakata.event.impl;
 
 import com.akakata.app.Session;
 import com.akakata.event.*;
+import com.akakata.lifecycle.AsyncCloseable;
+import com.akakata.lifecycle.ShutdownSupport;
+import com.akakata.metrics.ServerMetrics;
 import io.netty.util.concurrent.DefaultEventExecutorGroup;
 import io.netty.util.concurrent.DefaultThreadFactory;
 import io.netty.util.concurrent.EventExecutor;
@@ -28,13 +31,13 @@ import java.util.function.Consumer;
  * <p>Session subscriptions are indexed by object identity and event type. Payloads are
  * borrowed by callbacks; each delivery retains one native reference until completion,
  * rejection or cancellation. Events must not be mutated after submission.
- * Closure cancels queued deliveries and waits for running callbacks when called
- * externally. Closure inside any dispatcher callback returns without waiting to
+ * Closure cancels queued deliveries and waits within a deadline when called
+ * externally. Async closure observes actual termination. Closure inside framework workers returns without waiting to
  * avoid self-joins and cross-dispatcher shutdown cycles.
  *
  * @since 0.8.0
  */
-public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
+public class NettyEventDispatcher implements EventDispatcher, AsyncCloseable {
 
     /**
      * Default maximum number of pending tasks on each business executor.
@@ -102,6 +105,11 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
     private final int queueCapacity;
 
     /**
+     * Maximum external shutdown waiting interval in milliseconds.
+     */
+    private final long shutdownMillis;
+
+    /**
      * Global subscriptions by event type; guarded by this dispatcher.
      */
     private final Map<Integer, List<Registration>> globalHandlers = new LinkedHashMap<>();
@@ -162,24 +170,39 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
      * Creates an ordered executor bounded by task count and retained payload bytes.
      *
      * @param queueCapacity maximum pending tasks, at least 16
-     * @param queueBytes positive payload storage budget including running work
+     * @param queueBytes    positive payload storage budget including running work
      * @throws IllegalArgumentException if either budget is invalid
      */
     public NettyEventDispatcher(int queueCapacity, long queueBytes) {
-        if (queueBytes <= 0) throw new IllegalArgumentException("Positive payload budget required");
+        this(queueCapacity, queueBytes, ShutdownSupport.DEFAULT_TIMEOUT_MILLIS);
+    }
+
+    /**
+     * Creates an owned dispatcher with a bounded external shutdown wait.
+     *
+     * @param queueCapacity  maximum queued tasks, at least 16
+     * @param queueBytes     positive payload budget including active callbacks
+     * @param shutdownMillis positive shutdown waiting interval in milliseconds
+     * @throws IllegalArgumentException if a limit is invalid
+     */
+    public NettyEventDispatcher(int queueCapacity, long queueBytes, long shutdownMillis) {
+        if (queueBytes <= 0 || shutdownMillis <= 0) {
+            throw new IllegalArgumentException("Positive payload budget and shutdown interval required");
+        }
+        this.shutdownMillis = shutdownMillis;
         this.queueBytes = queueBytes;
         if (queueCapacity < 16) {
             throw new IllegalArgumentException("Queue capacity must be at least 16");
         }
         this.queueCapacity = queueCapacity;
         this.ownedGroup = new DefaultEventExecutorGroup(1,
-                new DefaultThreadFactory("zea-event", false), queueCapacity, RejectedExecutionHandlers.reject());
+                ShutdownSupport.workerFactory(new DefaultThreadFactory("zea-event", false)), queueCapacity, RejectedExecutionHandlers.reject());
         this.executor = ownedGroup.next();
         ownedGroup.terminationFuture().addListener(future -> {
             if (future.isSuccess()) {
-                closeCompletion.complete(null);
+                ShutdownSupport.complete(closeCompletion, null);
             } else {
-                closeCompletion.completeExceptionally(future.cause());
+                ShutdownSupport.complete(closeCompletion, future.cause());
             }
         });
     }
@@ -187,7 +210,7 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
     /**
      * Creates a borrowed scope with the default retained-payload budget.
      *
-     * @param executor the fixed business executor
+     * @param executor      the fixed business executor
      * @param queueCapacity the owner's pending task budget
      */
     NettyEventDispatcher(EventExecutor executor, int queueCapacity) {
@@ -199,9 +222,10 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
      *
      * @param executor      the fixed business executor
      * @param queueCapacity the owner's maximum pending tasks per executor
-     * @param queueBytes the positive payload budget for this scope
+     * @param queueBytes    the positive payload budget for this scope
      */
     NettyEventDispatcher(EventExecutor executor, int queueCapacity, long queueBytes) {
+        this.shutdownMillis = ShutdownSupport.DEFAULT_TIMEOUT_MILLIS;
         this.queueBytes = queueBytes;
         this.executor = Objects.requireNonNull(executor, "executor");
         this.queueCapacity = queueCapacity;
@@ -382,7 +406,7 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
      * actions rather than leaving their futures pending. Accepted actions retain
      * their own payload reference. The returned future cannot interrupt a callback.
      *
-     * @param event the event borrowed by the action
+     * @param event  the event borrowed by the action
      * @param action the synchronous action on this executor
      * @return completion of the action, or an exceptional admission or closure result
      */
@@ -409,9 +433,9 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
     /**
      * Publishes a retained task and optional completion under the admission monitor.
      *
-     * @param event the submitted event
-     * @param session the optional target session
-     * @param action the optional queued action
+     * @param event      the submitted event
+     * @param session    the optional target session
+     * @param action     the optional queued action
      * @param completion the optional action completion
      * @return whether the executor accepted the task
      */
@@ -520,7 +544,7 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
             signalDrain();
         } finally {
             if (ownedGroup != null) {
-                ownedGroup.shutdownGracefully(0, 5, TimeUnit.SECONDS);
+                ownedGroup.shutdownGracefully(0, shutdownMillis, TimeUnit.MILLISECONDS);
             } else {
                 signalDrain();
                 completeBorrowedClose();
@@ -538,19 +562,48 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
             complete = closed && ownedGroup == null && deliveries.isEmpty();
         }
         if (complete) {
-            closeCompletion.complete(null);
+            ShutdownSupport.complete(closeCompletion, null);
         }
     }
 
     /**
      * {@inheritDoc}
+     *
+     * @throws com.akakata.lifecycle.ShutdownTimeoutException if actual cleanup exceeds the external waiting interval
      */
     @Override
     public void close() {
         beginClose();
         if (!isDispatchThread() && !executor.inEventLoop()) {
-            closeCompletion.join();
+            ShutdownSupport.await(closeCompletion, shutdownMillis, "event dispatcher");
         }
+    }
+
+    /**
+     * Begins cleanup while keeping actual callback and executor completion observable.
+     *
+     * @return an independent observation that cannot cancel internal ownership
+     */
+    @Override
+    public CompletableFuture<Void> closeAsync() {
+        return beginClose().copy();
+    }
+
+    /**
+     * Checks terminal state and the oldest queued or active delivery using monotonic time.
+     *
+     * @param maximumDelayMillis positive maximum outstanding event age
+     * @return whether the scope is open and outstanding work is within the deadline
+     * @throws IllegalArgumentException if the interval is not positive
+     */
+    @Override
+    public synchronized boolean isHealthy(long maximumDelayMillis) {
+        if (maximumDelayMillis <= 0) {
+            throw new IllegalArgumentException("Health event delay must be positive");
+        }
+        return !closed && !executor.isShuttingDown()
+                && (deliveries.isEmpty() || System.nanoTime() - deliveries.iterator().next().submittedNanos
+                < TimeUnit.MILLISECONDS.toNanos(maximumDelayMillis));
     }
 
     /**
@@ -585,14 +638,18 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
      *
      * @return the estimated admitted payload bytes
      */
-    public synchronized long getPendingBytes() { return pendingBytes; }
+    public synchronized long getPendingBytes() {
+        return pendingBytes;
+    }
 
     /**
      * Returns the retained payload admission budget.
      *
      * @return the maximum admitted payload bytes
      */
-    public long getQueueBytes() { return queueBytes; }
+    public long getQueueBytes() {
+        return queueBytes;
+    }
 
     /**
      * Subscribes to low-water transitions without polling or changing task ordering.
@@ -608,11 +665,19 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
         Objects.requireNonNull(listener, "listener");
         boolean ready;
         synchronized (this) {
-            if (!closed) drainListeners.add(listener);
+            if (!closed) {
+                drainListeners.add(listener);
+            }
             ready = belowLowWater() || closed;
         }
-        if (ready) listener.run();
-        return () -> { synchronized (NettyEventDispatcher.this) { drainListeners.remove(listener); } };
+        if (ready) {
+            listener.run();
+        }
+        return () -> {
+            synchronized (NettyEventDispatcher.this) {
+                drainListeners.remove(listener);
+            }
+        };
     }
 
     /**
@@ -631,12 +696,20 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
         List<Runnable> listeners = List.of();
         synchronized (this) {
             boolean ready = belowLowWater() || closed;
-            if (ready && !drainReady) listeners = List.copyOf(drainListeners);
+            if (ready && !drainReady) {
+                listeners = List.copyOf(drainListeners);
+            }
             drainReady = ready;
-            if (closed) drainListeners.clear();
+            if (closed) {
+                drainListeners.clear();
+            }
         }
         for (Runnable listener : listeners) {
-            try { listener.run(); } catch (RuntimeException failure) { LOG.warn("Drain listener failed", failure); }
+            try {
+                listener.run();
+            } catch (RuntimeException failure) {
+                LOG.warn("Drain listener failed", failure);
+            }
         }
     }
 
@@ -655,19 +728,25 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
     /**
      * Finds an approximate percentile using power-of-two microsecond buckets.
      *
-     * @param buckets the cumulative timing histogram
+     * @param buckets    the cumulative timing histogram
      * @param percentile the requested integer percentile
      * @return the bucket upper bound in microseconds, or zero without observations
      */
     private static long percentile(long[] buckets, int percentile) {
         long total = 0;
-        for (long count : buckets) total += count;
-        if (total == 0) return 0;
+        for (long count : buckets) {
+            total += count;
+        }
+        if (total == 0) {
+            return 0;
+        }
         long target = Math.max(1, total - total * (100 - percentile) / 100);
         long count = 0;
         for (int i = 0; i < buckets.length; i++) {
             count += buckets[i];
-            if (count >= target) return i >= 62 ? Long.MAX_VALUE : 1L << i;
+            if (count >= target) {
+                return i >= 62 ? Long.MAX_VALUE : 1L << i;
+            }
         }
         return 0;
     }
@@ -676,7 +755,7 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
      * Records elapsed time in a fixed-size microsecond histogram under the monitor.
      *
      * @param histogram the wait or execution histogram index
-     * @param nanos the nonnegative elapsed time
+     * @param nanos     the nonnegative elapsed time
      */
     private void recordTiming(int histogram, long nanos) {
         long micros = Math.max(1, TimeUnit.NANOSECONDS.toMicros(nanos));
@@ -765,12 +844,12 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
         /**
          * Captures one accepted task and its retained payload.
          *
-         * @param event   the event to deliver
-         * @param session the optional target session
-         * @param action  the optional queued action
-         * @param payload the retained native reference
+         * @param event      the event to deliver
+         * @param session    the optional target session
+         * @param action     the optional queued action
+         * @param payload    the retained native reference
          * @param completion the optional action completion
-         * @param bytes the captured payload charge
+         * @param bytes      the captured payload charge
          */
         private Delivery(Event event, Session session, Consumer<Event> action, Object payload,
                          CompletableFuture<Void> completion, long bytes) {
@@ -812,6 +891,7 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
                             try {
                                 registration.handler().onEvent(event);
                             } catch (Exception failure) {
+                                ServerMetrics.getInstance().recordError();
                                 LOG.error("Event handler failed for type {}", event.getType(), failure);
                             }
                         }
@@ -819,6 +899,7 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
                 }
             } catch (Throwable failure) {
                 outcome = failure;
+                ServerMetrics.getInstance().recordError();
                 LOG.error("Event action failed for type {}", event.getType(), failure);
             } finally {
                 try {
@@ -883,7 +964,9 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
                     deliveries.remove(this);
                     pendingBytes -= bytes;
                     if (admitted) {
-                        if (cancelled) cancelledEvents++;
+                        if (cancelled) {
+                            cancelledEvents++;
+                        }
                         else {
                             completedEvents++;
                             recordTiming(1, System.nanoTime() - startedNanos);

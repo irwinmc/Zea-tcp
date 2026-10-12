@@ -8,6 +8,7 @@ import com.akakata.event.EventResources;
 import com.akakata.event.Events;
 import com.akakata.handlers.codec.*;
 import com.akakata.metrics.FlowControlMetrics;
+import com.akakata.metrics.ServerMetrics;
 import com.akakata.util.NettyUtils;
 import io.netty.channel.*;
 import io.netty.handler.codec.MessageToMessageEncoder;
@@ -392,6 +393,9 @@ public class SocketMessageSender implements MessageSender {
             pendingPayloadBytes -= write.bytes;
         }
         FlowControlMetrics.PENDING_WRITES.decrement();
+        if (write.promise.isSuccess() && write.message instanceof com.akakata.event.NetworkEvent) {
+            ServerMetrics.getInstance().recordMessageSent();
+        }
         try {
             EventResources.releasePayload(write.payload);
             if (!write.forwarded) {

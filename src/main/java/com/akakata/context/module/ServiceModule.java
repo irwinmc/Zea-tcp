@@ -5,6 +5,7 @@ import com.akakata.communication.OutboundBudget;
 import com.akakata.communication.OutboundLimits;
 import com.akakata.context.ConfigurationManager;
 import com.akakata.context.ServerComponents;
+import com.akakata.lifecycle.ServerLifecycle;
 import com.akakata.security.CredentialsVerifier;
 import com.akakata.server.ConnectionAdmission;
 import com.akakata.server.HttpLimits;
@@ -32,6 +33,11 @@ public final class ServiceModule {
     private final ServerComponents components;
 
     /**
+     * Lifecycle shared with the owning context and health providers.
+     */
+    private final ServerLifecycle lifecycle;
+
+    /**
      * Creates default providers for a standalone Dagger component.
      */
     public ServiceModule() {
@@ -44,7 +50,29 @@ public final class ServiceModule {
      * @param components the selected application factories and services
      */
     public ServiceModule(ServerComponents components) {
+        this(components, new ServerLifecycle());
+    }
+
+    /**
+     * Selects core providers and their application's lifecycle signal.
+     *
+     * @param components immutable core provider choices
+     * @param lifecycle  lifecycle shared with the owner
+     */
+    public ServiceModule(ServerComponents components, ServerLifecycle lifecycle) {
         this.components = java.util.Objects.requireNonNull(components);
+        this.lifecycle = java.util.Objects.requireNonNull(lifecycle);
+    }
+
+    /**
+     * Exposes the lifecycle without depending on the context implementation.
+     *
+     * @return application lifecycle
+     */
+    @Provides
+    @Singleton
+    ServerLifecycle provideServerLifecycle() {
+        return lifecycle;
     }
 
     // ============================================================

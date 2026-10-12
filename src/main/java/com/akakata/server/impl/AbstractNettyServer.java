@@ -1,5 +1,6 @@
 package com.akakata.server.impl;
 
+import com.akakata.lifecycle.ShutdownSupport;
 import com.akakata.server.NettyConfig;
 import com.akakata.server.NettyServer;
 import io.netty.channel.Channel;
@@ -13,6 +14,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.InetSocketAddress;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Stores Netty configuration and closes channels in the shared server channel group on stop.
@@ -91,14 +93,15 @@ public abstract class AbstractNettyServer implements NettyServer {
         LOG.debug("In stopServer method of class: {}", this.getClass().getName());
 
         ChannelGroupFuture future = ALL_CHANNELS.close();
-        try {
-            future.await();
-        } catch (InterruptedException e) {
-            LOG.error("Exception occurred while waiting for channels to close: {}", e.getMessage(), e);
-            Thread.currentThread().interrupt();
-        } finally {
-            // EventLoopGroup 生命周期由 ServerContext / NetworkBootstrap 统一管理，此处不再关闭。
-        }
+        CompletableFuture<Void> completion = new CompletableFuture<>();
+        future.addListener(closed -> {
+            if (closed.isSuccess()) {
+                completion.complete(null);
+            } else {
+                completion.completeExceptionally(closed.cause());
+            }
+        });
+        ShutdownSupport.await(completion, ShutdownSupport.DEFAULT_TIMEOUT_MILLIS, "server channels");
     }
 
     /**

@@ -1,7 +1,8 @@
 # Event Loops, Dispatch and Lifecycle
 
-This guide describes Zea TCP Transport 0.8.3 with Netty 4.2.19.Final and Java 21,
-including application injection, security and resource policies.
+This guide describes Zea TCP Transport 0.8.4 with Netty 4.2.19.Final and Java 21,
+including application injection, security and resource policies. See
+[lifecycle](LIFECYCLE.md) for shutdown and completion contracts.
 See [configuration](CONFIGURATION.md) for consumed properties and wire formats.
 
 ## Resource Layout
@@ -57,8 +58,9 @@ Pipeline decoding, login initialization and HTTP routing still run on I/O thread
 Only submitted business events move to a business executor. Keep pipeline
 callbacks short and avoid blocking database or network calls there.
 
-`NetworkBootstrap.close()` requests shutdown of both I/O groups and waits for both
-termination futures. Invoke context or network shutdown from outside the I/O loops.
+`NetworkBootstrap.close()` requests shutdown of both I/O groups. Framework workers
+return without waiting; external callers use a bounded wait. `closeAsync()` exposes
+actual group termination independently of an expired waiting deadline.
 A standalone `NettyConfig` can allocate its own groups when none are supplied;
 its application must establish their shutdown ownership.
 
@@ -284,8 +286,8 @@ Avoid unrelated locks and long work while holding the session monitor.
 but its login caller may still hold the session monitor.
 
 Session closure snapshots resources under its monitor and cleans up outside it.
-External concurrent closers wait for the initiating cleanup. Reentrant callers and
-Netty dispatcher callbacks avoid joining a closer that could be waiting for their
+External concurrent closers use a bounded wait for the initiating cleanup. Reentrant
+callers and framework workers avoid joining a closer that could be waiting for their
 own callback. `DefaultPlayerSession.close()` also disconnects from its Game.
 
 `EventDispatchers.release()` recognizes the shared facade and borrowed shards,
@@ -296,7 +298,7 @@ privately owned dispatcher is closed completely.
 `AbstractGame.close()` marks the application Game closed, snapshots membership,
 closes players outside the Game monitor, clears membership and closes its own
 executor. It continues after individual session failures. External concurrent
-closers wait for cleanup; callback or reentrant callers avoid shutdown cycles.
+closers use a bounded wait for cleanup; worker or reentrant callers avoid shutdown cycles.
 New session creation and connection are rejected after closure starts.
 
 ## Payload Ownership
@@ -439,13 +441,17 @@ External callers wait for owned executor termination; closure inside any dispatc
 callback initiates cleanup without joining executors, avoiding self or cross-group
 shutdown cycles. An external owner can call `close()` afterward to await termination.
 
-Netty shutdown uses a zero quiet period and a five-second shutdown timeout. This
-is an executor shutdown setting, not a deadline that can interrupt a running
-application callback. A callback that never returns can prevent external closure
-from finishing. Applications must give blocking work its own cancellation policy.
+Netty shutdown uses a zero quiet period. Standalone external waits default to five
+seconds and throw `ShutdownTimeoutException` when unfinished. `closeAsync()` keeps
+actual termination observable; running callbacks retain payload references and byte
+credits until they exit. Waiting does not forcibly interrupt or stop an active callback.
 
-`ServerContext.close()` stops listeners, closes the Game and SessionService, stops
-metrics sampling, closes shared session executors and then shuts down network I/O.
+`ServerContext.closeAsync()` withdraws readiness and coordinates named cleanup
+stages outside lifecycle monitors. Stalled or failed actions do not prevent later
+cleanup requests. External `close()` waits within `server.shutdown.timeout.millis`;
+framework workers and reentrant context cleanup callbacks do not wait. See
+[lifecycle](LIFECYCLE.md) for the completion and failure contracts.
+
 The shared dispatcher and metrics singleton have terminal process-wide lifecycles;
 after complete shutdown, start a new JVM rather than trying to restart them.
 

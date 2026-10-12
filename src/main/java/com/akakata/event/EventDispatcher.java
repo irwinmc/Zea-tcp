@@ -114,10 +114,10 @@ public interface EventDispatcher {
      * implementations that do not supply targeted routing. Native payload ownership
      * remains with the caller; accepted deliveries retain their own references.
      *
-     * @param event the event to process
+     * @param event   the event to process
      * @param session the session associated with the operation
      * @return true if accepted, or false when the queue is full, the scope is closed
-     *         or the target session is closing
+     * or the target session is closing
      */
     default boolean fireEvent(Event event, Session session) {
         return fireEvent(event);
@@ -132,4 +132,17 @@ public interface EventDispatcher {
      * shared. An implementation may defer completion when called from an event callback.
      */
     void close();
+
+    /**
+     * Checks open state and the age of outstanding work without submitting an event.
+     *
+     * <p>Custom implementations must supply their availability policy. The default
+     * is unavailable because this interface cannot infer an implementation's state.
+     *
+     * @param maximumDelayMillis positive maximum age of outstanding work
+     * @return whether the dispatcher can currently serve application events
+     */
+    default boolean isHealthy(long maximumDelayMillis) {
+        return false;
+    }
 }

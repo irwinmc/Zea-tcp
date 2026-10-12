@@ -395,6 +395,15 @@ public class SessionService {
     }
 
     /**
+     * Reports whether this registry has stopped admitting sessions.
+     *
+     * @return whether closure has begun
+     */
+    public boolean isClosed() {
+        return closed;
+    }
+
+    /**
      * Stops periodic cleanup and closes every owned session before invalidating the cache.
      *
      * <p>Session cleanup runs outside the service monitor. Repeated calls have no effect

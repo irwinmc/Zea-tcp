@@ -8,10 +8,10 @@ Zea TCP Transport is a Java game-server foundation built on Netty. It provides T
 HTTP and WebSocket listeners, player sessions, asynchronous event dispatch, a
 credential-keyed session cache and HTTP monitoring endpoints.
 
-This documentation describes **0.8.3**, including ordered unicast, streaming JSON
-encoding and bounded socket backpressure. Dependency versions below come from
-[pom.xml](pom.xml). See the [0.8.3 changelog](CHANGELOG.md#083)
-for changes and migration requirements.
+This documentation describes **0.8.4**, including bounded shutdown, HTTP resource
+ownership, lifecycle-based readiness and transport instrumentation. Dependency
+versions below come from [pom.xml](pom.xml). See the
+[0.8.4 changelog](CHANGELOG.md#084) for changes and migration requirements.
 
 ## Features
 
@@ -49,7 +49,7 @@ reconnection and client connection pooling are not implemented.
 <dependency>
     <groupId>com.akakata</groupId>
     <artifactId>zea-tcp</artifactId>
-    <version>0.8.3</version>
+    <version>0.8.4</version>
 </dependency>
 ```
 
@@ -135,7 +135,7 @@ Other executable examples are `com.akakata.HttpOnlyServer` (HTTP port 18081),
 `com.akakata.AdvancedTestServer`. They live in
 [src/test/java/com/akakata](src/test/java/com/akakata).
 
-`mvn package` produces the library JAR `target/zea-tcp-0.8.3.jar`. It does not bundle
+`mvn package` produces the library JAR `target/zea-tcp-0.8.4.jar`. It does not bundle
 runtime dependencies or configure a `Main-Class`. The provided [run.sh](run.sh)
 expects an application-owned executable `server.jar` in the working directory;
 create that application artifact before using the script.
@@ -210,6 +210,10 @@ business.blocking.shutdown.millis=5000
 
 # Protocol Frame Limits
 protocol.maximum.frame.bytes=65535
+
+# Lifecycle and Health
+server.shutdown.timeout.millis=5000
+health.maximum.event.delay.millis=5000
 ```
 
 `reconnect.delay` is present in the resource but is currently unused. Queue sampling
@@ -476,7 +480,7 @@ Use the bundled Maven wrapper for reproducible repository builds.
 
 Open `target/reports/apidocs/index.html` for the framework API and
 `target/reports/testapidocs/index.html` for examples and regression-test helpers.
-The archive is `target/zea-tcp-0.8.3-javadoc.jar`. Compilation generates the Dagger
+The archive is `target/zea-tcp-0.8.4-javadoc.jar`. Compilation generates the Dagger
 component types needed by JavaDoc. Documentation uses English, UTF-8 and strict
 doclint checks; generated Dagger sources are excluded.
 
@@ -509,3 +513,5 @@ Core application assembly and secure defaults are covered in
 [Slow Business Operations](docs/SLOW_BUSINESS.md) when introducing database,
 remote-service or other blocking work; keep state updates on the original ordered
 Session/Game queues and handle late or out-of-order results explicitly.
+
+See [lifecycle and shutdown](docs/LIFECYCLE.md) for the current source cleanup contracts.

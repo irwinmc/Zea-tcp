@@ -7,6 +7,7 @@ import com.akakata.communication.OutboundLimits;
 import com.akakata.communication.impl.SocketMessageSender;
 import com.akakata.event.Event;
 import com.akakata.event.Events;
+import com.akakata.metrics.ServerMetrics;
 import com.akakata.protocols.Protocol;
 import com.akakata.server.impl.AbstractNettyServer;
 import com.akakata.service.LoginService;
@@ -254,6 +255,7 @@ public class LoginHandler extends SimpleChannelInboundHandler<Event> {
      */
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+        ServerMetrics.getInstance().recordError();
         LOG.error("Exception in LoginHandler", cause);
         ctx.close();
     }

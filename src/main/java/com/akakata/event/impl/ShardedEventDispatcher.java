@@ -5,18 +5,11 @@ import com.akakata.event.Event;
 import com.akakata.event.EventDispatcher;
 import com.akakata.event.EventHandler;
 import com.akakata.event.SessionEventHandler;
-import io.netty.util.concurrent.DefaultEventExecutorGroup;
-import io.netty.util.concurrent.DefaultThreadFactory;
-import io.netty.util.concurrent.EventExecutor;
-import io.netty.util.concurrent.RejectedExecutionHandlers;
-import io.netty.util.concurrent.SingleThreadEventExecutor;
+import com.akakata.lifecycle.AsyncCloseable;
+import com.akakata.lifecycle.ShutdownSupport;
+import io.netty.util.concurrent.*;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.IdentityHashMap;
-import java.util.List;
-import java.util.Objects;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -29,7 +22,7 @@ import java.util.concurrent.TimeUnit;
  *
  * @since 0.8.0
  */
-public class ShardedEventDispatcher implements EventDispatcher, AutoCloseable {
+public class ShardedEventDispatcher implements EventDispatcher, AsyncCloseable {
 
     /**
      * Owner of all shared business threads and bounded task queues.
@@ -68,7 +61,7 @@ public class ShardedEventDispatcher implements EventDispatcher, AutoCloseable {
     /**
      * Creates a lazily started business group with bounded pending tasks.
      *
-     * @param shardCount positive shard count, rounded up to a power of two
+     * @param shardCount    positive shard count, rounded up to a power of two
      * @param queueCapacity maximum pending tasks per executor, at least 16
      * @throws IllegalArgumentException if either value is outside its supported range
      */
@@ -79,29 +72,31 @@ public class ShardedEventDispatcher implements EventDispatcher, AutoCloseable {
     /**
      * Creates fixed session executors with independent count and byte budgets.
      *
-     * @param shardCount positive shard count rounded up to a power of two
+     * @param shardCount    positive shard count rounded up to a power of two
      * @param queueCapacity maximum pending tasks per executor, at least 16
-     * @param queueBytes positive retained payload budget per executor
+     * @param queueBytes    positive retained payload budget per executor
      * @throws IllegalArgumentException if a budget is invalid
      */
     public ShardedEventDispatcher(int shardCount, int queueCapacity, long queueBytes) {
-        if (queueBytes <= 0) throw new IllegalArgumentException("Positive payload budget required");
+        if (queueBytes <= 0) {
+            throw new IllegalArgumentException("Positive payload budget required");
+        }
         if (shardCount <= 0 || shardCount > (1 << 30) || queueCapacity < 16) {
             throw new IllegalArgumentException("Positive shard count and queue capacity of at least 16 required");
         }
         int count = Integer.bitCount(shardCount) == 1 ? shardCount : Integer.highestOneBit(shardCount - 1) << 1;
         this.mask = count - 1;
         this.executorGroup = new DefaultEventExecutorGroup(count,
-                new DefaultThreadFactory("zea-business", false), queueCapacity, RejectedExecutionHandlers.reject());
+                ShutdownSupport.workerFactory(new DefaultThreadFactory("zea-business", false)), queueCapacity, RejectedExecutionHandlers.reject());
         this.shards = new NettyEventDispatcher[count];
         for (int i = 0; i < count; i++) {
             shards[i] = new NettyEventDispatcher(executorGroup.next(), queueCapacity, queueBytes);
         }
         executorGroup.terminationFuture().addListener(future -> {
             if (future.isSuccess()) {
-                closeCompletion.complete(null);
+                ShutdownSupport.complete(closeCompletion, null);
             } else {
-                closeCompletion.completeExceptionally(future.cause());
+                ShutdownSupport.complete(closeCompletion, future.cause());
             }
         });
     }
@@ -196,7 +191,7 @@ public class ShardedEventDispatcher implements EventDispatcher, AutoCloseable {
     /**
      * Attempts publication to the target session's stable executor.
      *
-     * @param event the event to publish
+     * @param event   the event to publish
      * @param session the target session
      * @return whether the target shard accepted the event
      */
@@ -245,6 +240,19 @@ public class ShardedEventDispatcher implements EventDispatcher, AutoCloseable {
      */
     @Override
     public void close() {
+        closeAsync();
+        if (!NettyEventDispatcher.isDispatchThread() && !inEventLoop()) {
+            ShutdownSupport.await(closeCompletion, ShutdownSupport.DEFAULT_TIMEOUT_MILLIS, "session dispatcher group");
+        }
+    }
+
+    /**
+     * Stops every shard before requesting owned executor termination.
+     *
+     * @return an independent observation of actual executor termination
+     */
+    @Override
+    public CompletableFuture<Void> closeAsync() {
         List<NettyEventDispatcher> scopes = null;
         synchronized (this) {
             if (!closed) {
@@ -261,9 +269,30 @@ public class ShardedEventDispatcher implements EventDispatcher, AutoCloseable {
                 executorGroup.shutdownGracefully(0, 5, TimeUnit.SECONDS);
             }
         }
-        if (!NettyEventDispatcher.isDispatchThread() && !inEventLoop()) {
-            closeCompletion.join();
+        return closeCompletion.copy();
+    }
+
+    /**
+     * Checks availability of every session shard without adding probe traffic.
+     *
+     * @param maximumDelayMillis maximum queued or active event age
+     * @return whether every shard is healthy
+     * @throws IllegalArgumentException if the delay is not positive
+     */
+    @Override
+    public synchronized boolean isHealthy(long maximumDelayMillis) {
+        if (maximumDelayMillis <= 0) {
+            throw new IllegalArgumentException("Health event delay must be positive");
         }
+        if (closed) {
+            return false;
+        }
+        for (NettyEventDispatcher shard : shards) {
+            if (!shard.isHealthy(maximumDelayMillis)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

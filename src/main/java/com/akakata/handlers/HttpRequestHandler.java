@@ -1,5 +1,7 @@
 package com.akakata.handlers;
 
+import com.akakata.metrics.ServerMetrics;
+
 import com.akakata.server.http.*;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFutureListener;
@@ -93,12 +95,12 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
     /**
      * Creates a http request handler instance with the supplied dependencies.
      *
-     * @param staticFileHandler the static file handler
-     * @param indexPageHandler the index page handler
-     * @param apiHandler the api handler
-     * @param rpcHandler the rpc handler
+     * @param staticFileHandler  the static file handler
+     * @param indexPageHandler   the index page handler
+     * @param apiHandler         the api handler
+     * @param rpcHandler         the rpc handler
      * @param healthCheckHandler the health check handler
-     * @param metricsHandler the metrics handler
+     * @param metricsHandler     the metrics handler
      */
     @Inject
     public HttpRequestHandler(StaticFileHandler staticFileHandler,
@@ -166,6 +168,7 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
      */
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+        ServerMetrics.getInstance().recordError();
         LOG.warn("Channel {} has thrown exception {}.", ctx.channel(), cause);
         // e.getCause().printStackTrace();
         ctx.channel().close();
@@ -174,7 +177,7 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
     /**
      * Writes the response for a CORS preflight request.
      *
-     * @param ctx channel handler context
+     * @param ctx     channel handler context
      * @param request HTTP OPTIONS request
      */
     private void handleOptionsRequest(ChannelHandlerContext ctx, FullHttpRequest request) {
@@ -234,7 +237,9 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
      * @return the base path segment
      */
     private static String baseSegment(String path) {
-        if (ROOT.equals(path)) return ROOT;
+        if (ROOT.equals(path)) {
+            return ROOT;
+        }
         int idx = path.indexOf('/', 1);
         return (idx < 0) ? path : path.substring(0, idx);
     }

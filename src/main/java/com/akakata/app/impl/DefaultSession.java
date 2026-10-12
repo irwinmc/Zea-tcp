@@ -7,15 +7,12 @@ import com.akakata.event.EventDispatcher;
 import com.akakata.event.EventHandler;
 import com.akakata.event.impl.EventDispatchers;
 import com.akakata.event.impl.NettyEventDispatcher;
+import com.akakata.lifecycle.ShutdownSupport;
 import com.akakata.service.IdGeneratorService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -150,7 +147,7 @@ public class DefaultSession implements Session {
     /**
      * Stores an attribute value under the supplied key.
      *
-     * @param key the attribute or cache key
+     * @param key   the attribute or cache key
      * @param value the value to store or encode
      */
     @Override
@@ -330,7 +327,10 @@ public class DefaultSession implements Session {
      * <p>External concurrent callers wait for the initiating cleanup. Reentrant calls
      * from the closing thread or a dispatcher callback return immediately to avoid
      * waiting on the callback being closed. Close listeners run even if dispatcher or sender
-     * cleanup throws; listener failures are logged individually.
+     * cleanup throws; listener failures are logged individually. Close listeners run
+     * inline with nonblocking reentrant framework shutdown semantics.
+     *
+     * @throws com.akakata.lifecycle.ShutdownTimeoutException if an external concurrent wait expires
      */
     @Override
     public void close() {
@@ -358,7 +358,7 @@ public class DefaultSession implements Session {
         if (alreadyClosing) {
             // Reentrant close callbacks must not wait for themselves.
             if (owner != Thread.currentThread() && owner != null && !NettyEventDispatcher.isDispatchThread()) {
-                closeCompletion.join();
+                ShutdownSupport.await(closeCompletion, ShutdownSupport.DEFAULT_TIMEOUT_MILLIS, "session cleanup");
             }
             return;
         }
@@ -376,7 +376,7 @@ public class DefaultSession implements Session {
             try {
                 for (Runnable listener : listeners) {
                     try {
-                        listener.run();
+                        ShutdownSupport.runNonBlocking(listener);
                     } catch (Exception e) {
                         LOG.error("Session close listener failed for session {}", id, e);
                     }
@@ -392,7 +392,8 @@ public class DefaultSession implements Session {
      * Registers a callback to run once when the session closes.
      *
      * <p>A callback added after closure has started runs immediately on the registering
-     * thread. Registered callbacks execute outside the session monitor.
+     * thread. Registered callbacks execute outside the session monitor; reentrant
+     * framework shutdown requests from callbacks never wait for owned workers.
      *
      * @param listener the close callback
      * @throws NullPointerException if the listener is null
@@ -404,7 +405,7 @@ public class DefaultSession implements Session {
                 return;
             }
         }
-        listener.run();
+        ShutdownSupport.runNonBlocking(listener);
     }
 
     /**

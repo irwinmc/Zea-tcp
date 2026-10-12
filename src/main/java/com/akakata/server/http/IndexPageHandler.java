@@ -42,7 +42,12 @@ public class IndexPageHandler extends AbstractHttpHandler {
         }
 
         // Send the demo page and favicon.ico
-        sendHttpResponse(ctx, getContent());
+        ByteBuf content = getContent();
+        try {
+            sendHttpResponse(ctx, content);
+        } finally {
+            content.release();
+        }
     }
 
     /**

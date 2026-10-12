@@ -163,6 +163,7 @@ class ServerContextShutdownTest {
         public static void main(String[] args) throws Exception {
             Scenario scenario = Scenario.valueOf(args[0]);
             AtomicBoolean injectedGameClosed = new AtomicBoolean();
+            AtomicBoolean gameCloseAttempted = new AtomicBoolean();
             java.util.concurrent.atomic.AtomicInteger gameCreations = new java.util.concurrent.atomic.AtomicInteger();
             java.util.concurrent.atomic.AtomicInteger loginCreations = new java.util.concurrent.atomic.AtomicInteger();
             com.akakata.security.Credentials identity = new SimpleCredentials();
@@ -175,6 +176,17 @@ class ServerContextShutdownTest {
                 }
             };
             ServerComponents.Builder choices = ServerComponents.builder();
+            if (scenario == Scenario.GAME_CLOSE_FAILURE) {
+                choices.gameFactory(configuration -> new com.akakata.app.impl.DefaultGame(16, 1024) {
+                    @Override
+                    public void close() {
+                        super.close();
+                        if (gameCloseAttempted.compareAndSet(false, true)) {
+                            throw new IllegalStateException("Injected game shutdown failure");
+                        }
+                    }
+                });
+            }
             if (scenario == Scenario.CUSTOM_COMPONENTS || scenario == Scenario.FACTORY_FAILURE) {
                 choices.credentialsVerifier(verifier).securityService(tokens).gameFactory(configuration -> {
                     gameCreations.incrementAndGet();
@@ -320,23 +332,6 @@ class ServerContextShutdownTest {
                     pending.setSender(pendingSender);
                     sessions.putSession(new SimpleCredentials(), pending);
 
-                    AtomicBoolean gameCloseAttempted = new AtomicBoolean();
-                    if (scenario == Scenario.GAME_CLOSE_FAILURE) {
-                        Game ownedGame = game;
-                        Game failingGame = (Game) Proxy.newProxyInstance(Game.class.getClassLoader(),
-                                new Class<?>[]{Game.class}, (proxy, method, arguments) -> {
-                                    if (method.getName().equals("close")) {
-                                        gameCloseAttempted.set(true);
-                                        ownedGame.close();
-                                        throw new IllegalStateException("Injected game shutdown failure");
-                                    }
-                                    return method.invoke(ownedGame, arguments);
-                                });
-                        Field gameField = ServerContext.class.getDeclaredField("game");
-                        gameField.setAccessible(true);
-                        gameField.set(context, failingGame);
-                    }
-
                     context.close();
                     context.close();
 
@@ -351,6 +346,7 @@ class ServerContextShutdownTest {
                     assertThrows(IllegalStateException.class, context::initialize);
                     if (scenario == Scenario.GAME_CLOSE_FAILURE) {
                         assertTrue(gameCloseAttempted.get());
+                        assertTrue(context.closeAsync().isCompletedExceptionally());
                     }
                 }
 

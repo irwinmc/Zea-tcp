@@ -2,6 +2,7 @@ package com.akakata.communication.impl;
 
 import com.akakata.communication.OutboundBudget;
 import com.akakata.communication.OutboundLimits;
+import com.akakata.handlers.ConnectionScopedHandler;
 import com.akakata.metrics.FlowControlMetrics;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufHolder;
@@ -16,7 +17,7 @@ import java.util.concurrent.RejectedExecutionException;
  * Limits encoded bytes on the transport side of all application encoders.
  * All accounting runs on the channel event loop. No secondary message queue is created.
  */
-final class OutboundBufferLimiter extends ChannelOutboundHandlerAdapter {
+final class OutboundBufferLimiter extends ChannelOutboundHandlerAdapter implements ConnectionScopedHandler {
 
     /**
      * Maximum bytes held by writes whose promises have not completed.

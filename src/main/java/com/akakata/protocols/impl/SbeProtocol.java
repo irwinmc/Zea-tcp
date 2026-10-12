@@ -1,9 +1,11 @@
 package com.akakata.protocols.impl;
 
 import com.akakata.app.PlayerSession;
+import com.akakata.handlers.ApplicationMetricsHandler;
 import com.akakata.handlers.DefaultToServerHandler;
 import com.akakata.handlers.codec.SbeEventDecoder;
 import com.akakata.handlers.codec.SbeEventEncoder;
+import com.akakata.metrics.ServerMetrics;
 import com.akakata.protocols.AbstractNettyProtocol;
 import com.akakata.util.NettyUtils;
 import io.netty.channel.ChannelPipeline;
@@ -72,6 +74,7 @@ public class SbeProtocol extends AbstractNettyProtocol {
         ChannelPipeline pipeline = NettyUtils.getPipeLineOfConnection(playerSession);
         pipeline.addLast("lengthDecoder", createLengthBasedFrameDecoder(pipeline));
         pipeline.addLast("sbeDecoder", sbeEventDecoder);
+        pipeline.addLast("applicationMetrics", new ApplicationMetricsHandler(ServerMetrics.getInstance()));
         pipeline.addLast("eventHandler", new DefaultToServerHandler(playerSession));
         pipeline.addLast("lengthFieldPrepender", lengthFieldPrepender);
         pipeline.addLast("sbeEncoder", sbeEventEncoder);

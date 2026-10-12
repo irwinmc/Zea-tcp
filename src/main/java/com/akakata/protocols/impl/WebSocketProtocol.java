@@ -2,9 +2,11 @@ package com.akakata.protocols.impl;
 
 import com.akakata.app.PlayerSession;
 import com.akakata.context.AppContext;
+import com.akakata.handlers.ApplicationMetricsHandler;
 import com.akakata.handlers.DefaultToServerHandler;
 import com.akakata.handlers.codec.WebSocketEventDecoder;
 import com.akakata.handlers.codec.WebSocketEventEncoder;
+import com.akakata.metrics.ServerMetrics;
 import com.akakata.protocols.AbstractNettyProtocol;
 import com.akakata.util.NettyUtils;
 import io.netty.channel.ChannelPipeline;
@@ -49,7 +51,7 @@ public class WebSocketProtocol extends AbstractNettyProtocol {
      */
     @Inject
     public WebSocketProtocol(WebSocketEventDecoder webSocketEventDecoder,
-                            WebSocketEventEncoder webSocketEventEncoder) {
+                             WebSocketEventEncoder webSocketEventEncoder) {
         super("WEB_SOCKET_PROTOCOL");
         this.webSocketEventDecoder = webSocketEventDecoder;
         this.webSocketEventEncoder = webSocketEventEncoder;
@@ -69,6 +71,7 @@ public class WebSocketProtocol extends AbstractNettyProtocol {
 
         // Add more handler
         pipeline.addLast("webSocketEventDecoder", webSocketEventDecoder);
+        pipeline.addLast("applicationMetrics", new ApplicationMetricsHandler(ServerMetrics.getInstance()));
         pipeline.addLast("eventHandler", new DefaultToServerHandler(playerSession));
         pipeline.addLast("webSocketEventEncoder", webSocketEventEncoder);
     }

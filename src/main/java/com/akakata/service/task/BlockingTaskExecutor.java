@@ -1,5 +1,7 @@
 package com.akakata.service.task;
 
+import com.akakata.lifecycle.ShutdownSupport;
+
 import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
@@ -101,7 +103,7 @@ public final class BlockingTaskExecutor implements AutoCloseable {
         this.shutdownMillis = shutdownMillis;
         AtomicInteger sequence = new AtomicInteger();
         executor = new ThreadPoolExecutor(threads, threads, 0, TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(queueCapacity), runnable -> {
+                new ArrayBlockingQueue<>(queueCapacity), ShutdownSupport.workerFactory(runnable -> {
             Thread thread = new Thread(() -> {
                 WORKER_OWNER.set(this);
                 try {
@@ -112,7 +114,7 @@ public final class BlockingTaskExecutor implements AutoCloseable {
             }, "zea-blocking-" + sequence.incrementAndGet());
             thread.setDaemon(true);
             return thread;
-        }, new ThreadPoolExecutor.AbortPolicy());
+        }), new ThreadPoolExecutor.AbortPolicy());
     }
 
     /**
@@ -170,6 +172,15 @@ public final class BlockingTaskExecutor implements AutoCloseable {
     }
 
     /**
+     * Reports admission availability independently of worker termination.
+     *
+     * @return whether closure has been requested
+     */
+    public synchronized boolean isClosed() {
+        return closed;
+    }
+
+    /**
      * Reports whether every owned worker has stopped after closure.
      *
      * @return true only when the worker pool has terminated
@@ -208,7 +219,7 @@ public final class BlockingTaskExecutor implements AutoCloseable {
         for (Task<?> task : outstanding) {
             task.result.cancel(true);
         }
-        if (WORKER_OWNER.get() == this) {
+        if (WORKER_OWNER.get() == this || ShutdownSupport.isManagedWorker()) {
             return;
         }
         try {

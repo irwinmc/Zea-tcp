@@ -116,7 +116,7 @@ public class MetricsHandler extends AbstractHttpHandler {
             system.put("memory_max_mb", metrics.getMaxMemoryMB());
             system.put("memory_usage_percent", (int) (metrics.getUsedMemoryMB() * 100.0 / metrics.getMaxMemoryMB()));
             system.put("thread_count", metrics.getThreadCount());
-            system.put("cpu_load", Double.parseDouble(String.format("%.2f", metrics.getCpuLoad())));
+            system.put("cpu_load", Double.parseDouble(String.format(java.util.Locale.ROOT, "%.2f", metrics.getCpuLoad())));
             response.put("system", system);
 
             // Error metrics
@@ -194,7 +194,7 @@ public class MetricsHandler extends AbstractHttpHandler {
             response.put("memory_max_mb", metrics.getMaxMemoryMB());
             response.put("memory_usage_percent", (int) (metrics.getUsedMemoryMB() * 100.0 / metrics.getMaxMemoryMB()));
             response.put("thread_count", metrics.getThreadCount());
-            response.put("cpu_load", Double.parseDouble(String.format("%.2f", metrics.getCpuLoad())));
+            response.put("cpu_load", Double.parseDouble(String.format(java.util.Locale.ROOT, "%.2f", metrics.getCpuLoad())));
             response.put("uptime_seconds", metrics.getUptimeSeconds());
             response.put("timestamp", System.currentTimeMillis());
 
@@ -266,7 +266,7 @@ public class MetricsHandler extends AbstractHttpHandler {
         addPrometheusMetric(prom, "threads_current", "gauge", "Current thread count", metrics.getThreadCount());
 
         // CPU
-        addPrometheusMetric(prom, "cpu_load", "gauge", "System CPU load", Double.parseDouble(String.format("%.2f", metrics.getCpuLoad())));
+        addPrometheusMetric(prom, "cpu_load", "gauge", "System CPU load", Double.parseDouble(String.format(java.util.Locale.ROOT, "%.2f", metrics.getCpuLoad())));
 
         // Errors
         addPrometheusMetric(prom, "errors_total", "counter", "Total errors", metrics.getTotalErrors());

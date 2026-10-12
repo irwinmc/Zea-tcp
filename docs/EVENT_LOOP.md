@@ -1,6 +1,7 @@
 # Event Loops, Dispatch and Lifecycle
 
-This guide describes Zea TCP Transport 0.8.1 with Netty 4.2.19.Final and Java 21.
+This guide describes Zea TCP Transport 0.8.2 with Netty 4.2.19.Final and Java 21,
+including application injection, security and resource policies.
 See [configuration](CONFIGURATION.md) for consumed properties and wire formats.
 
 ## Resource Layout
@@ -16,6 +17,10 @@ ServerContext
   SessionService
     Caffeine registry and owned sessions
     periodic cache-cleanup scheduler
+  BlockingTaskExecutor
+    bounded workers / queued operations / declared bytes
+  OutboundBudget
+    aggregate socket source estimates and encoded reservations
   EventDispatcherMetrics
     daemon platform-thread scheduler
 
@@ -34,7 +39,8 @@ input without choosing recipients; register application handlers through
 The Game owns its single business executor. Sessions use separate shared business
 executors, so a Game callback does not occupy a session shard. Business executors
 and network I/O groups are also separate. Their platform threads start lazily and
-are not daemon threads; owners must close them.
+are not daemon threads; owners must close them. The separate bounded blocking
+workers are daemon threads and use their own bounded shutdown policy.
 
 ## Network I/O Groups
 
@@ -142,8 +148,10 @@ caller threads; creating a Game does not move those methods onto its executor.
 Applications should submit shared state updates explicitly rather than assuming
 all callbacks already run on the Game thread.
 
-Callbacks must return promptly. Offload blocking work, retain any native payload
-needed by that work, and submit its result back to the owning queue. Asynchronous
+Callbacks must return promptly. Use the context-owned `BlockingTaskExecutor` for
+blocking operations, copy required native input into detached data and post the
+result through the original Session/Game event API. The helper bounds worker,
+task and byte admission; see [slow business operations](SLOW_BUSINESS.md). Asynchronous
 work started by a callback is outside the queue's serial guarantee until its
 completion is posted back. Results can complete in a different order from their
 requests; sequence dependent work explicitly. There is no automatic callback
@@ -214,7 +222,13 @@ custom positive pause duration; there is no default properties key for that dura
 on the Channel event loop in FIFO batches of at most 64, flushing once per batch.
 Submitting from an I/O callback cannot overtake earlier admitted writes. The transport-side buffer limiter
 also caps encoded pending bytes using `socket.maximum.pending.bytes`, defaulting
-to 1,048,576 bytes. Channel write-buffer water marks remain an additional limit.
+to 1,048,576 bytes. `socket.maximum.pending.payload.bytes` separately bounds
+estimated retained sources before encoding, defaulting to 1 MiB. The context-wide
+`socket.total.pending.bytes` allowance defaults to 256 MiB and charges both sources
+and encoded buffers while both are retained. Shared broadcast sources are charged
+per recipient as logical pressure. Login, WebSocket upgrade and HTTP response
+pipelines also enforce encoded admission. Channel write-buffer water marks remain
+an additional limit.
 No retry queue is created. A budget violation, unwritable write or transport-write
 failure completes the write exceptionally and closes the connection.
 
@@ -223,10 +237,17 @@ while an encoder still uses it. Event sources are independently retained until
 completion. Raw Netty messages transfer ownership even when admission rejects
 them; rejected Event sources remain owned by their caller. Channel closure fails
 queued futures and releases their captured references. `pendingWrites()` exposes
-the admitted write count. `/metrics/flow-control` and Prometheus additionally
+the admitted write count and `pendingPayloadBytes()` exposes retained source
+estimates. `/metrics/flow-control` and Prometheus additionally
 export aggregate socket pending writes/bytes, pause/timeout/rejection counters, and
 live Session/Game snapshots. Timing percentiles are power-of-two microsecond bucket
 upper bounds. The network load driver reports exact observed latency percentiles.
+
+All listeners share `socket.maximum.connections`; HTTP has a separate
+`http.maximum.connections` sublimit. Its configured aggregation limit and absolute
+request deadline cover incomplete bodies, and read inactivity is bounded separately.
+HTTP never uses the game login deadline. Repeated channel activation cannot reserve
+another connection slot or extend the original authentication/request deadline.
 
 ## Session and Application Lifecycle
 
@@ -275,7 +296,8 @@ reference and retains an additional reference for each accepted delivery.
 | Rejection, cancellation or queued shutdown | Release the abandoned delivery's retained reference |
 | Handler or queued action | Borrow the payload until the synchronous callback returns |
 | Running callback during close | Keep its retained reference until the callback finishes |
-| Asynchronous work started by a handler | Retain and release an additional reference explicitly |
+| Asynchronous work started by a handler | Prefer detached copies; independently managed native work requires explicit retention and release |
+| BlockingTaskExecutor | Caller supplies detached inputs and a conservative byte estimate; no automatic native ownership |
 | `DefaultToServerHandler` | Release the inbound native owner after session submission |
 | `SocketMessageSender` sending an event | Retain the native source until write completion or failure |
 | `MessageBufferEventEncoder` | Copy readable bytes without consuming the borrowed source reference |
@@ -424,3 +446,10 @@ local diagnostic run, not a server capacity or tail-latency guarantee.
 - [AbstractGame](../src/main/java/com/akakata/app/impl/AbstractGame.java)
 - [DefaultSession](../src/main/java/com/akakata/app/impl/DefaultSession.java)
 - [SessionService](../src/main/java/com/akakata/service/SessionService.java)
+
+Context shutdown stops result producers before closing Session/Game targets.
+The blocking pool cancels queued futures and requests interruption of running work;
+its bounded wait does not free resources still used by an uncooperative operation.
+Default Game callback closure still waits for running ordered callbacks to finish.
+Keep those callbacks short; safely interrupting arbitrary state transitions is not
+provided. See [core ownership](CORE_COMPONENTS.md) and [slow work](SLOW_BUSINESS.md).

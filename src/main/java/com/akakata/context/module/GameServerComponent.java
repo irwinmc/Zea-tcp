@@ -5,6 +5,11 @@ import com.akakata.context.ConfigurationManager;
 import com.akakata.context.NetworkBootstrap;
 import com.akakata.server.ServerManager;
 import com.akakata.service.SessionService;
+import com.akakata.service.LoginService;
+import com.akakata.service.SecurityService;
+import com.akakata.security.CredentialsVerifier;
+import com.akakata.communication.OutboundBudget;
+import com.akakata.service.task.BlockingTaskExecutor;
 import dagger.BindsInstance;
 import dagger.Component;
 import javax.inject.Singleton;
@@ -42,10 +47,53 @@ public interface GameServerComponent {
     SessionService sessionService();
 
     /**
+     * Returns the selected credential verifier.
+     *
+     * @return the singleton authentication implementation
+     */
+    CredentialsVerifier credentialsVerifier();
+
+    /**
+     * Returns the selected token service.
+     *
+     * @return the singleton token implementation
+     */
+    SecurityService securityService();
+
+    /**
+     * Returns the selected authentication coordinator.
+     *
+     * @return the singleton login service
+     */
+    LoginService loginService();
+
+    /**
+     * Returns the aggregate write reservation owner.
+     *
+     * @return the context's outbound budget
+     */
+    OutboundBudget outboundBudget();
+
+    /**
+     * Returns the owned blocking-operation pool.
+     *
+     * @return the bounded task executor
+     */
+    BlockingTaskExecutor blockingTaskExecutor();
+
+    /**
      * Binds configuration and network resources before creating the application component.
      */
     @Component.Builder
     interface Builder {
+
+        /**
+         * Selects application provider replacements before building the graph.
+         *
+         * @param module the configured core providers
+         * @return this builder
+         */
+        Builder serviceModule(ServiceModule module);
 
         /**
          * Binds the configuration instance used by the component.

@@ -1,6 +1,9 @@
 package com.akakata.server.initializer;
 
 import com.akakata.context.AppContext;
+import com.akakata.communication.OutboundBudget;
+import com.akakata.communication.OutboundLimits;
+import com.akakata.communication.impl.SocketMessageSender;
 import com.akakata.handlers.TransportLifecycleHandler;
 import com.akakata.handlers.WebSocketLoginHandler;
 import com.akakata.server.ConnectionAdmission;
@@ -38,6 +41,16 @@ public class WebSocketServerChannelInitializer extends ChannelInitializer<Socket
     private final ConnectionAdmission admission;
 
     /**
+     * Per-channel encoded write allowance.
+     */
+    private final OutboundLimits outboundLimits;
+
+    /**
+     * Shared aggregate write owner, including upgrade responses.
+     */
+    private final OutboundBudget budget;
+
+    /**
      * Creates a web socket server channel initializer instance with the supplied dependencies.
      *
      * @param webSocketLoginHandler the web socket login handler
@@ -55,8 +68,23 @@ public class WebSocketServerChannelInitializer extends ChannelInitializer<Socket
      */
     public WebSocketServerChannelInitializer(WebSocketLoginHandler webSocketLoginHandler,
                                              ConnectionAdmission admission) {
+        this(webSocketLoginHandler, admission, OutboundLimits.DEFAULT, OutboundBudget.DEFAULT);
+    }
+
+    /**
+     * Creates upgrade and login handling using the context's shared resource budgets.
+     *
+     * @param webSocketLoginHandler the authentication handler
+     * @param admission the shared connection owner
+     * @param outboundLimits the per-channel write allowance
+     * @param budget the aggregate reservation owner
+     */
+    public WebSocketServerChannelInitializer(WebSocketLoginHandler webSocketLoginHandler,
+                                             ConnectionAdmission admission, OutboundLimits outboundLimits, OutboundBudget budget) {
         this.admission = admission;
         this.webSocketLoginHandler = webSocketLoginHandler;
+        this.outboundLimits = outboundLimits;
+        this.budget = budget;
     }
 
     /**
@@ -65,7 +93,7 @@ public class WebSocketServerChannelInitializer extends ChannelInitializer<Socket
     @Override
     public void initChannel(SocketChannel ch) throws Exception {
         ChannelPipeline pipeline = ch.pipeline();
-
+        SocketMessageSender.installOutboundBudget(pipeline, outboundLimits, budget);
         TransportLifecycleHandler.install(pipeline, admission);
         pipeline.addLast(new HttpServerCodec());
         pipeline.addLast(new HttpObjectAggregator(65536));

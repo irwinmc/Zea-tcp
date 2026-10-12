@@ -2,14 +2,20 @@ package com.akakata.server;
 
 import com.akakata.metrics.FlowControlMetrics;
 import io.netty.channel.Channel;
+import io.netty.util.AttributeKey;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Shares an atomic socket budget across TCP and WebSocket listeners in one context.
+ * Shares an atomic socket budget across TCP, HTTP and WebSocket listeners in one context.
  * Each admitted socket returns its slot exactly once when its close future completes.
  */
 public final class ConnectionAdmission {
+
+    /**
+     * Marks the connection owner to prevent duplicate activation from acquiring extra slots.
+     */
+    private static final AttributeKey<ConnectionAdmission> OWNER = AttributeKey.valueOf("zeaConnectionAdmission");
 
     /**
      * Configured lifetime and admission policy.
@@ -32,18 +38,32 @@ public final class ConnectionAdmission {
 
     /**
      * Claims a socket slot and attaches close-future cleanup atomically.
+     * Repeating admission for the same active channel and owner does not claim another slot.
      *
      * @param channel a newly active socket
      * @return true if admitted; a rejected caller must close the socket
      */
-    public boolean admit(Channel channel) {
+    public synchronized boolean admit(Channel channel) {
+        if (!channel.isActive()) {
+            return false;
+        }
+        ConnectionAdmission owner = channel.attr(OWNER).get();
+        if (owner == this) {
+            return true;
+        }
+        if (owner != null || !channel.attr(OWNER).compareAndSet(null, this)) {
+            return false;
+        }
         while (true) {
             int count = active.get();
             if (count >= limits.maximumConnections()) {
                 FlowControlMetrics.CONNECTION_REJECTIONS.increment();
+                channel.attr(OWNER).compareAndSet(this, null);
                 return false;
             }
-            if (active.compareAndSet(count, count + 1)) break;
+            if (active.compareAndSet(count, count + 1)) {
+                break;
+            }
         }
         FlowControlMetrics.ACTIVE_CONNECTIONS.increment();
         channel.closeFuture().addListener(ignored -> {

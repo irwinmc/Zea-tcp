@@ -1,7 +1,7 @@
 package com.akakata.server;
 
 /**
- * Defines shared TCP/WebSocket connection admission and input lifetime limits.
+ * Defines admission shared by all listeners and TCP/WebSocket input lifetime limits.
  *
  * @param maximumConnections maximum accepted sockets including unauthenticated clients
  * @param loginTimeoutMillis positive deadline covering connection, upgrade and authentication
@@ -23,7 +23,8 @@ public record TransportLimits(int maximumConnections, int loginTimeoutMillis,
      */
     public TransportLimits {
         if (maximumConnections <= 0 || loginTimeoutMillis <= 0 || readIdleMillis < 0
-                || maximumFrameBytes < 8 || maximumFrameBytes > 65_535)
+                || maximumFrameBytes < 8 || maximumFrameBytes > 65_535) {
             throw new IllegalArgumentException("Invalid transport limits");
+        }
     }
 }

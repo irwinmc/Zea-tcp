@@ -8,8 +8,10 @@ Zea TCP Transport is a Java game-server foundation built on Netty. It provides T
 HTTP and WebSocket listeners, player sessions, asynchronous event dispatch, a
 credential-keyed session cache and HTTP monitoring endpoints.
 
-This documentation describes version **0.8.1** and the implementation in this
-checkout. Dependency versions below come from [pom.xml](pom.xml).
+This documentation describes **0.8.2**, including application component injection,
+secure authentication defaults and bounded resource management. Dependency versions
+below come from [pom.xml](pom.xml). See the [0.8.2 release notes](docs/RELEASE_NOTES_0.8.2.md)
+for changes and migration requirements.
 
 ## Features
 
@@ -20,18 +22,22 @@ checkout. Dependency versions below come from [pom.xml](pom.xml).
 - Session-targeted delivery that isolates player handlers on shared shards.
 - Explicit unicast, selected-recipient sends and broadcasts with admission reports.
 - Business task/byte budgets, bounded batched socket writes and event-driven read recovery.
-- Login deadlines, read-idle expiry and shared TCP/WebSocket socket admission.
+- Login deadlines, read-idle expiry and shared TCP/WebSocket/HTTP socket admission.
 - Shared broadcast encoding and live Session/Game flow metrics with timing percentiles.
 - Configurable session admission that preserves existing players when full.
 - Coordinated session, game, cache, dispatcher and network shutdown.
-- Dagger compile-time dependency injection and Caffeine session caching.
+- Dagger assembly with application-selected Game, authentication and service providers.
+- Fail-closed login defaults, externally provisioned token keys and authenticated token expiry.
+- Bounded detached blocking operations with cancellation-safe resource accounting.
+- Caffeine session caching.
 - Health checks, JSON metrics, Prometheus text output and structured logging.
 
 The default game forwards inbound messages to its ordered Game queue. Applications
 explicitly select outbound recipients and supply their game rules,
-authentication and persistence. The bundled credentials verifier accepts incoming
-login payloads without validating an account, and the default token cipher uses a
-built-in key. Replace these components for application authentication. Automatic
+authentication and persistence. Login defaults to denial until an application
+supplies its verifier or explicitly enables anonymous demonstration mode. Tokens
+use an instance secret or an externally provisioned key and expire. See
+[core components and security](docs/CORE_COMPONENTS.md) for injection and migration. Automatic
 reconnection and client connection pooling are not implemented.
 
 ## Quick Start
@@ -42,7 +48,7 @@ reconnection and client connection pooling are not implemented.
 <dependency>
     <groupId>com.akakata</groupId>
     <artifactId>zea-tcp</artifactId>
-    <version>0.8.1</version>
+    <version>0.8.2</version>
 </dependency>
 ```
 
@@ -96,7 +102,8 @@ java \
   com.akakata.TestServer
 ```
 
-No additional JVM module-access options are required. On Windows, use `;` as
+The repository example explicitly enables anonymous demonstration credentials.
+Application contexts default to denying login. No additional JVM module-access options are required. On Windows, use `;` as
 the classpath separator and adapt the shell's line continuation syntax. Stop the example with Ctrl+C to invoke the shutdown hook.
 
 Alternatively, launch through Maven:
@@ -127,7 +134,7 @@ Other executable examples are `com.akakata.HttpOnlyServer` (HTTP port 18081),
 `com.akakata.AdvancedTestServer`. They live in
 [src/test/java/com/akakata](src/test/java/com/akakata).
 
-`mvn package` produces the library JAR `target/zea-tcp-0.8.1.jar`. It does not bundle
+`mvn package` produces the library JAR `target/zea-tcp-0.8.2.jar`. It does not bundle
 runtime dependencies or configure a `Main-Class`. The provided [run.sh](run.sh)
 expects an application-owned executable `server.jar` in the working directory;
 create that application artifact before using the script.
@@ -145,6 +152,9 @@ server.websocket.enabled=true
 tcp.port=8090
 http.port=8081
 web.socket.port=8300
+tcp.bind.host=0.0.0.0
+http.bind.host=127.0.0.1
+web.socket.bind.host=0.0.0.0
 
 bossThreadCount=2
 workerThreadCount=2
@@ -156,6 +166,11 @@ tcp.nodelay=true
 
 reconnect.delay=300000
 protocol.type=JSON
+
+# Authentication and Tokens
+security.allow.anonymous=false
+security.token.key.environment=
+security.token.ttl.seconds=3600
 
 # Session Admission
 session.maximum=10000
@@ -177,6 +192,20 @@ socket.read.idle.millis=120000
 # Socket Outbound Backpressure
 socket.maximum.pending.writes=1024
 socket.maximum.pending.bytes=1048576
+socket.maximum.pending.payload.bytes=1048576
+socket.total.pending.bytes=268435456
+
+# HTTP Limits
+http.maximum.connections=256
+http.maximum.request.bytes=65536
+http.request.timeout.millis=10000
+http.read.idle.millis=30000
+
+# Detached Blocking Operations
+business.blocking.threads=2
+business.blocking.queue.capacity=256
+business.blocking.queue.bytes=67108864
+business.blocking.shutdown.millis=5000
 
 # Protocol Frame Limits
 protocol.maximum.frame.bytes=65535
@@ -186,7 +215,13 @@ protocol.maximum.frame.bytes=65535
 can additionally be configured with `metrics.event.interval.seconds`; its fallback
 is 30 seconds, and a nonpositive value disables sampling.
 
-Fallbacks differ from the bundled resource: absent thread counts use one boss
+All six listener port/address properties are required, including those for
+listeners disabled by a switch. There is no inferred property name or default
+listener endpoint. Invalid, blank or missing listener configuration fails
+initialization. Present numeric or boolean parse errors also fail instead of
+using an optional property's default.
+
+Defaults for absent optional properties differ from the bundled resource: absent thread counts use one boss
 thread and `Runtime.getRuntime().availableProcessors()` workers; an absent
 `protocol.type` selects SBE. `protocol.type` affects TCP only. WebSocket events use
 the WebSocket JSON codec, and HTTP routing is independent of this property.
@@ -209,8 +244,8 @@ waits indefinitely after startup.
 
 On normal JVM shutdown, `beforeServerShutdown()` runs before listener shutdown,
 and `afterServerShutdown()` runs after listener shutdown but before context
-closure. Hooks should release application-owned resources and handle their own
-cleanup failures. Overriding `awaitTermination()` changes the wait behavior;
+closure. Hooks should release application-owned resources. Hook failures are logged while
+context cleanup continues, including after failed startup. Overriding `awaitTermination()` changes the wait behavior;
 returning from it does not itself invoke shutdown.
 
 The default context creates one `Game` for the application. `Game` is the
@@ -220,18 +255,23 @@ to registered Game handlers, and applications can subclass `AbstractGame` to imp
 shared business behavior. Register application-wide event handlers through
 `Game.getEventDispatcher().addHandler(...)` and submit them with `Game.send(...)`.
 
-`ServerContext.getBean()` exposes `Game`, `SessionService` and `ServerManager`.
-It is not a general-purpose lookup for arbitrary Dagger bindings. Configuration
+`ServerContext.getBean()` exposes `Game`, `SessionService`, `ServerManager`,
+`CredentialsVerifier`, `SecurityService`, `LoginService`, `OutboundBudget` and
+`BlockingTaskExecutor`. Supply application core providers through
+`ServerComponents.builder()` and `ServerContext(resource, components)`; see
+[component assembly](docs/CORE_COMPONENTS.md#properties-and-assembly).
+It is a fixed resource lookup for the supported types. Configuration
 is available through `getConfigManager()`.
 
 Closing an initialized context proceeds through these stages:
 
 1. Stop servers.
-2. Close the game, its connected sessions and its dedicated dispatcher.
-3. Close `SessionService`, its cleanup scheduler and all sessions it still owns.
-4. Stop dispatcher-metrics sampling.
-5. Close the process-wide shared dispatcher.
-6. Shut down both shared network groups and wait for termination.
+2. Stop admission to blocking workers, cancel queued operations and request interruption.
+3. Close the game, its connected sessions and its dedicated dispatcher.
+4. Close `SessionService`, its cleanup scheduler and all sessions it still owns.
+5. Stop dispatcher-metrics sampling.
+6. Close the process-wide shared dispatcher.
+7. Shut down both shared network groups and wait for termination.
 
 The context logs individual cleanup failures and continues with later stages.
 Closing a player session removes its handlers from a shared shard while preserving
@@ -297,7 +337,7 @@ public final class ApplicationGameExample extends DefaultGame {
 Use `sendToPlayers(event, selectedPlayers)` for a selected set and
 `sendBroadcast(event)` when every connected player should receive the update.
 The default Dagger graph still supplies `DefaultGame`; a standalone application
-can instantiate the example subclass, or replace the Game provider in its own graph.
+can select the example subclass through `ServerComponents.builder().gameFactory(...)`.
 
 Each session is bound to a fixed Netty business executor, so accepted events of
 all types run serially in submission order. The application's Game owns one
@@ -332,14 +372,15 @@ budget, or the Channel becomes unwritable. Queue low-water notifications and Cha
 writability changes resume reads below 50% of both budgets; there is no per-channel
 recovery polling.
 A full input queue or a pause lasting five seconds closes the affected connection.
-Socket sends are bounded before I/O scheduling and again by encoded bytes; exceeding
+Socket sends are bounded by count and source bytes before I/O scheduling, and by
+per-channel plus aggregate encoded admission; exceeding
 write limits or writing to an unwritable Channel fails the write and closes it.
 There is no unbounded overflow queue or automatic retry.
 
 `session.maximum` controls registered credential slots, including pending logins.
 Full capacity rejects new credentials; reconnecting an existing credential reuses
 its slot. There is no cache-size eviction or cache TTL for online sessions. Explicit
-closure and configured read-idle expiry determine their lifetime. TCP/WebSocket
+closure and configured read-idle expiry determine their lifetime. TCP/WebSocket/HTTP
 connections, including unauthenticated sockets, share `socket.maximum.connections`.
 Authentication must finish within `socket.login.timeout.millis`; read inactivity
 expires after `socket.read.idle.millis` (zero disables idle expiry). These guards
@@ -415,7 +456,9 @@ The regression suite covers player-event isolation, shared-shard preservation,
 session and cache shutdown, replacement and login races, callback-triggered
 closure, serial session and Game ordering, reentrant publication, queue rejection,
 native-buffer ownership, recipient snapshots and reports, read pause/recovery,
-TCP/WebSocket write order, socket byte budgets and concurrent capacity admission.
+TCP/WebSocket write order, socket source/encoded/aggregate byte budgets, HTTP
+connection/request deadlines, custom core providers, secure token validation,
+bounded slow-operation cancellation and concurrent capacity admission.
 Examples with `main` methods are executable
 helpers rather than JUnit tests.
 
@@ -454,8 +497,8 @@ Actions → New repository secret**:
 | `GPG_PASSPHRASE` | Passphrase protecting that private key |
 
 The Central account must have publishing access to `com.akakata`, and the signing
-public key must be available to Central. Use a release tag such as `v0.8.1` or
-`0.8.1` matching the POM at that tag. Already published versions cannot be replaced;
+public key must be available to Central. Use a release tag such as `v0.8.2` or
+`0.8.2` matching the POM at that tag. Already published versions cannot be replaced;
 choose a new version for subsequent releases. See the
 [publishing guide](docs/PUBLISHING.md) for token setup, key preparation, local
 verification and troubleshooting.
@@ -469,7 +512,7 @@ mvn compile javadoc:jar
 
 Open `target/reports/apidocs/index.html` for the framework API and
 `target/reports/testapidocs/index.html` for examples and regression-test helpers.
-The archive is `target/zea-tcp-0.8.1-javadoc.jar`. Compilation generates the Dagger
+The archive is `target/zea-tcp-0.8.2-javadoc.jar`. Compilation generates the Dagger
 component types needed by JavaDoc. Documentation uses English, UTF-8 and strict
 doclint checks; generated Dagger sources are excluded.
 
@@ -527,6 +570,12 @@ requires representative game logic and deployment-level multi-process tests.
 
 Licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
 Issues and pull requests are
-welcome at [GitHub](https://github.com/akakata/zea-tcp/issues).
+welcome at [GitHub](https://github.com/irwinmc/Zea-tcp/issues).
 
 Maintainer: **Kelvin**, Akakata — kyia.x52@gmail.com.
+
+Core application assembly and secure defaults are covered in
+[Core Components and Security](docs/CORE_COMPONENTS.md). Follow
+[Slow Business Operations](docs/SLOW_BUSINESS.md) when introducing database,
+remote-service or other blocking work; keep state updates on the original ordered
+Session/Game queues and handle late or out-of-order results explicitly.

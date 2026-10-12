@@ -44,6 +44,11 @@ public abstract class CommandLine {
     private volatile boolean running = false;
 
     /**
+     * Ensures startup failure and JVM shutdown perform cleanup at most once.
+     */
+    private final java.util.concurrent.atomic.AtomicBoolean shutdownStarted = new java.util.concurrent.atomic.AtomicBoolean();
+
+    /**
      * Starts the server lifecycle, registers a shutdown hook and waits for termination.
      *
      * <p>Startup failures are logged, trigger cleanup and exit the process with status 1.
@@ -109,17 +114,21 @@ public abstract class CommandLine {
     }
 
     /**
-     * Runs shutdown hooks, stops servers and closes the context when marked running.
+     * Runs shutdown hooks and releases a context even when startup did not finish.
      */
     private void shutdown() {
-        if (!running) {
+        if (!shutdownStarted.compareAndSet(false, true)) {
             return;
         }
 
         LOG.info("Shutting down Zea-tcp server...");
 
         // 1. Hook: Before server shutdown (add custom cleanup here)
-        beforeServerShutdown();
+        try {
+            beforeServerShutdown();
+        } catch (Exception failure) {
+            LOG.error("Error in beforeServerShutdown", failure);
+        }
 
         // 2. Stop all servers
         if (serverManager != null) {
@@ -132,7 +141,11 @@ public abstract class CommandLine {
         }
 
         // 3. Hook: After server shutdown (add custom cleanup here)
-        afterServerShutdown();
+        try {
+            afterServerShutdown();
+        } catch (Exception failure) {
+            LOG.error("Error in afterServerShutdown", failure);
+        }
 
         // 4. Close context
         if (context != null) {

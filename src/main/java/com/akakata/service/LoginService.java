@@ -96,7 +96,7 @@ public class LoginService {
             // 2. 创建新会话
             newSession = createSession(credentials, game);
             if (newSession == null || newSession.getId() == null) {
-                LOG.error("Login failed: session creation returned null or missing ID, credentials={}", credentials);
+                LOG.error("Login failed: session creation returned null or missing ID");
                 if (newSession != null) {
                     newSession.close();
                 }
@@ -109,13 +109,12 @@ public class LoginService {
             // 3. 替换旧会话
             PlayerSession oldSession = sessionService.replaceSession(credentials, newSession);
             if (oldSession != null) {
-                LOG.warn("Kicked old session: credentials={}, oldSessionId={}, newSessionId={}",
-                        credentials,
+                LOG.warn("Replaced old session: oldSessionId={}, newSessionId={}",
                         Objects.toString(oldSession.getId(), "N/A"),
                         newSession.getId());
             }
 
-            LOG.info("Login successful: sessionId={}, credentials={}", newSession.getId(), credentials);
+            LOG.info("Login successful: sessionId={}", newSession.getId());
             return new LoginResult(newSession, token);
         } catch (SessionCapacityException full) {
             if (newSession != null) {
@@ -174,7 +173,7 @@ public class LoginService {
             newSession = game.createPlayerSession();
             newSession.setAttribute("credentials", credentials);
 
-            LOG.info("Session created: credentials={}, sessionId={}", credentials, newSession.getId());
+            LOG.info("Session created: sessionId={}", newSession.getId());
             return newSession;
         } catch (Exception e) {
             if (newSession != null) {
@@ -184,7 +183,7 @@ public class LoginService {
                     e.addSuppressed(closeFailure);
                 }
             }
-            LOG.error("Failed to create session for credentials: {}", credentials, e);
+            LOG.error("Failed to create session", e);
             return null;
         }
     }

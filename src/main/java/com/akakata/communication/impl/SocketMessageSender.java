@@ -1,22 +1,15 @@
 package com.akakata.communication.impl;
 
 import com.akakata.communication.MessageSender;
+import com.akakata.communication.OutboundBudget;
 import com.akakata.communication.OutboundLimits;
 import com.akakata.event.Event;
 import com.akakata.event.EventResources;
 import com.akakata.event.Events;
-import com.akakata.handlers.codec.EventEncoder;
-import com.akakata.handlers.codec.JsonEncoder;
-import com.akakata.handlers.codec.MessageBufferEventEncoder;
-import com.akakata.handlers.codec.SbeEventEncoder;
-import com.akakata.handlers.codec.WebSocketEventEncoder;
+import com.akakata.handlers.codec.*;
 import com.akakata.metrics.FlowControlMetrics;
 import com.akakata.util.NettyUtils;
-import io.netty.channel.Channel;
-import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelFutureListener;
-import io.netty.channel.ChannelPipeline;
-import io.netty.channel.ChannelPromise;
+import io.netty.channel.*;
 import io.netty.handler.codec.MessageToMessageEncoder;
 import io.netty.util.ReferenceCountUtil;
 import org.slf4j.Logger;
@@ -33,7 +26,7 @@ import java.util.concurrent.RejectedExecutionException;
  *
  * <p>Event writes retain the native payload until the write future completes.
  * Writes always enter the channel event-loop queue in admission order. A full write
- * budget, encoded-byte budget or nonwritable channel fails the write and closes the
+ * count, source, encoded or aggregate budget, or a nonwritable channel, fails the write and closes the
  * connection. This prevents later updates from following a rejected state update.
  * For raw Netty messages, normal pipeline ownership rules apply, including release
  * on admission rejection. Closing selects an
@@ -57,6 +50,16 @@ public class SocketMessageSender implements MessageSender {
      * Per-connection application-write and encoded-buffer limits.
      */
     private final OutboundLimits limits;
+
+    /**
+     * Shared source and encoded reservation owner for this application's sockets.
+     */
+    private final OutboundBudget budget;
+
+    /**
+     * Estimated admitted source bytes, including sources being encoded; guarded by this sender.
+     */
+    private long pendingPayloadBytes;
 
     /**
      * Admitted writes, including queued event-loop tasks; guarded by this sender.
@@ -91,11 +94,23 @@ public class SocketMessageSender implements MessageSender {
      * Creates a sender with explicit per-connection outbound budgets.
      *
      * @param channel the transport channel
-     * @param limits the positive application-write and encoded-byte limits
+     * @param limits  the positive application-write and encoded-byte limits
      */
     public SocketMessageSender(Channel channel, OutboundLimits limits) {
+        this(channel, limits, OutboundBudget.DEFAULT);
+    }
+
+    /**
+     * Creates a sender sharing a context-wide source and encoded-byte allowance.
+     *
+     * @param channel the transport channel
+     * @param limits  the per-connection admission limits
+     * @param budget  the aggregate reservation owner
+     */
+    public SocketMessageSender(Channel channel, OutboundLimits limits, OutboundBudget budget) {
         this.channel = Objects.requireNonNull(channel, "channel");
         this.limits = Objects.requireNonNull(limits, "limits");
+        this.budget = Objects.requireNonNull(budget, "budget");
         channel.closeFuture().addListener(ignored -> failPendingWrites());
     }
 
@@ -116,17 +131,40 @@ public class SocketMessageSender implements MessageSender {
             releaseRawMessage(message);
             return channel.newFailedFuture(new ClosedChannelException());
         }
-        if (pending.size() >= limits.maximumPendingWrites() || !channel.isWritable()) {
+        long bytes;
+        try {
+            bytes = message instanceof Event event ? event.getPayloadSize()
+                    : message instanceof io.netty.buffer.ByteBufHolder holder ? holder.content().readableBytes()
+                    : EventResources.estimateBytes(message);
+        } catch (RuntimeException failure) {
+            releaseRawMessage(message);
+            closed = true;
+            channel.close();
+            return channel.newFailedFuture(failure);
+        }
+        if (bytes < 0 || pending.size() >= limits.maximumPendingWrites() || !channel.isWritable()
+                || bytes > limits.maximumPendingPayloadBytes() - pendingPayloadBytes || !budget.reserve(bytes)) {
             FlowControlMetrics.WRITE_REJECTIONS.increment();
             closed = true;
             releaseRawMessage(message);
             channel.close();
             return channel.newFailedFuture(new RejectedExecutionException("Socket write budget or water mark exceeded"));
         }
-        Object payload = message instanceof Event event ? EventResources.retainPayload(event) : null;
+        Object payload;
+        try {
+            payload = message instanceof Event event ? EventResources.retainPayload(event) : null;
+        } catch (RuntimeException failure) {
+            budget.release(bytes);
+            releaseRawMessage(message);
+            closed = true;
+            channel.close();
+            return channel.newFailedFuture(failure);
+        }
         ChannelPromise promise = channel.newPromise();
         promise.setUncancellable();
-        PendingWrite write = new PendingWrite(message, payload, promise);
+        PendingWrite write = new PendingWrite(message, payload, promise, bytes);
+        pendingPayloadBytes += bytes;
+        FlowControlMetrics.PENDING_PAYLOAD_BYTES.add(bytes);
         pending.add(write);
         queued.addLast(write);
         FlowControlMetrics.PENDING_WRITES.increment();
@@ -142,8 +180,9 @@ public class SocketMessageSender implements MessageSender {
      * Schedules a single ordered drain and settles all ownership if the loop stops.
      */
     private void scheduleDrain() {
-        try { channel.eventLoop().execute(this::drainWrites); }
-        catch (Throwable failure) {
+        try {
+            channel.eventLoop().execute(this::drainWrites);
+        } catch (Throwable failure) {
             PendingWrite[] writes;
             synchronized (this) {
                 closed = true;
@@ -166,14 +205,21 @@ public class SocketMessageSender implements MessageSender {
     private void drainWrites() {
         for (int i = 0; i < 64; i++) {
             PendingWrite write;
-            synchronized (this) { write = queued.pollFirst(); }
-            if (write == null) break;
+            synchronized (this) {
+                write = queued.pollFirst();
+            }
+            if (write == null) {
+                break;
+            }
             writeOnEventLoop(write);
         }
         channel.flush();
         synchronized (this) {
-            if (queued.isEmpty()) drainScheduled = false;
-            else scheduleDrain();
+            if (queued.isEmpty()) {
+                drainScheduled = false;
+            } else {
+                scheduleDrain();
+            }
         }
     }
 
@@ -193,9 +239,7 @@ public class SocketMessageSender implements MessageSender {
             return;
         }
         try {
-            if (channel.pipeline().get(OutboundBufferLimiter.class) == null) {
-                channel.pipeline().addFirst("zeaOutboundBudget", new OutboundBufferLimiter(limits));
-            }
+            installOutboundBudget(channel.pipeline(), limits, budget);
             write.forwarded = true;
             channel.write(write.message, write.promise);
         } catch (Throwable failure) {
@@ -214,11 +258,17 @@ public class SocketMessageSender implements MessageSender {
             if (!pending.remove(write)) {
                 return;
             }
+            pendingPayloadBytes -= write.bytes;
         }
         FlowControlMetrics.PENDING_WRITES.decrement();
-        EventResources.releasePayload(write.payload);
-        if (!write.forwarded) {
-            releaseRawMessage(write.message);
+        try {
+            EventResources.releasePayload(write.payload);
+            if (!write.forwarded) {
+                releaseRawMessage(write.message);
+            }
+        } finally {
+            budget.release(write.bytes);
+            FlowControlMetrics.PENDING_PAYLOAD_BYTES.add(-write.bytes);
         }
         if (!write.promise.isSuccess()) {
             closed = true;
@@ -260,6 +310,28 @@ public class SocketMessageSender implements MessageSender {
      */
     public synchronized int pendingWrites() {
         return pending.size();
+    }
+
+    /**
+     * Returns source estimates still owned by admitted application writes.
+     *
+     * @return estimated payload bytes pending completion
+     */
+    public synchronized long pendingPayloadBytes() {
+        return pendingPayloadBytes;
+    }
+
+    /**
+     * Installs transport accounting before codecs, including login and direct HTTP writes.
+     *
+     * @param pipeline the channel pipeline, accessed on its event loop
+     * @param limits   the per-channel encoded-byte allowance
+     * @param budget   the context-wide reservation owner
+     */
+    public static void installOutboundBudget(ChannelPipeline pipeline, OutboundLimits limits, OutboundBudget budget) {
+        if (pipeline.get(OutboundBufferLimiter.class) == null) {
+            pipeline.addFirst("zeaOutboundBudget", new OutboundBufferLimiter(limits, budget));
+        }
     }
 
     /**
@@ -369,6 +441,11 @@ public class SocketMessageSender implements MessageSender {
         private final ChannelPromise promise;
 
         /**
+         * Captured source estimate reserved until this write completes.
+         */
+        private final long bytes;
+
+        /**
          * Whether ownership has been transferred to the outbound pipeline.
          */
         private volatile boolean forwarded;
@@ -379,11 +456,13 @@ public class SocketMessageSender implements MessageSender {
          * @param message the application message
          * @param payload the independently retained Event source
          * @param promise the transport completion
+         * @param bytes   the reserved source estimate
          */
-        private PendingWrite(Object message, Object payload, ChannelPromise promise) {
+        private PendingWrite(Object message, Object payload, ChannelPromise promise, long bytes) {
             this.message = message;
             this.payload = payload;
             this.promise = promise;
+            this.bytes = bytes;
         }
     }
 }

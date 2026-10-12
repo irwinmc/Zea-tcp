@@ -2,6 +2,8 @@ package com.akakata.metrics;
 
 import com.akakata.event.impl.EventDispatchers;
 import com.akakata.event.impl.NettyEventDispatcher;
+import com.akakata.communication.OutboundBudget;
+import com.akakata.service.task.BlockingTaskExecutor;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -14,7 +16,7 @@ import java.util.concurrent.atomic.LongAdder;
 public final class FlowControlMetrics {
 
     /**
-     * Currently admitted TCP/WebSocket sockets including unauthenticated clients.
+     * Currently admitted TCP, WebSocket and HTTP sockets including unauthenticated clients.
      */
     public static final LongAdder ACTIVE_CONNECTIONS = new LongAdder();
 
@@ -59,6 +61,16 @@ public final class FlowControlMetrics {
     public static final LongAdder PENDING_SOCKET_BYTES = new LongAdder();
 
     /**
+     * Estimated source bytes held by application writes before transport completion.
+     */
+    public static final LongAdder PENDING_PAYLOAD_BYTES = new LongAdder();
+
+    /**
+     * HTTP connections closed by their absolute request deadline.
+     */
+    public static final LongAdder HTTP_TIMEOUTS = new LongAdder();
+
+    /**
      * Socket writes rejected by count, byte or writable-state admission.
      */
     public static final LongAdder WRITE_REJECTIONS = new LongAdder();
@@ -79,6 +91,20 @@ public final class FlowControlMetrics {
     private static volatile NettyEventDispatcher game;
 
     /**
+     * Current context's aggregate write and blocking-task owners, or null after closure.
+     */
+    private static volatile ResourceOwners resources;
+
+    /**
+     * Captures resource owners together for coherent configuration sampling.
+     *
+     * @param outbound the aggregate write owner
+     * @param blocking the bounded slow-operation owner
+     */
+    private record ResourceOwners(OutboundBudget outbound, BlockingTaskExecutor blocking) {
+    }
+
+    /**
      * Prevents construction of this metrics utility.
      */
     private FlowControlMetrics() {
@@ -94,6 +120,16 @@ public final class FlowControlMetrics {
     }
 
     /**
+     * Registers context-wide resource owners or clears them after closure.
+     *
+     * @param outbound the aggregate write owner, or null to clear both references
+     * @param blocking the bounded slow-operation owner
+     */
+    public static void resources(OutboundBudget outbound, BlockingTaskExecutor blocking) {
+        resources = outbound == null ? null : new ResourceOwners(outbound, java.util.Objects.requireNonNull(blocking));
+    }
+
+    /**
      * Captures current Session/Game budgets, outcomes, timings and socket counters.
      *
      * @return JSON-compatible metrics grouped by executor and transport
@@ -104,6 +140,10 @@ public final class FlowControlMetrics {
         NettyEventDispatcher current = game;
         result.put("game", current == null ? null : current.snapshot());
         result.put("transport", transportSnapshot());
+        ResourceOwners owners = resources;
+        result.put("outbound", owners == null ? null : Map.of("byte_budget", owners.outbound.maximumBytes(),
+                "pending_bytes", owners.outbound.pendingBytes()));
+        result.put("blocking", owners == null ? null : owners.blocking.snapshot());
         return result;
     }
 
@@ -123,6 +163,8 @@ public final class FlowControlMetrics {
         result.put("pause_timeouts", PAUSE_TIMEOUTS.sum());
         result.put("pending_writes", PENDING_WRITES.sum());
         result.put("pending_socket_bytes", PENDING_SOCKET_BYTES.sum());
+        result.put("pending_payload_bytes", PENDING_PAYLOAD_BYTES.sum());
+        result.put("http_timeouts", HTTP_TIMEOUTS.sum());
         result.put("write_rejections", WRITE_REJECTIONS.sum());
         result.put("encoded_frames", ENCODED_FRAMES.sum());
         result.put("encoding_reuses", ENCODING_REUSES.sum());

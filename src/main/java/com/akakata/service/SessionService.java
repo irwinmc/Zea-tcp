@@ -154,8 +154,7 @@ public class SessionService {
             return;
         }
 
-        LOG.info("Session removed: credentials={}, cause={}, sessionId={}",
-                credentials, cause, session.getId());
+        LOG.info("Session removed: cause={}, sessionId={}", cause, session.getId());
 
         switch (cause) {
             case EXPIRED, SIZE -> cleanupSync(session);

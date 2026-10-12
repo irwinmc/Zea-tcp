@@ -115,11 +115,11 @@ the [Maven GPG plugin](https://maven.apache.org/plugins/maven-gpg-plugin/sign-mo
 
 ## Create a Release
 
-1. Set the desired version in `pom.xml`. The current version is `0.8.1`.
+1. Set the desired version in `pom.xml`. The current version is `0.8.2`.
 2. Update version-specific documentation, commit the changes and push them with
    the publishing workflow to GitHub.
-3. In GitHub Releases, select or create a tag matching that POM, such as `v0.8.1`
-   or `0.8.1`, and publish the Release.
+3. In GitHub Releases, select or create a tag matching that POM, such as `v0.8.2`
+   or `0.8.2`, and publish the Release.
 4. Open the **Publish to Maven Central** Actions run and inspect its result.
 
 The tag points to the POM and sources being released. Changing the default branch

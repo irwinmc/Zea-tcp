@@ -59,7 +59,10 @@ public class AdvancedTestServer extends CommandLine {
         // Use custom configuration if needed
         String configPath = System.getProperty("config.path", "props/conf.properties");
         LOG.info("Using configuration: {}", configPath);
-        return new ServerContext(configPath);
+        ServerContext context = new ServerContext(configPath);
+        // Anonymous credentials are an explicit choice for this local demonstration.
+        context.getConfigManager().getProperties().setProperty("security.allow.anonymous", "true");
+        return context;
     }
 
     /**

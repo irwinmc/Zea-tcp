@@ -56,12 +56,15 @@ public abstract class AbstractNettyServer implements NettyServer {
     }
 
     /**
-     * {@inheritDoc}
+     * Starts on the supplied port while preserving the configured bind host.
+     *
+     * @param port the override port
+     * @throws Exception if listener startup fails
      */
     @Override
     public void startServer(int port) throws Exception {
         nettyConfig.setPortNumber(port);
-        nettyConfig.setSocketAddress(new InetSocketAddress(port));
+        nettyConfig.setSocketAddress(new InetSocketAddress(nettyConfig.getSocketAddress().getHostString(), port));
         startServer();
     }
 

@@ -1,6 +1,7 @@
 # Configuration Guide
 
-This guide describes the configuration consumed by Zea TCP Transport 0.8.1.
+This guide describes the configuration consumed by Zea TCP Transport 0.8.2,
+including component, security and expanded resource policies.
 Dependency versions and build commands are listed in the [README](../README.md).
 
 ## Loading Configuration
@@ -13,18 +14,25 @@ do not read an arbitrary filesystem path or URL.
 `ConfigurationManager` uses `Properties.load(InputStream)` and closes the stream.
 A missing resource raises `IOException`. Property names are case-sensitive. The
 loader does not read YAML, merge environment variables, apply general `-D` overrides
-or reload a file after startup.
+or reload a file after startup. The token service separately reads the one
+environment variable explicitly named by `security.token.key.environment`.
+See [core components and security](CORE_COMPONENTS.md) for provider replacements.
 
 | Getter | Missing Value | Present Value |
 | --- | --- | --- |
-| `getInt(key, defaultValue)` | Supplied default | Trimmed integer; malformed input logs a warning and falls back |
-| `getBoolean(key, defaultValue)` | Supplied default | Trimmed `Boolean.parseBoolean`; only case-insensitive `true` is true |
+| `getInt(key, defaultValue)` | Supplied default | Trimmed integer; malformed or overflowing values throw |
+| `getLong(key, defaultValue)` | Supplied default | Trimmed long; malformed or overflowing values throw |
+| `getBoolean(key, defaultValue)` | Supplied default | Trimmed, case-insensitive `true` or `false`; other values throw |
 | `getString(key, defaultValue)` | Supplied default | Original property string, without trimming |
+| `getRequiredString(key)` | Throws | Trimmed nonblank string; blank values throw |
+| `getRequiredInt(key)` | Throws | Trimmed integer; blank, malformed or overflowing values throw |
 | `getProperties()` | Not applicable | Live mutable `Properties` object |
 
 ## Supported Properties
 
-The **fallback** is used when a key is absent, or when integer parsing fails.
+An optional property uses its **fallback** only when absent. A malformed present
+numeric or boolean value raises `IllegalArgumentException` naming its key. All
+listener ports and bind addresses are required and have no fallback.
 The **bundled value** is the value in this checkout's default resource.
 
 | Property | Fallback | Bundled Value | Effect |
@@ -32,9 +40,15 @@ The **bundled value** is the value in this checkout's default resource.
 | `server.tcp.enabled` | `true` | `true` | Start the TCP listener through `startServers()` |
 | `server.http.enabled` | `true` | `true` | Start the HTTP listener through `startServers()` |
 | `server.websocket.enabled` | `true` | `true` | Start the WebSocket listener through `startServers()` |
-| `tcp.port` | `8090` | `8090` | TCP bind port |
-| `http.port` | `8081` | `8081` | HTTP bind port |
-| `web.socket.port` | `8300` | `8300` | WebSocket bind port |
+| `tcp.port` | Required | `8090` | TCP bind port |
+| `http.port` | Required | `8081` | HTTP bind port |
+| `web.socket.port` | Required | `8300` | WebSocket bind port |
+| `tcp.bind.host` | Required | `0.0.0.0` | TCP bind address |
+| `http.bind.host` | Required | `127.0.0.1` | Private monitoring bind address |
+| `web.socket.bind.host` | Required | `0.0.0.0` | WebSocket bind address |
+| `security.allow.anonymous` | `false` | `false` | Explicit demonstration authentication; production supplies a verifier |
+| `security.token.key.environment` | Empty | Empty | Name of a Base64 AES secret environment variable; empty selects an ephemeral instance key |
+| `security.token.ttl.seconds` | `3600` | `3600` | Positive token validity in whole seconds; malformed values fail initialization |
 | `bossThreadCount` | `1` | `2` | Shared accepting-group thread count |
 | `workerThreadCount` | Available processors | `2` | Shared network-I/O group thread count |
 | `so.backlog` | `100` | `100` | Listening channel's `SO_BACKLOG` |
@@ -49,11 +63,21 @@ The **bundled value** is the value in this checkout's default resource.
 | `session.queue.bytes` | `67108864` | `67108864` | Estimated retained payload bytes per session executor, including running work |
 | `game.queue.capacity` | `32768` | `32768` | Maximum pending Game tasks; must be at least 16 |
 | `game.queue.bytes` | `67108864` | `67108864` | Estimated admitted Game payload bytes, including running work |
-| `socket.maximum.connections` | `20000` | `20000` | Shared TCP/WebSocket socket slots including unauthenticated clients |
+| `socket.maximum.connections` | `20000` | `20000` | Shared TCP/WebSocket/HTTP socket slots including unauthenticated clients |
 | `socket.login.timeout.millis` | `30000` | `30000` | Positive connection-to-authentication deadline, including WebSocket upgrade |
 | `socket.read.idle.millis` | `120000` | `120000` | Read inactivity expiry; zero disables it |
 | `socket.maximum.pending.writes` | `1024` | `1024` | Positive maximum admitted socket writes awaiting completion |
 | `socket.maximum.pending.bytes` | `1048576` | `1048576` | Positive maximum encoded bytes awaiting socket completion |
+| `socket.maximum.pending.payload.bytes` | `1048576` | `1048576` | Positive estimated source bytes admitted before encoding, held until write completion |
+| `socket.total.pending.bytes` | `268435456` | `268435456` | Aggregate source plus encoded reservations across all context sockets |
+| `http.maximum.connections` | `256` | `256` | HTTP-specific socket allowance within the shared total |
+| `http.maximum.request.bytes` | `65536` | `65536` | Positive aggregated HTTP body limit |
+| `http.request.timeout.millis` | `10000` | `10000` | Absolute request deadline, renewed after each complete body |
+| `http.read.idle.millis` | `30000` | `30000` | HTTP read inactivity expiry; zero disables it |
+| `business.blocking.threads` | `2` | `2` | Positive worker count for detached blocking operations |
+| `business.blocking.queue.capacity` | `256` | `256` | Positive queued-operation allowance, excluding running workers |
+| `business.blocking.queue.bytes` | `67108864` | `67108864` | Positive declared retained bytes for queued and running operations |
+| `business.blocking.shutdown.millis` | `5000` | `5000` | Nonnegative maximum worker-pool close wait |
 | `protocol.maximum.frame.bytes` | `65535` | `65535` | Inbound application frame bytes, between 8 and 65535; excludes transport headers |
 
 These values are read by
@@ -68,12 +92,15 @@ These values are read by
 The parameterless `ServerManager.startServers()` checks the three enable flags.
 Disabling a listener does not prevent Dagger from constructing its server object
 or the context from creating game, session, dispatcher and network resources.
+Supply all three port/address pairs even when one or more listeners are disabled;
+the component validates every listener during initialization.
 All flags may be false when using the context without network listeners.
 
 The overload `startServers(flashPort, tcpPort, httpPort, webSocketPort)` starts
 listeners for positive supplied ports and does not consult the enable flags.
-`flashPort` is unused. Bind addresses are wildcard socket addresses; there is no
-bind-host property in the default module. Port zero delegates ephemeral-port
+`flashPort` is unused. Bind hosts use `tcp.bind.host`, `http.bind.host` and
+`web.socket.bind.host`; all three must be set explicitly. The bundled file
+chooses loopback for HTTP and IPv4 wildcard for the game listeners. Explicit port overrides preserve these hosts. Port zero delegates ephemeral-port
 selection to Netty in the parameterless startup path.
 
 ### Network Threads and Socket Options
@@ -122,6 +149,20 @@ socket.read.idle.millis=120000
 # Socket Outbound Backpressure
 socket.maximum.pending.writes=1024
 socket.maximum.pending.bytes=1048576
+socket.maximum.pending.payload.bytes=1048576
+socket.total.pending.bytes=268435456
+
+# HTTP Limits
+http.maximum.connections=256
+http.maximum.request.bytes=65536
+http.request.timeout.millis=10000
+http.read.idle.millis=30000
+
+# Detached Blocking Operations
+business.blocking.threads=2
+business.blocking.queue.capacity=256
+business.blocking.queue.bytes=67108864
+business.blocking.shutdown.millis=5000
 
 # Protocol Frame Limits
 protocol.maximum.frame.bytes=65535
@@ -129,7 +170,7 @@ protocol.maximum.frame.bytes=65535
 
 These limits are consumed by the default Dagger service and TCP/WebSocket login
 providers. Nonpositive count/byte/login budgets, queue capacities below 16, negative read-idle
-durations and frame limits outside 8..65535 fail initialization. Malformed integer strings follow the loader's ordinary fallback rule.
+durations and frame limits outside 8..65535 fail initialization. Malformed numeric and boolean strings fail initialization instead of substituting defaults.
 Budgets are not automatically resized or reloaded. Session budgets are fixed
 before the first shared dispatcher or session is created. Starting another context
 with conflicting live session budgets fails; complete shared shutdown is terminal.
@@ -147,20 +188,55 @@ protocol initialization. At capacity, a new credential fails login while existin
 players remain registered. A reconnect for an existing credential replaces its
 session using the same slot. Online registry entries have no size-based eviction
 or cache TTL. Explicit closure and configured read-idle expiry release sessions.
-TCP and WebSocket share the socket slot budget even before authentication; HTTP
-monitoring connections do not consume it. Login expiry covers upgrade and session
+TCP, WebSocket and HTTP share the total socket slot budget even before
+authentication. HTTP also has its own `http.maximum.connections` allowance and
+uses absolute request/body and read-idle deadlines instead of a login deadline.
+Partial bytes do not extend its request deadline. Login expiry covers upgrade and session
 initialization. An authenticated connection cancels that deadline while preserving
 its read-idle detector. Incoming bytes reset the read-idle timer; this is transport
 inactivity detection, not an application heartbeat protocol.
 
-Socket write and encoded-byte budgets work alongside Channel write-buffer water
-marks. Overflow or a nonwritable write fails the write and closes that connection;
+Socket write, source-estimate and encoded-byte budgets work alongside Channel
+write-buffer water marks. Source admission occurs before retaining or encoding a
+message. The shared aggregate owner charges sources and encoded bytes together
+while both exist. Broadcast sources are charged per recipient as logical pressure.
+Login, upgrade and direct HTTP pipeline responses participate in encoded admission.
+Native source and encoded reservations return on promise completion or closure.
+Neither aggregate admission nor payload estimates bound kernel buffers or exact RSS. Overflow or a nonwritable write fails the write and closes that connection;
 there is no unlimited retry queue. Writes drain in FIFO batches of at most 64 and
 flush once per batch. One Game send caches encoding per wire format, sharing JSON
 application frames between TCP and WebSocket recipients. Inbound reads pause above
 count or byte high water marks and resume from low-water notifications. The bridge's default five-second pause deadline
 is separate from callback execution and is only customizable programmatically.
 See [backpressure](EVENT_LOOP.md#network-backpressure) for ownership and recovery.
+
+### Resource Budget Coverage
+
+Budget bytes use long values for Session/Game payload storage, admitted socket
+sources, aggregate writes and blocking operations. Task, frame and HTTP body counts
+retain their integer ranges. Malformed present numeric and boolean values fail
+initialization; absent optional resource properties use their declared defaults. Positive/nonnegative range constraints
+are checked by resource constructors before listeners open.
+
+| Resource | Admission Coverage |
+| --- | --- |
+| Session registry | Credential slots, including unfinished logins |
+| Session shards | Per-shard pending tasks and queued/running payload estimates |
+| Game | Pending tasks and queued/running payload estimates |
+| Accepted sockets | TCP + WebSocket + HTTP total, with an additional HTTP sublimit |
+| Socket sources | Per-connection pending count and estimated source bytes |
+| Encoded transport | Per-connection and shared aggregate bytes, including HTTP/login |
+| HTTP input | Per-request body size, absolute deadline and read inactivity |
+| Blocking business work | Fixed workers, queued operations and running/queued declared bytes |
+
+A conservative planning allowance includes `shards * session.queue.bytes +
+game.queue.bytes + socket.total.pending.bytes + business.blocking.queue.bytes`,
+plus HTTP aggregation, decoding, application state, caches, thread stacks and JVM
+baseline storage. Charges can overlap for shared payloads, and estimates are not
+an exact memory ceiling. HTTP aggregated bodies alone may approach
+`http.maximum.connections * http.maximum.request.bytes`; header and codec storage
+are additional. Set deployment heap/container budgets separately and measure your
+workload. See [slow operations](SLOW_BUSINESS.md) for safe offloading and cancellation.
 
 ### Queue Sampling
 
@@ -244,7 +320,12 @@ constructs the Dagger components.
 server.tcp.enabled=false
 server.http.enabled=true
 server.websocket.enabled=false
+tcp.port=8090
 http.port=18081
+web.socket.port=8300
+tcp.bind.host=0.0.0.0
+http.bind.host=127.0.0.1
+web.socket.bind.host=0.0.0.0
 bossThreadCount=1
 workerThreadCount=2
 so.backlog=100
@@ -266,7 +347,12 @@ with `com.akakata.HttpOnlyServer` as the main class.
 server.tcp.enabled=false
 server.http.enabled=false
 server.websocket.enabled=true
+tcp.port=8090
+http.port=8081
 web.socket.port=18300
+tcp.bind.host=0.0.0.0
+http.bind.host=127.0.0.1
+web.socket.bind.host=0.0.0.0
 bossThreadCount=1
 workerThreadCount=2
 ```
@@ -304,9 +390,13 @@ written before the session's game protocol is installed, including in SBE mode.
 WebSocket success currently does not serialize the token generated by `LoginService`.
 Login failure closes the connection after the failure response is written.
 
+Default login is denied unless an application supplies `CredentialsVerifier` or
+explicitly opts into demonstration mode with `security.allow.anonymous=true`.
 `SimpleCredentialsVerifier` ignores the payload and creates fresh credentials.
 An application verifier must validate credentials and return a stable key when it
-needs existing-session replacement for the same identity.
+needs existing-session replacement for the same identity. See
+[security configuration](CORE_COMPONENTS.md#authentication-defaults) for token keys,
+expiry, compatibility and deployment exposure.
 
 ### TCP JSON After Login
 
@@ -381,7 +471,9 @@ binary frames; fragmented application messages are rejected.
 | Application Game business executors | One, separate from the session shards |
 | Handler execution | Serial on the assigned business executor |
 | Callback timeout | None; callbacks must return promptly |
-| HTTP request aggregation | 65,536 bytes |
+| HTTP request aggregation | `http.maximum.request.bytes`, default 65,536 body bytes |
+| HTTP connection allowance | `http.maximum.connections`, default 256 within the shared socket total |
+| Detached blocking pool | Configurable worker/task/byte admission; results return through existing event queues |
 | Static-file root | `html` under the process working directory |
 
 Settings without a property name in this table remain fixed or programmatic.
@@ -396,8 +488,10 @@ and shutdown behavior.
 
 - **Missing resource:** package the properties file on the classpath and pass its
   resource name, such as `props/conf-prod.properties`.
-- **Unexpected fallback:** check integer formatting, boolean spelling and the
-  exact `protocol.type` string. Unknown property names are not rejected.
+- **Invalid configuration:** check the property named by the exception. Listener
+  ports and addresses must be present and nonblank; ports must be integers in
+  0..65535 and hosts must resolve. Present numeric and boolean values never fall
+  back after parse failure. Unknown application property names are not rejected.
 - **No listeners:** inspect the three enable flags and startup logs. A context can
   intentionally run with all listeners disabled.
 - **Port already in use:** inspect the listening process or select another port;

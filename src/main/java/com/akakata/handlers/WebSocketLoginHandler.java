@@ -3,6 +3,7 @@ package com.akakata.handlers;
 import com.akakata.app.Game;
 import com.akakata.app.PlayerSession;
 import com.akakata.communication.OutboundLimits;
+import com.akakata.communication.OutboundBudget;
 import com.akakata.communication.impl.SocketMessageSender;
 import com.akakata.event.Event;
 import com.akakata.event.Events;
@@ -67,6 +68,11 @@ public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocket
     private final OutboundLimits outboundLimits;
 
     /**
+     * Aggregate reservation owner shared by this context's sockets.
+     */
+    private final OutboundBudget budget;
+
+    /**
      * Creates a web socket login handler instance with the supplied dependencies.
      *
      * @param protocol the protocol to install or associate
@@ -87,14 +93,30 @@ public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocket
      * @param loginService the authentication coordinator
      * @param outboundLimits the socket write and byte budgets
      */
-    @Inject
     public WebSocketLoginHandler(Protocol protocol,
                                  Game game,
                                  LoginService loginService, OutboundLimits outboundLimits) {
+        this(protocol, game, loginService, outboundLimits, OutboundBudget.DEFAULT);
+    }
+
+    /**
+     * Creates authentication handling with context-wide outbound accounting.
+     *
+     * @param protocol the session protocol
+     * @param game the application Game
+     * @param loginService the selected authentication coordinator
+     * @param outboundLimits the per-channel write allowances
+     * @param budget the context-wide write reservation owner
+     */
+    @Inject
+    public WebSocketLoginHandler(Protocol protocol,
+                                 Game game,
+                                 LoginService loginService, OutboundLimits outboundLimits, OutboundBudget budget) {
         this.protocol = protocol;
         this.game = game;
         this.loginService = loginService;
         this.outboundLimits = outboundLimits;
+        this.budget = budget;
     }
 
     /**
@@ -195,7 +217,7 @@ public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocket
             if (!channel.isActive() || session.isShuttingDown()) {
                 throw new IllegalStateException("Login completed after session or channel closure");
             }
-            session.setSender(new SocketMessageSender(channel, outboundLimits));
+            session.setSender(new SocketMessageSender(channel, outboundLimits, budget));
             if (!game.connectSession(session)) {
                 throw new IllegalStateException("Game rejected the login session");
             }

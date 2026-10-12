@@ -1,22 +1,13 @@
 package com.akakata.communication.impl;
 
+import com.akakata.communication.OutboundBudget;
 import com.akakata.communication.OutboundLimits;
 import com.akakata.event.Event;
 import com.akakata.event.Events;
-import com.akakata.handlers.codec.JsonDecoder;
-import com.akakata.handlers.codec.JsonEncoder;
-import com.akakata.handlers.codec.MessageBufferEventEncoder;
-import com.akakata.handlers.codec.WebSocketEventDecoder;
-import com.akakata.handlers.codec.WebSocketEventEncoder;
+import com.akakata.handlers.codec.*;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import io.netty.channel.Channel;
-import io.netty.channel.ChannelDuplexHandler;
-import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelPromise;
-import io.netty.channel.DefaultChannelPromise;
-import io.netty.channel.EventLoop;
+import io.netty.channel.*;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.codec.LengthFieldPrepender;
@@ -101,8 +92,10 @@ class SocketBackpressureRegressionTest {
             var first = new SocketMessageSender(tcp).sendMessage(shared);
             var second = new SocketMessageSender(websocket).sendMessage(shared);
             shared.releaseOwner();
-            tcp.runPendingTasks(); websocket.runPendingTasks();
-            assertTrue(first.isSuccess()); assertTrue(second.isSuccess());
+            tcp.runPendingTasks();
+            websocket.runPendingTasks();
+            assertTrue(first.isSuccess());
+            assertTrue(second.isSuccess());
             assertEquals(0, shared.payloadLease().refCnt());
             ByteBuf tcpFrame = tcp.readOutbound();
             var wsFrame = (io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame) websocket.readOutbound();
@@ -114,8 +107,14 @@ class SocketBackpressureRegressionTest {
                 assertTrue(tcpFrame.isReadOnly());
                 assertEquals(encoded + 1, com.akakata.metrics.FlowControlMetrics.ENCODED_FRAMES.sum());
                 assertEquals(reused + 1, com.akakata.metrics.FlowControlMetrics.ENCODING_REUSES.sum());
-            } finally { tcpFrame.release(); wsFrame.release(); }
-        } finally { tcp.finishAndReleaseAll(); websocket.finishAndReleaseAll(); }
+            } finally {
+                tcpFrame.release();
+                wsFrame.release();
+            }
+        } finally {
+            tcp.finishAndReleaseAll();
+            websocket.finishAndReleaseAll();
+        }
     }
 
     /**
@@ -130,7 +129,8 @@ class SocketBackpressureRegressionTest {
         try {
             var first = new SocketMessageSender(good).sendMessage(shared);
             var second = new SocketMessageSender(bad, new OutboundLimits(8, 1)).sendMessage(shared);
-            payload.release(); shared.releaseOwner();
+            payload.release();
+            shared.releaseOwner();
             bad.runPendingTasks();
             assertFalse(second.isSuccess());
             assertEquals(1, payload.refCnt());
@@ -139,9 +139,15 @@ class SocketBackpressureRegressionTest {
             assertEquals(0, payload.refCnt());
             assertEquals(0, shared.payloadLease().refCnt());
             ByteBuf frame = good.readOutbound();
-            try { assertEquals(42, frame.getInt(frame.readerIndex() + 8)); }
-            finally { frame.release(); }
-        } finally { good.finishAndReleaseAll(); bad.finishAndReleaseAll(); }
+            try {
+                assertEquals(42, frame.getInt(frame.readerIndex() + 8));
+            } finally {
+                frame.release();
+            }
+        } finally {
+            good.finishAndReleaseAll();
+            bad.finishAndReleaseAll();
+        }
     }
 
     /**
@@ -152,20 +158,31 @@ class SocketBackpressureRegressionTest {
         java.util.concurrent.atomic.AtomicInteger flushes = new java.util.concurrent.atomic.AtomicInteger();
         EmbeddedChannel channel = new EmbeddedChannel(new ChannelDuplexHandler() {
             @Override
-            public void flush(ChannelHandlerContext ctx) { flushes.incrementAndGet(); ctx.flush(); }
+            public void flush(ChannelHandlerContext ctx) {
+                flushes.incrementAndGet();
+                ctx.flush();
+            }
         });
         SocketMessageSender sender = new SocketMessageSender(channel, new OutboundLimits(256, 4096));
         try {
-            for (int i = 0; i < 130; i++) sender.sendMessage(Unpooled.buffer().writeInt(i));
+            for (int i = 0; i < 130; i++) {
+                sender.sendMessage(Unpooled.buffer().writeInt(i));
+            }
             channel.runPendingTasks();
             assertEquals(3, flushes.get());
             assertEquals(0, sender.pendingWrites());
             for (int i = 0; i < 130; i++) {
                 ByteBuf frame = channel.readOutbound();
-                try { assertEquals(i, frame.readInt()); } finally { frame.release(); }
+                try {
+                    assertEquals(i, frame.readInt());
+                } finally {
+                    frame.release();
+                }
             }
             assertNull(channel.readOutbound());
-        } finally { channel.finishAndReleaseAll(); }
+        } finally {
+            channel.finishAndReleaseAll();
+        }
     }
 
     /**
@@ -382,6 +399,90 @@ class SocketBackpressureRegressionTest {
         } finally {
             channel.finishAndReleaseAll();
             decoder.finishAndReleaseAll();
+        }
+    }
+
+    /**
+     * Rejects oversized sources before encoding or retaining a caller-owned Event payload.
+     */
+    @Test
+    void preEncodingByteAdmissionRejectsLargeSourcesAndReleasesRawMessages() {
+        for (boolean eventSource : new boolean[]{false, true}) {
+            EmbeddedChannel channel = new EmbeddedChannel(new MessageBufferEventEncoder());
+            OutboundBudget budget = new OutboundBudget(64);
+            SocketMessageSender sender = new SocketMessageSender(channel, new OutboundLimits(8, 64, 4), budget);
+            ByteBuf payload = Unpooled.buffer().writeLong(1);
+            try {
+                Object message = eventSource ? Events.networkEvent(new NettyMessageBuffer(payload)) : payload;
+                var rejected = sender.sendMessage(message);
+                assertInstanceOf(RejectedExecutionException.class, rejected.cause());
+                assertEquals(eventSource ? 1 : 0, payload.refCnt());
+                assertEquals(0, sender.pendingPayloadBytes());
+                assertEquals(0, budget.pendingBytes());
+                assertEquals(0, sender.pendingWrites());
+                assertFalse(channel.isOpen());
+            } finally {
+                channel.finishAndReleaseAll();
+                if (payload.refCnt() > 0) {
+                    payload.release();
+                }
+            }
+        }
+    }
+
+    /**
+     * Applies one source allowance across independent channels and returns reservations on closure.
+     */
+    @Test
+    void aggregateSourceBudgetIsSharedAcrossConnectionsAndReturnedAfterClosure() {
+        OutboundBudget budget = new OutboundBudget(8);
+        EmbeddedChannel first = new EmbeddedChannel();
+        EmbeddedChannel second = new EmbeddedChannel();
+        SocketMessageSender one = new SocketMessageSender(first, new OutboundLimits(8, 64, 64), budget);
+        SocketMessageSender two = new SocketMessageSender(second, new OutboundLimits(8, 64, 64), budget);
+        ByteBuf accepted = Unpooled.buffer().writeLong(1);
+        ByteBuf rejected = Unpooled.buffer().writeByte(2);
+        try {
+            var admitted = one.sendMessage(accepted);
+            assertEquals(8, one.pendingPayloadBytes());
+            assertEquals(8, budget.pendingBytes());
+            var failure = two.sendMessage(rejected);
+            assertInstanceOf(RejectedExecutionException.class, failure.cause());
+            assertEquals(0, rejected.refCnt());
+            assertEquals(8, budget.pendingBytes());
+            first.close();
+            first.runPendingTasks();
+            assertTrue(admitted.isDone());
+            assertEquals(0, accepted.refCnt());
+            assertEquals(0, one.pendingPayloadBytes());
+            assertEquals(0, budget.pendingBytes());
+        } finally {
+            first.finishAndReleaseAll();
+            second.finishAndReleaseAll();
+        }
+    }
+
+    /**
+     * Charges encoded expansion against the same aggregate owner as retained source bytes.
+     */
+    @Test
+    void aggregateBudgetIncludesEncodedBytesAndSettlesBothChargesOnFailure() {
+        EmbeddedChannel channel = new EmbeddedChannel(new MessageBufferEventEncoder());
+        OutboundBudget budget = new OutboundBudget(12);
+        SocketMessageSender sender = new SocketMessageSender(channel, new OutboundLimits(8, 64, 64), budget);
+        ByteBuf payload = Unpooled.buffer().writeLong(1);
+        try {
+            var future = sender.sendMessage(Events.networkEvent(new NettyMessageBuffer(payload)));
+            assertEquals(8, budget.pendingBytes());
+            channel.runPendingTasks();
+            assertInstanceOf(RejectedExecutionException.class, future.cause());
+            assertFalse(channel.isOpen());
+            assertEquals(1, payload.refCnt());
+            assertEquals(0, budget.pendingBytes());
+            assertEquals(0, sender.pendingPayloadBytes());
+        } finally {
+            payload.release();
+            channel.finishAndReleaseAll();
         }
     }
 

@@ -1,15 +1,14 @@
 package com.akakata.context.module;
 
+import com.akakata.communication.OutboundBudget;
+import com.akakata.communication.OutboundLimits;
 import com.akakata.context.AppContext;
 import com.akakata.context.ConfigurationManager;
 import com.akakata.context.NetworkBootstrap;
 import com.akakata.handlers.HttpRequestHandler;
 import com.akakata.handlers.LoginHandler;
 import com.akakata.handlers.WebSocketLoginHandler;
-import com.akakata.server.ConnectionAdmission;
-import com.akakata.server.NettyConfig;
-import com.akakata.server.Server;
-import com.akakata.server.ServerManager;
+import com.akakata.server.*;
 import com.akakata.server.http.*;
 import com.akakata.server.impl.NettyTCPServer;
 import com.akakata.server.impl.ServerManagerImpl;
@@ -27,7 +26,7 @@ import io.netty.handler.codec.LengthFieldPrepender;
 
 import javax.inject.Named;
 import javax.inject.Singleton;
-
+import java.net.InetSocketAddress;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -132,12 +131,12 @@ public abstract class ServerModule {
     /**
      * Provides the http request handler dependency for the application component.
      *
-     * @param staticFileHandler the static file handler
-     * @param indexPageHandler the index page handler
-     * @param apiHandler the api handler
-     * @param rpcHandler the rpc handler
+     * @param staticFileHandler  the static file handler
+     * @param indexPageHandler   the index page handler
+     * @param apiHandler         the api handler
+     * @param rpcHandler         the rpc handler
      * @param healthCheckHandler the health check handler
-     * @param metricsHandler the metrics handler
+     * @param metricsHandler     the metrics handler
      * @return the http request handler instance
      */
     @Provides
@@ -159,43 +158,54 @@ public abstract class ServerModule {
     /**
      * Provides the login channel initializer dependency for the application component.
      *
-     * @param decoder the inbound decoder or object converter
+     * @param decoder      the inbound decoder or object converter
      * @param loginHandler the login handler
-     * @param prepender the prepender
-     * @param admission the shared TCP/WebSocket admission policy
+     * @param prepender    the prepender
+     * @param admission    the shared TCP/WebSocket admission policy
+     * @param limits       the per-channel write allowance
+     * @param budget       the shared write reservation owner
      * @return the login channel initializer instance
      */
     @Provides
     @Singleton
     static LoginChannelInitializer provideLoginChannelInitializer(@Named("tcpDecoder") ChannelHandler decoder,
                                                                   LoginHandler loginHandler,
-                                                                  LengthFieldPrepender prepender, ConnectionAdmission admission) {
-        return new LoginChannelInitializer(admission.limits().maximumFrameBytes() + 2, decoder, loginHandler, prepender, admission);
+                                                                  LengthFieldPrepender prepender, ConnectionAdmission admission,
+                                                                  OutboundLimits limits, OutboundBudget budget) {
+        return new LoginChannelInitializer(admission.limits().maximumFrameBytes() + 2, decoder, loginHandler, prepender, admission, limits, budget);
     }
 
     /**
      * Provides the http server channel initializer dependency for the application component.
      *
-     * @param handler the handler or request router
+     * @param handler    the handler or request router
+     * @param admission  the shared socket admission owner
+     * @param httpLimits the HTTP body and lifetime policy
+     * @param limits     the per-channel write allowance
+     * @param budget     the aggregate write reservation owner
      * @return the http server channel initializer instance
      */
     @Provides
     @Singleton
-    static HttpServerChannelInitializer provideHttpServerChannelInitializer(HttpRequestHandler handler) {
-        return new HttpServerChannelInitializer(handler);
+    static HttpServerChannelInitializer provideHttpServerChannelInitializer(HttpRequestHandler handler, ConnectionAdmission admission,
+                                                                            HttpLimits httpLimits, OutboundLimits limits, OutboundBudget budget) {
+        return new HttpServerChannelInitializer(handler, admission, httpLimits, limits, budget);
     }
 
     /**
      * Provides the web socket server channel initializer dependency for the application component.
      *
-     * @param handler the handler or request router
+     * @param handler   the handler or request router
      * @param admission the shared TCP/WebSocket admission policy
+     * @param limits    the per-channel write allowance
+     * @param budget    the shared write reservation owner
      * @return the web socket server channel initializer instance
      */
     @Provides
     @Singleton
-    static WebSocketServerChannelInitializer provideWebSocketServerChannelInitializer(WebSocketLoginHandler handler, ConnectionAdmission admission) {
-        return new WebSocketServerChannelInitializer(handler, admission);
+    static WebSocketServerChannelInitializer provideWebSocketServerChannelInitializer(WebSocketLoginHandler handler, ConnectionAdmission admission,
+                                                                                      OutboundLimits limits, OutboundBudget budget) {
+        return new WebSocketServerChannelInitializer(handler, admission, limits, budget);
     }
 
     // ============================================================
@@ -206,8 +216,8 @@ public abstract class ServerModule {
      * Provides the tcp server dependency for the application component.
      *
      * @param configurationManager the loaded configuration manager
-     * @param networkBootstrap the owner of shared network event-loop groups
-     * @param initializer the initializer for accepted channels
+     * @param networkBootstrap     the owner of shared network event-loop groups
+     * @param initializer          the initializer for accepted channels
      * @return the tcp server instance
      */
     @Provides
@@ -216,15 +226,15 @@ public abstract class ServerModule {
     static Server provideTcpServer(ConfigurationManager configurationManager,
                                    NetworkBootstrap networkBootstrap,
                                    LoginChannelInitializer initializer) {
-        return createServer(configurationManager, networkBootstrap, "tcp.port", 8090, initializer);
+        return createServer(configurationManager, networkBootstrap, "tcp.port", "tcp.bind.host", initializer);
     }
 
     /**
      * Provides the http server dependency for the application component.
      *
      * @param configurationManager the loaded configuration manager
-     * @param networkBootstrap the owner of shared network event-loop groups
-     * @param initializer the initializer for accepted channels
+     * @param networkBootstrap     the owner of shared network event-loop groups
+     * @param initializer          the initializer for accepted channels
      * @return the http server instance
      */
     @Provides
@@ -233,15 +243,15 @@ public abstract class ServerModule {
     static Server provideHttpServer(ConfigurationManager configurationManager,
                                     NetworkBootstrap networkBootstrap,
                                     HttpServerChannelInitializer initializer) {
-        return createServer(configurationManager, networkBootstrap, "http.port", 8081, initializer);
+        return createServer(configurationManager, networkBootstrap, "http.port", "http.bind.host", initializer);
     }
 
     /**
      * Provides the web socket server dependency for the application component.
      *
      * @param configurationManager the loaded configuration manager
-     * @param networkBootstrap the owner of shared network event-loop groups
-     * @param initializer the initializer for accepted channels
+     * @param networkBootstrap     the owner of shared network event-loop groups
+     * @param initializer          the initializer for accepted channels
      * @return the web socket server instance
      */
     @Provides
@@ -250,7 +260,7 @@ public abstract class ServerModule {
     static Server provideWebSocketServer(ConfigurationManager configurationManager,
                                          NetworkBootstrap networkBootstrap,
                                          WebSocketServerChannelInitializer initializer) {
-        return createServer(configurationManager, networkBootstrap, "web.socket.port", 8300, initializer);
+        return createServer(configurationManager, networkBootstrap, "web.socket.port", "web.socket.bind.host", initializer);
     }
 
     // ============================================================
@@ -258,22 +268,33 @@ public abstract class ServerModule {
     // ============================================================
 
     /**
-     * Creates a server with configured ports and socket options using shared network groups.
+     * Creates a server with required listener settings and shared network groups.
      *
      * @param configurationManager the loaded configuration manager
-     * @param networkBootstrap the owner of shared network event-loop groups
-     * @param portKey the configuration key for the bind port
-     * @param defaultPort the fallback bind port
-     * @param initializer the initializer for accepted channels
+     * @param networkBootstrap     the owner of shared network event-loop groups
+     * @param portKey              the configuration key for the bind port
+     * @param hostKey              the exact configuration key for the bind address
+     * @param initializer          the initializer for accepted channels
      * @return the configured server
+     * @throws IllegalArgumentException if the port or host is missing or invalid
      */
     private static Server createServer(ConfigurationManager configurationManager,
                                        NetworkBootstrap networkBootstrap,
                                        String portKey,
-                                       int defaultPort,
+                                       String hostKey,
                                        ChannelInitializer<? extends Channel> initializer) {
         NettyConfig config = new NettyConfig();
-        config.setPortNumber(configurationManager.getInt(portKey, defaultPort));
+        int port = configurationManager.getRequiredInt(portKey);
+        if (port < 0 || port > 65_535) {
+            throw new IllegalArgumentException("Listener port must be between 0 and 65535: " + portKey);
+        }
+        String host = configurationManager.getRequiredString(hostKey);
+        InetSocketAddress address = new InetSocketAddress(host, port);
+        if (address.isUnresolved()) {
+            throw new IllegalArgumentException("Unresolvable bind host: " + hostKey);
+        }
+        config.setPortNumber(port);
+        config.setSocketAddress(address);
         config.setBossGroup(networkBootstrap.getBossGroup());
         config.setWorkerGroup(networkBootstrap.getWorkerGroup());
 

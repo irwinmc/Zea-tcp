@@ -122,7 +122,7 @@ public class ServerManagerImpl implements ServerManager {
 
         // Check TCP server
         if (isServerEnabled("server.tcp.enabled")) {
-            LOG.info("Starting TCP server on port {}...", configManager.getInt("tcp.port", 8090));
+            LOG.info("Starting TCP server on port {}...", configManager.getRequiredInt("tcp.port"));
             tcpServer.startServer();
             servers.add(tcpServer);
             LOG.info("TCP server started successfully");
@@ -132,7 +132,7 @@ public class ServerManagerImpl implements ServerManager {
 
         // Check HTTP server
         if (isServerEnabled("server.http.enabled")) {
-            LOG.info("Starting HTTP server on port {}...", configManager.getInt("http.port", 8081));
+            LOG.info("Starting HTTP server on port {}...", configManager.getRequiredInt("http.port"));
             httpServer.startServer();
             servers.add(httpServer);
             LOG.info("HTTP server started successfully");
@@ -142,7 +142,7 @@ public class ServerManagerImpl implements ServerManager {
 
         // Check WebSocket server
         if (isServerEnabled("server.websocket.enabled")) {
-            LOG.info("Starting WebSocket server on port {}...", configManager.getInt("web.socket.port", 8300));
+            LOG.info("Starting WebSocket server on port {}...", configManager.getRequiredInt("web.socket.port"));
             webSocketServer.startServer();
             servers.add(webSocketServer);
             LOG.info("WebSocket server started successfully");

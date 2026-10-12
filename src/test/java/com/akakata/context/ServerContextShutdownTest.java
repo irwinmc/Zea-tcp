@@ -57,7 +57,32 @@ class ServerContextShutdownTest {
         /**
          * Invalid Game budget fails after acquiring shared executor ownership.
          */
-        INVALID_GAME_BUDGET
+        INVALID_GAME_BUDGET,
+
+        /**
+         * Application replacements reach the singleton login graph and are closed by the context.
+         */
+        CUSTOM_COMPONENTS,
+
+        /**
+         * A later provider failure releases resources returned by earlier application factories.
+         */
+        FACTORY_FAILURE,
+
+        /**
+         * Invalid security configuration closes the network owner before application creation.
+         */
+        INVALID_SECURITY,
+
+        /**
+         * A failed startup hook still closes a fully initialized context.
+         */
+        STARTUP_HOOK_FAILURE,
+
+        /**
+         * An invalid required listener setting releases all resources already constructed.
+         */
+        INVALID_LISTENER_CONFIG
     }
 
     /**
@@ -137,11 +162,121 @@ class ServerContextShutdownTest {
          */
         public static void main(String[] args) throws Exception {
             Scenario scenario = Scenario.valueOf(args[0]);
-            ServerContext context = new ServerContext("conf-lifecycle.properties");
+            AtomicBoolean injectedGameClosed = new AtomicBoolean();
+            java.util.concurrent.atomic.AtomicInteger gameCreations = new java.util.concurrent.atomic.AtomicInteger();
+            java.util.concurrent.atomic.AtomicInteger loginCreations = new java.util.concurrent.atomic.AtomicInteger();
+            com.akakata.security.Credentials identity = new SimpleCredentials();
+            com.akakata.security.CredentialsVerifier verifier = ignored -> identity;
+            com.akakata.service.SecurityService tokens = new com.akakata.service.SecurityService() {
+                @Override
+                public String generateToken(com.akakata.security.Credentials credentials) {
+                    assertSame(identity, credentials);
+                    return "application-issued-token";
+                }
+            };
+            ServerComponents.Builder choices = ServerComponents.builder();
+            if (scenario == Scenario.CUSTOM_COMPONENTS || scenario == Scenario.FACTORY_FAILURE) {
+                choices.credentialsVerifier(verifier).securityService(tokens).gameFactory(configuration -> {
+                    gameCreations.incrementAndGet();
+                    var owned = new com.akakata.app.impl.DefaultGame(16, 1024) {
+                        @Override
+                        public void close() {
+                            injectedGameClosed.set(true);
+                            super.close();
+                        }
+                    };
+                    com.akakata.event.EventDispatcher wrapped = (com.akakata.event.EventDispatcher) Proxy.newProxyInstance(
+                            Game.class.getClassLoader(), new Class<?>[]{com.akakata.event.EventDispatcher.class},
+                            (proxy, method, arguments) -> method.invoke(owned.getEventDispatcher(), arguments));
+                    return (Game) Proxy.newProxyInstance(Game.class.getClassLoader(), new Class<?>[]{Game.class},
+                            (proxy, method, arguments) -> method.getName().equals("getEventDispatcher")
+                                    ? wrapped : method.invoke(owned, arguments));
+                }).sessionServiceFactory((configuration, authenticator) -> {
+                    assertSame(verifier, authenticator);
+                    if (scenario == Scenario.FACTORY_FAILURE) {
+                        throw new IllegalStateException("Injected registry failure");
+                    }
+                    return new SessionService(authenticator, false, 3);
+                }).loginServiceFactory((registry, security) -> {
+                    loginCreations.incrementAndGet();
+                    assertSame(tokens, security);
+                    return new com.akakata.service.LoginService(registry, security);
+                });
+            }
+            ServerContext context = new ServerContext("conf-lifecycle.properties", choices.build());
             Game game = null;
             SessionService sessions = null;
             try {
-                if (scenario == Scenario.UNINITIALIZED) {
+                if (scenario == Scenario.INVALID_LISTENER_CONFIG) {
+                    context.getConfigManager().getProperties().setProperty("http.port", "invalid");
+                    var failure = assertThrows(IllegalArgumentException.class, context::initialize);
+                    assertTrue(failure.getMessage().contains("http.port"));
+                    game = context.getBean(Game.class);
+                    sessions = context.getBean(SessionService.class);
+                    assertTrue(((AbstractGame) game).isShuttingDown());
+                    assertEquals(0, sessions.size());
+                    assertTrue(((ScheduledExecutorService) field(sessions, "cleanupExecutor")).isTerminated());
+                    assertTrue(context.getBean(com.akakata.service.task.BlockingTaskExecutor.class).isTerminated());
+                    assertThrows(IllegalStateException.class, context::initialize);
+                } else if (scenario == Scenario.STARTUP_HOOK_FAILURE) {
+                    ServerContext ownedContext = context;
+                    com.akakata.CommandLine application = new com.akakata.CommandLine() {
+                        @Override
+                        protected ServerContext createServerContext() {
+                            return ownedContext;
+                        }
+                        @Override
+                        protected void beforeServerStartup() {
+                            throw new IllegalStateException("Injected startup failure");
+                        }
+                        @Override
+                        protected void beforeServerShutdown() {
+                            throw new IllegalStateException("Injected cleanup hook failure");
+                        }
+                    };
+                    var start = com.akakata.CommandLine.class.getDeclaredMethod("start");
+                    start.setAccessible(true);
+                    assertThrows(java.lang.reflect.InvocationTargetException.class, () -> start.invoke(application));
+                    var shutdown = com.akakata.CommandLine.class.getDeclaredMethod("shutdown");
+                    shutdown.setAccessible(true);
+                    shutdown.invoke(application);
+                    shutdown.invoke(application);
+                    assertTrue(((AbstractGame) context.getBean(Game.class)).isShuttingDown());
+                    assertTrue(context.getBean(com.akakata.service.task.BlockingTaskExecutor.class).isTerminated());
+                } else if (scenario == Scenario.INVALID_SECURITY) {
+                    context.getConfigManager().getProperties().setProperty("security.token.key.environment", "ZEA_REGRESSION_MISSING_SECRET");
+                    assertThrows(IllegalArgumentException.class, context::initialize);
+                    assertNull(context.getBean(Game.class));
+                    assertThrows(IllegalStateException.class, context::initialize);
+                } else if (scenario == Scenario.FACTORY_FAILURE) {
+                    assertThrows(IllegalStateException.class, context::initialize);
+                    assertTrue(injectedGameClosed.get());
+                    assertEquals(1, gameCreations.get());
+                    assertNull(context.getBean(SessionService.class));
+                } else if (scenario == Scenario.CUSTOM_COMPONENTS) {
+                    context.initialize();
+                    context.initialize();
+                    assertEquals(1, gameCreations.get());
+                    assertEquals(1, loginCreations.get());
+                    assertSame(verifier, context.getBean(com.akakata.security.CredentialsVerifier.class));
+                    assertSame(tokens, context.getBean(com.akakata.service.SecurityService.class));
+                    assertEquals(3, context.getBean(SessionService.class).maximumSessions());
+                    var buffer = io.netty.buffer.Unpooled.buffer().writeByte(1);
+                    com.akakata.service.LoginService.LoginResult authenticated;
+                    try {
+                        authenticated = context.getBean(com.akakata.service.LoginService.class).login(buffer, context.getBean(Game.class));
+                    } finally {
+                        buffer.release();
+                    }
+                    assertNotNull(authenticated);
+                    assertEquals("application-issued-token", authenticated.token());
+                    assertSame(identity, authenticated.session().getAttribute("credentials"));
+                    assertSame(authenticated.session(), context.getBean(SessionService.class).getSession(identity));
+                    context.close();
+                    assertTrue(injectedGameClosed.get());
+                    assertEquals(Session.Status.CLOSED, authenticated.session().getStatus());
+                    assertTrue(context.getBean(com.akakata.service.task.BlockingTaskExecutor.class).isTerminated());
+                } else if (scenario == Scenario.UNINITIALIZED) {
                     context.close();
                     context.close();
                     assertThrows(IllegalStateException.class, context::initialize);

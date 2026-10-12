@@ -272,15 +272,24 @@ public class MetricsHandler extends AbstractHttpHandler {
         addPrometheusMetric(prom, "errors_total", "counter", "Total errors", metrics.getTotalErrors());
 
         FlowControlMetrics.transportSnapshot().forEach((name, value) -> {
-            String type = java.util.Set.of("active_connections", "paused_channels", "pending_writes", "pending_socket_bytes")
+            String type = java.util.Set.of("active_connections", "paused_channels", "pending_writes", "pending_socket_bytes", "pending_payload_bytes")
                     .contains(name) ? "gauge" : "counter";
             addPrometheusMetric(prom, "zea_flow_" + name, type, "Transport flow " + name, value);
         });
         var flow = FlowControlMetrics.snapshot();
+        for (String scope : java.util.List.of("outbound", "blocking")) {
+            if (flow.get(scope) instanceof java.util.Map<?, ?> gauges) {
+                gauges.forEach((name, value) -> addPrometheusMetric(prom, "zea_flow_" + scope + "_" + name,
+                        "gauge", "Resource allowance " + scope + " " + name, value));
+            }
+        }
         var sessions = com.akakata.event.impl.EventDispatchers.sharedGroup().snapshots();
-        for (int i = 0; i < sessions.size(); i++) appendFlowMetrics(prom, "session", i, sessions.get(i));
-        if (flow.get("game") instanceof DispatcherSnapshot game)
+        for (int i = 0; i < sessions.size(); i++) {
+            appendFlowMetrics(prom, "session", i, sessions.get(i));
+        }
+        if (flow.get("game") instanceof DispatcherSnapshot game) {
             appendFlowMetrics(prom, "game", 0, game);
+        }
         sendMetricResponse(ctx, Unpooled.copiedBuffer(prom.toString(), CharsetUtil.UTF_8), "text/plain; charset=UTF-8");
     }
 

@@ -30,6 +30,11 @@ public final class TransportLifecycleHandler extends ChannelInboundHandlerAdapte
     private ScheduledFuture<?> deadline;
 
     /**
+     * Prevents duplicate activation from extending the authentication deadline.
+     */
+    private boolean activated;
+
+    /**
      * Creates one channel's lifetime guard.
      *
      * @param admission the shared per-context connection owner
@@ -45,8 +50,9 @@ public final class TransportLifecycleHandler extends ChannelInboundHandlerAdapte
      * @param admission the shared TCP/WebSocket policy owner
      */
     public static void install(ChannelPipeline pipeline, ConnectionAdmission admission) {
-        if (admission.limits().readIdleMillis() > 0)
+        if (admission.limits().readIdleMillis() > 0) {
             pipeline.addLast("zeaReadIdle", new IdleStateHandler(admission.limits().readIdleMillis(), 0, 0, TimeUnit.MILLISECONDS));
+        }
         pipeline.addLast("zeaLifecycle", new TransportLifecycleHandler(admission));
     }
 
@@ -57,7 +63,9 @@ public final class TransportLifecycleHandler extends ChannelInboundHandlerAdapte
      */
     public static void authenticated(Channel channel) {
         TransportLifecycleHandler handler = channel.pipeline().get(TransportLifecycleHandler.class);
-        if (handler != null) handler.cancelDeadline();
+        if (handler != null) {
+            handler.cancelDeadline();
+        }
     }
 
     /**
@@ -76,6 +84,11 @@ public final class TransportLifecycleHandler extends ChannelInboundHandlerAdapte
      */
     @Override
     public void channelActive(ChannelHandlerContext ctx) {
+        if (activated) {
+            ctx.fireChannelActive();
+            return;
+        }
+        activated = true;
         if (!admission.admit(ctx.channel())) {
             ctx.close();
             return;
@@ -95,7 +108,9 @@ public final class TransportLifecycleHandler extends ChannelInboundHandlerAdapte
         if (event instanceof IdleStateEvent) {
             FlowControlMetrics.IDLE_TIMEOUTS.increment();
             ctx.close();
-        } else ctx.fireUserEventTriggered(event);
+        } else {
+            ctx.fireUserEventTriggered(event);
+        }
     }
 
     /**

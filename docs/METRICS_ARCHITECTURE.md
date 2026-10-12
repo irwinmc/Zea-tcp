@@ -1,6 +1,6 @@
 # Metrics Architecture
 
-Zea TCP Transport 0.8.1 exposes three process-wide metric sources:
+Zea TCP Transport 0.8.2 exposes three process-wide metric sources:
 `ServerMetrics` for explicit counters and direct runtime readings, and
 `EventDispatcherMetrics` for sampled shared-dispatcher queue depths, and
 `FlowControlMetrics` for live Session/Game snapshots and instrumented transport flow.
@@ -192,8 +192,9 @@ Transport gauges and cumulative counters use LongAdder. Admission, lifetime guar
 read-pressure transitions, socket promises, encoded-byte promises and shared encoding
 update them directly. Queue-recovery notifications do not reorder business tasks
 or execute application callbacks on network threads. Gauges return credits when
-their associated close/write future completes. HTTP connections are excluded from
-the TCP/WebSocket connection quota and gauge. Context closure clears the sampled
+their associated close/write future completes. HTTP connections participate in
+the shared TCP/WebSocket/HTTP connection quota and gauge. HTTP also enforces
+its own connection allowance and absolute request deadline. Context closure clears the sampled
 Game reference so metrics do not retain a terminated Game executor.
 
 Live snapshots are available with the legacy periodic sampler disabled. Each
@@ -241,3 +242,10 @@ coordination.
 - [HealthCheckHandler](../src/main/java/com/akakata/server/http/HealthCheckHandler.java)
 - [ServerContext](../src/main/java/com/akakata/context/ServerContext.java)
 - [Event loops and lifecycle](EVENT_LOOP.md)
+
+The current checkout also registers the context's aggregate `OutboundBudget` and
+`BlockingTaskExecutor` with flow metrics. Source-payload estimates and encoded
+reservations coexist until socket completion. Blocking-operation task/byte gauges
+remain charged while a cancelled operation still runs. Context closure clears the
+sampled owners after stopping result producers. See
+[monitoring](MONITORING.md#flow-control-metrics) for JSON and Prometheus field names.

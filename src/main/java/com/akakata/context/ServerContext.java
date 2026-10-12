@@ -1,14 +1,20 @@
 package com.akakata.context;
 
 import com.akakata.app.Game;
+import com.akakata.communication.OutboundBudget;
 import com.akakata.context.module.DaggerGameServerComponent;
 import com.akakata.context.module.GameServerComponent;
+import com.akakata.context.module.ServiceModule;
 import com.akakata.event.impl.EventDispatchers;
 import com.akakata.event.impl.NettyEventDispatcher;
 import com.akakata.metrics.EventDispatcherMetrics;
 import com.akakata.metrics.FlowControlMetrics;
+import com.akakata.security.CredentialsVerifier;
 import com.akakata.server.ServerManager;
+import com.akakata.service.LoginService;
+import com.akakata.service.SecurityService;
 import com.akakata.service.SessionService;
+import com.akakata.service.task.BlockingTaskExecutor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -18,7 +24,9 @@ import java.io.IOException;
  * Owns configuration, network resources and the Dagger application component.
  *
  * <p>Initialization is idempotent until closure and cleans up partial construction
- * on failure. Shutdown stops servers, closes the game and session service, stops
+ * on failure. Application providers can replace core implementations while keeping
+ * the classpath properties loader. Shutdown stops servers and blocking result
+ * producers, closes the game and session service, stops
  * metrics, releases the shared dispatcher and terminates event loops. Failures in
  * one cleanup stage are logged so later stages can still execute.
  *
@@ -45,6 +53,36 @@ public final class ServerContext implements AutoCloseable {
      * Owner of the shared boss and worker event-loop groups.
      */
     private final NetworkBootstrap networkBootstrap;
+
+    /**
+     * Immutable provider choices supplied by the application.
+     */
+    private final ServerComponents components;
+
+    /**
+     * Selected authentication implementation, exposed without lazy creation after shutdown.
+     */
+    private volatile CredentialsVerifier verifier;
+
+    /**
+     * Selected token implementation.
+     */
+    private volatile SecurityService security;
+
+    /**
+     * Selected login coordinator.
+     */
+    private volatile LoginService login;
+
+    /**
+     * Context-wide outbound reservation owner.
+     */
+    private volatile OutboundBudget outboundBudget;
+
+    /**
+     * Context-owned bounded workers for detached slow business operations.
+     */
+    private volatile BlockingTaskExecutor blockingTasks;
 
     /**
      * Singleton sampler for shared-dispatcher queue depths.
@@ -99,6 +137,21 @@ public final class ServerContext implements AutoCloseable {
      * @throws IOException if the classpath configuration cannot be loaded
      */
     public ServerContext(String configPath) throws IOException {
+        this(configPath, ServerComponents.builder().build());
+    }
+
+    /**
+     * Loads classpath properties and selects application core providers.
+     *
+     * <p>Factories run during initialization. The context closes the returned Game,
+     * SessionService and its blocking workers, including partially initialized resources.
+     *
+     * @param configPath the classpath properties resource name
+     * @param components the application's immutable provider choices
+     * @throws IOException if the configuration resource cannot be loaded
+     */
+    public ServerContext(String configPath, ServerComponents components) throws IOException {
+        this.components = java.util.Objects.requireNonNull(components);
         this.configManager = new ConfigurationManager(configPath);
 
         int bossThreads = configManager.getInt("bossThreadCount", 1);
@@ -132,25 +185,33 @@ public final class ServerContext implements AutoCloseable {
             EventDispatchers.configure(configManager.getInt("session.dispatcher.shards",
                             Math.max(2, Integer.highestOneBit(Runtime.getRuntime().availableProcessors()))),
                     configManager.getInt("session.queue.capacity", NettyEventDispatcher.DEFAULT_QUEUE_CAPACITY),
-                    configManager.getInt("session.queue.bytes", (int) NettyEventDispatcher.DEFAULT_QUEUE_BYTES));
+                    configManager.getLong("session.queue.bytes", NettyEventDispatcher.DEFAULT_QUEUE_BYTES));
             sharedDispatcherConfigured = true;
             GameServerComponent component = DaggerGameServerComponent.builder()
                     .configurationManager(configManager)
                     .networkBootstrap(networkBootstrap)
+                    .serviceModule(new ServiceModule(components))
                     .build();
+
+            verifier = component.credentialsVerifier();
+            security = component.securityService();
+            outboundBudget = component.outboundBudget();
 
             // Retain ownership before building servers so partial initialization can be cleaned up.
             game = component.game();
             sessionService = component.sessionService();
+            blockingTasks = component.blockingTaskExecutor();
+            login = component.loginService();
 
             // Initialize ServerManager (it manages all servers internally)
             serverManager = component.serverManager();
 
-            FlowControlMetrics.gameDispatcher((NettyEventDispatcher) game.getEventDispatcher());
+            FlowControlMetrics.gameDispatcher(game.getEventDispatcher() instanceof NettyEventDispatcher dispatcher ? dispatcher : null);
+            FlowControlMetrics.resources(outboundBudget, blockingTasks);
             startDispatcherMetrics();
             initialized = true;
             LOG.info("ServerContext initialization complete");
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | Error e) {
             close();
             throw e;
         }
@@ -159,11 +220,12 @@ public final class ServerContext implements AutoCloseable {
     /**
      * Resolves one of the exposed application resources by type.
      *
-     * <p>Supported types are Game, SessionService and ServerManager. Before successful
+     * <p>Supported types include Game, SessionService, ServerManager, CredentialsVerifier,
+     * SecurityService, LoginService, OutboundBudget and BlockingTaskExecutor. Before successful
      * initialization, the corresponding field may be null.
      *
-     * @param <T> the requested value type
-     * @param type the event opcode
+     * @param <T>  the requested value type
+     * @param type the supported resource type
      * @return the resource cast to the requested type, or {@code null} before it is initialized
      * @throws IllegalArgumentException if the requested type is not exposed
      */
@@ -176,6 +238,21 @@ public final class ServerContext implements AutoCloseable {
         }
         if (type == SessionService.class) {
             return type.cast(sessionService);
+        }
+        if (type == BlockingTaskExecutor.class) {
+            return type.cast(blockingTasks);
+        }
+        if (type == CredentialsVerifier.class) {
+            return type.cast(verifier);
+        }
+        if (type == SecurityService.class) {
+            return type.cast(security);
+        }
+        if (type == LoginService.class) {
+            return type.cast(login);
+        }
+        if (type == OutboundBudget.class) {
+            return type.cast(outboundBudget);
         }
         throw new IllegalArgumentException("No bean found for type: " + type.getName());
     }
@@ -212,6 +289,15 @@ public final class ServerContext implements AutoCloseable {
             }
         }
 
+        // Stop blocking result producers before closing their Session and Game targets.
+        if (blockingTasks != null) {
+            try {
+                blockingTasks.close();
+            } catch (Exception e) {
+                LOG.error("Error closing blocking task executor", e);
+            }
+        }
+
         // Close application resources while dispatchers and network event loops are available.
         if (game != null) {
             try {
@@ -238,6 +324,7 @@ public final class ServerContext implements AutoCloseable {
         }
 
         FlowControlMetrics.gameDispatcher(null);
+        FlowControlMetrics.resources(null, null);
 
         // Avoid creating the shared dispatcher when closing an uninitialized context.
         if (sharedDispatcherConfigured || game != null || sessionService != null) {

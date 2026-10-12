@@ -68,7 +68,7 @@ public class NettyUtils {
     }
 
     /**
-     * Removes protocol handlers while preserving installed transport lifetime guards.
+     * Removes protocol handlers while preserving installed transport lifetime and outbound guards.
      * A null pipeline is ignored.
      *
      * @param pipeline the Netty handler pipeline
@@ -79,6 +79,7 @@ public class NettyUtils {
         }
         for (String name : java.util.List.copyOf(pipeline.names())) {
             if (pipeline.get(name) != null && !name.equals("zeaReadIdle")
+                    && !name.equals("zeaOutboundBudget")
                     && !(pipeline.get(name) instanceof TransportLifecycleHandler)) {
                 pipeline.remove(name);
             }

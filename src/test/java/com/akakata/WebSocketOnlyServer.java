@@ -39,7 +39,10 @@ public class WebSocketOnlyServer extends CommandLine {
         // Use custom configuration that only enables WebSocket
         String configPath = "conf-websocket-only.properties";
         LOG.info("Loading configuration: {}", configPath);
-        return new ServerContext(configPath);
+        ServerContext context = new ServerContext(configPath);
+        // Anonymous credentials are an explicit choice for this local demonstration.
+        context.getConfigManager().getProperties().setProperty("security.allow.anonymous", "true");
+        return context;
     }
 
     /**

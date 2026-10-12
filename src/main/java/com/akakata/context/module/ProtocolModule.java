@@ -1,17 +1,12 @@
 package com.akakata.context.module;
 
 import com.akakata.app.Game;
+import com.akakata.communication.OutboundBudget;
 import com.akakata.communication.OutboundLimits;
 import com.akakata.context.ConfigurationManager;
 import com.akakata.handlers.LoginHandler;
 import com.akakata.handlers.WebSocketLoginHandler;
-import com.akakata.handlers.codec.EventDecoder;
-import com.akakata.handlers.codec.JsonDecoder;
-import com.akakata.handlers.codec.JsonEncoder;
-import com.akakata.handlers.codec.SbeEventDecoder;
-import com.akakata.handlers.codec.SbeEventEncoder;
-import com.akakata.handlers.codec.WebSocketEventDecoder;
-import com.akakata.handlers.codec.WebSocketEventEncoder;
+import com.akakata.handlers.codec.*;
 import com.akakata.protocols.Protocol;
 import com.akakata.protocols.impl.JsonProtocol;
 import com.akakata.protocols.impl.SbeProtocol;
@@ -145,8 +140,8 @@ public final class ProtocolModule {
     /**
      * Provides the sbe protocol dependency for the application component.
      *
-     * @param decoder the inbound decoder or object converter
-     * @param encoder the outbound encoder or object converter
+     * @param decoder   the inbound decoder or object converter
+     * @param encoder   the outbound encoder or object converter
      * @param prepender the prepender
      * @return the sbe protocol instance
      */
@@ -161,8 +156,8 @@ public final class ProtocolModule {
     /**
      * Provides the json protocol dependency for the application component.
      *
-     * @param decoder the inbound decoder or object converter
-     * @param encoder the outbound encoder or object converter
+     * @param decoder   the inbound decoder or object converter
+     * @param encoder   the outbound encoder or object converter
      * @param prepender the prepender
      * @return the json protocol instance
      */
@@ -196,8 +191,8 @@ public final class ProtocolModule {
      * Selects JSON when protocol.type equals JSON ignoring case; otherwise selects SBE.
      *
      * @param configurationManager the loaded configuration manager
-     * @param sbeProtocol the sbe protocol
-     * @param jsonProtocol the json protocol
+     * @param sbeProtocol          the sbe protocol
+     * @param jsonProtocol         the json protocol
      * @return the configured TCP protocol
      */
     @Provides
@@ -219,8 +214,8 @@ public final class ProtocolModule {
      * Selects the legacy opcode login decoder for JSON mode and the SBE decoder otherwise.
      *
      * @param configurationManager the loaded configuration manager
-     * @param sbeDecoder the sbe decoder
-     * @param legacyDecoder the legacy decoder
+     * @param sbeDecoder           the sbe decoder
+     * @param legacyDecoder        the legacy decoder
      * @return the selected login decoder
      */
     @Provides
@@ -243,34 +238,36 @@ public final class ProtocolModule {
     /**
      * Provides the login handler dependency for the application component.
      *
-     * @param protocol the protocol to install or associate
-     * @param game the associated game
-     * @param loginService the authentication coordinator
+     * @param protocol       the protocol to install or associate
+     * @param game           the associated game
+     * @param loginService   the authentication coordinator
      * @param outboundLimits the configured per-connection write and encoded-byte budgets
+     * @param budget         the shared context-wide reservation owner
      * @return the login handler instance
      */
     @Provides
     @Singleton
     static LoginHandler provideLoginHandler(@Named("tcpProtocol") Protocol protocol,
                                             Game game,
-                                            LoginService loginService, OutboundLimits outboundLimits) {
-        return new LoginHandler(protocol, game, loginService, outboundLimits);
+                                            LoginService loginService, OutboundLimits outboundLimits, OutboundBudget budget) {
+        return new LoginHandler(protocol, game, loginService, outboundLimits, budget);
     }
 
     /**
      * Provides the web socket login handler dependency for the application component.
      *
-     * @param protocol the protocol to install or associate
-     * @param game the associated game
-     * @param loginService the authentication coordinator
+     * @param protocol       the protocol to install or associate
+     * @param game           the associated game
+     * @param loginService   the authentication coordinator
      * @param outboundLimits the configured per-connection write and encoded-byte budgets
+     * @param budget         the shared context-wide reservation owner
      * @return the web socket login handler instance
      */
     @Provides
     @Singleton
     static WebSocketLoginHandler provideWebSocketLoginHandler(WebSocketProtocol protocol,
                                                               Game game,
-                                                              LoginService loginService, OutboundLimits outboundLimits) {
-        return new WebSocketLoginHandler(protocol, game, loginService, outboundLimits);
+                                                              LoginService loginService, OutboundLimits outboundLimits, OutboundBudget budget) {
+        return new WebSocketLoginHandler(protocol, game, loginService, outboundLimits, budget);
     }
 }

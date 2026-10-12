@@ -1,6 +1,6 @@
 # Monitoring Endpoints
 
-Zea TCP Transport 0.8.1 serves health and metrics endpoints through its HTTP
+Zea TCP Transport 0.8.2 serves health and metrics endpoints through its HTTP
 listener, whose bundled port is 8081. Enable `server.http.enabled` and use the
 configured `http.port`. The HTTP-only repository example uses port 18081 instead.
 See the [configuration guide](CONFIGURATION.md).
@@ -223,9 +223,13 @@ Game sends provide per-operation `DeliveryReport` recipient admission counts.
 A send report remains distinct from successful socket writes or client acknowledgment.
 Live flow-control snapshots supplement the older sampled session queue endpoint.
 
+The bundled HTTP listener explicitly binds to `127.0.0.1`. Configure
+`http.bind.host` for a private monitoring network when needed; the endpoints have
+no built-in authentication. See [security configuration](CORE_COMPONENTS.md).
+
 ## Flow-Control Metrics
 
-`GET /metrics/flow-control` returns `session`, `game` and `transport` groups. These
+`GET /metrics/flow-control` returns `session`, `game`, `transport`, `outbound` and `blocking` groups. These
 are live readings independent of `metrics.event.interval.seconds`; the combined
 `/metrics` response includes the same groups under `flow_control`.
 
@@ -246,11 +250,20 @@ Closed-scope submissions are excluded from saturation rejections. Queue bytes
 are conservative storage charges, not exact JVM memory readings.
 
 Transport fields `active_connections`, `paused_channels`, `pending_writes` and
-`pending_socket_bytes` are live gauges. `connection_rejections`, `login_timeouts`,
-`idle_timeouts`, `read_pauses`, `pause_timeouts`, `write_rejections`, `encoded_frames`
+`pending_socket_bytes` and `pending_payload_bytes` are live gauges. `connection_rejections`, `login_timeouts`,
+`idle_timeouts`, `http_timeouts`, `read_pauses`, `pause_timeouts`, `write_rejections`, `encoded_frames`
 and `encoding_reuses` are cumulative counters. Active connections count admitted
-TCP/WebSocket sockets including unauthenticated clients; HTTP monitoring sockets
-are excluded. Encoded byte gauges remain charged until the write promise settles.
+TCP/WebSocket/HTTP sockets including unauthenticated clients. HTTP additionally
+has its own connection sublimit and absolute request deadline. Encoded byte gauges remain charged until the write promise settles.
+The `outbound` group reports the context's `byte_budget` and `pending_bytes`,
+including source estimates and encoded buffers. The `blocking` group reports
+`threads`, `queue_capacity`, `byte_budget`, `pending_tasks`, `pending_bytes` and
+`active_workers`; cancelled running operations retain their charges until exit.
+Prometheus exposes these scalar values as `zea_flow_outbound_<field>` and
+`zea_flow_blocking_<field>` gauges. Source and encoded charges coexist while both
+resources are retained. `outbound` and `blocking` are null outside an initialized
+context; a custom non-Netty Game dispatcher has no default Game timing snapshot.
+
 These counters are instrumented by the default pipelines and require no application
 `ServerMetrics.record*()` calls. They supplement the older explicit traffic counters.
 `game` is null when no context Game is registered. Readings across queues are not

@@ -1,5 +1,8 @@
 package com.akakata.server.initializer;
 
+import com.akakata.communication.OutboundBudget;
+import com.akakata.communication.OutboundLimits;
+import com.akakata.communication.impl.SocketMessageSender;
 import com.akakata.handlers.LoginHandler;
 import com.akakata.handlers.TransportLifecycleHandler;
 import com.akakata.server.ConnectionAdmission;
@@ -30,6 +33,16 @@ public class LoginChannelInitializer extends ChannelInitializer<SocketChannel> {
      * Socket admission and lifetime policy shared with the WebSocket listener.
      */
     private final ConnectionAdmission admission;
+
+    /**
+     * Per-channel encoded write allowance, including login responses.
+     */
+    private final OutboundLimits outboundLimits;
+
+    /**
+     * Aggregate source and encoded-byte reservation owner.
+     */
+    private final OutboundBudget budget;
 
     /**
      * Decoder selected for inbound login frames.
@@ -87,11 +100,30 @@ public class LoginChannelInitializer extends ChannelInitializer<SocketChannel> {
      */
     public LoginChannelInitializer(int frameSize, ChannelHandler eventDecoder, LoginHandler loginHandler,
                                    LengthFieldPrepender lengthFieldPrepender, ConnectionAdmission admission) {
+        this(frameSize, eventDecoder, loginHandler, lengthFieldPrepender, admission, OutboundLimits.DEFAULT, OutboundBudget.DEFAULT);
+    }
+
+    /**
+     * Creates TCP login handling with shared connection and outbound budgets.
+     *
+     * @param frameSize            maximum TCP frame bytes including the prefix
+     * @param eventDecoder         the login decoder
+     * @param loginHandler         the authentication handler
+     * @param lengthFieldPrepender the outbound frame encoder
+     * @param admission            the shared connection owner
+     * @param outboundLimits       the per-channel write policy
+     * @param budget               the aggregate reservation owner
+     */
+    public LoginChannelInitializer(int frameSize, ChannelHandler eventDecoder, LoginHandler loginHandler,
+                                   LengthFieldPrepender lengthFieldPrepender, ConnectionAdmission admission,
+                                   OutboundLimits outboundLimits, OutboundBudget budget) {
         this.admission = admission;
         this.frameSize = frameSize;
         this.eventDecoder = eventDecoder;
         this.loginHandler = loginHandler;
         this.lengthFieldPrepender = lengthFieldPrepender;
+        this.outboundLimits = outboundLimits;
+        this.budget = budget;
     }
 
     /**
@@ -101,7 +133,7 @@ public class LoginChannelInitializer extends ChannelInitializer<SocketChannel> {
     public void initChannel(SocketChannel ch) throws Exception {
         // Create a default pipeline implementation.
         ChannelPipeline pipeline = ch.pipeline();
-
+        SocketMessageSender.installOutboundBudget(pipeline, outboundLimits, budget);
         TransportLifecycleHandler.install(pipeline, admission);
         pipeline.addLast(createLengthBasedFrameDecoder());
         pipeline.addLast(eventDecoder);

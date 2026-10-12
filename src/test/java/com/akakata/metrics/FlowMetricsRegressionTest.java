@@ -36,8 +36,10 @@ class FlowMetricsRegressionTest {
      */
     @Test
     void endpointsIncludeLiveGameBudgetsOutcomesAndPercentiles() throws Exception {
-        try (DefaultGame game = new DefaultGame(16, 1024)) {
+        try (DefaultGame game = new DefaultGame(16, 1024);
+             var blocking = new com.akakata.service.task.BlockingTaskExecutor(1, 2, 128, 1000)) {
             FlowControlMetrics.gameDispatcher(game.getEventDispatcher());
+            FlowControlMetrics.resources(new com.akakata.communication.OutboundBudget(4096), blocking);
             game.getEventDispatcher().submit(Events.event(new byte[16], 1), ignored -> {}).get(3, TimeUnit.SECONDS);
             var flow = FlowControlMetrics.snapshot();
             DispatcherSnapshot snapshot = (DispatcherSnapshot) flow.get("game");
@@ -60,17 +62,30 @@ class FlowMetricsRegressionTest {
                         if (route.equals("/metrics/prometheus")) {
                             assertTrue(body.contains("zea_executor_byte_budget{scope=\"game\",shard=\"0\"} 1024"));
                             assertTrue(body.contains("zea_flow_pending_writes"));
+                            assertTrue(body.contains("# TYPE zea_flow_pending_payload_bytes gauge"));
+                            assertTrue(body.contains("zea_flow_outbound_byte_budget 4096"));
+                            assertTrue(body.contains("zea_flow_blocking_byte_budget 128"));
                         } else {
                             Map<?, ?> document = new ObjectMapper().readValue(body, Map.class);
                             Map<?, ?> exported = route.equals("/metrics") ? (Map<?, ?>) document.get("flow_control") : document;
                             assertTrue(exported.containsKey("session"));
                             assertNotNull(exported.get("game"));
                             assertNotNull(exported.get("transport"));
+                            assertNotNull(exported.get("outbound"));
+                            assertNotNull(exported.get("blocking"));
                         }
-                    } finally { response.release(); }
-                } finally { request.release(); channel.finishAndReleaseAll(); }
+                    } finally {
+                        response.release();
+                    }
+                } finally {
+                    request.release();
+                    channel.finishAndReleaseAll();
+                }
             }
-        } finally { FlowControlMetrics.gameDispatcher(null); }
+        } finally {
+            FlowControlMetrics.gameDispatcher(null);
+            FlowControlMetrics.resources(null, null);
+        }
     }
 
     /**
@@ -80,6 +95,7 @@ class FlowMetricsRegressionTest {
     void failedQueuedWritesReturnEveryTransportGauge() {
         long baseline = FlowControlMetrics.PENDING_WRITES.sum();
         long bytes = FlowControlMetrics.PENDING_SOCKET_BYTES.sum();
+        long sources = FlowControlMetrics.PENDING_PAYLOAD_BYTES.sum();
         EmbeddedChannel channel = new EmbeddedChannel();
         try {
             SocketMessageSender sender = new SocketMessageSender(channel, new OutboundLimits(1, 1024));
@@ -91,7 +107,10 @@ class FlowMetricsRegressionTest {
             assertTrue(first.isDone());
             assertEquals(baseline, FlowControlMetrics.PENDING_WRITES.sum());
             assertEquals(bytes, FlowControlMetrics.PENDING_SOCKET_BYTES.sum());
-        } finally { channel.finishAndReleaseAll(); }
+            assertEquals(sources, FlowControlMetrics.PENDING_PAYLOAD_BYTES.sum());
+        } finally {
+            channel.finishAndReleaseAll();
+        }
     }
 
     /**

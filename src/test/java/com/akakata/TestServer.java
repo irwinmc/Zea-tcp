@@ -31,6 +31,19 @@ public class TestServer extends CommandLine {
     }
 
     /**
+     * Enables anonymous credentials explicitly for this local development example.
+     *
+     * @return the demonstration context
+     * @throws Exception if the configuration cannot be loaded
+     */
+    @Override
+    protected com.akakata.context.ServerContext createServerContext() throws Exception {
+        var context = new com.akakata.context.ServerContext();
+        context.getConfigManager().getProperties().setProperty("security.allow.anonymous", "true");
+        return context;
+    }
+
+    /**
      * {@inheritDoc}
      */
     @Override

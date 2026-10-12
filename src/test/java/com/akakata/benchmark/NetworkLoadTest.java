@@ -39,7 +39,8 @@ public final class NetworkLoadTest {
     /**
      * Prevents construction of this command-line driver.
      */
-    private NetworkLoadTest() {}
+    private NetworkLoadTest() {
+    }
 
     /**
      * Runs one transport workload or the isolated real-network regression probe.
@@ -54,8 +55,9 @@ public final class NetworkLoadTest {
             options.put(parts[0], parts.length == 1 ? "true" : parts[1]);
         }
         boolean websocket = options.getOrDefault("transport", "tcp").equals("websocket");
-        if (!Set.of("tcp", "websocket").contains(options.getOrDefault("transport", "tcp")))
+        if (!Set.of("tcp", "websocket").contains(options.getOrDefault("transport", "tcp"))) {
             throw new IllegalArgumentException("Transport must be tcp or websocket");
+        }
         boolean verify = options.containsKey("verify");
         int port = number(options, "port", 0);
         String host = options.getOrDefault("host", "127.0.0.1");
@@ -64,6 +66,7 @@ public final class NetworkLoadTest {
             if (port == 0) {
                 context = new ServerContext();
                 var properties = context.getConfigManager().getProperties();
+                properties.setProperty("security.allow.anonymous", "true");
                 properties.setProperty("server.tcp.enabled", Boolean.toString(!websocket));
                 properties.setProperty("server.websocket.enabled", Boolean.toString(websocket));
                 properties.setProperty("server.http.enabled", "false");
@@ -81,34 +84,52 @@ public final class NetworkLoadTest {
                 int workMicros = number(options, "business-micros", 0);
                 game.getEventDispatcher().addHandler(new EventHandler() {
                     @Override
-                    public int getEventType() { return Events.SESSION_MESSAGE; }
+                    public int getEventType() {
+                        return Events.SESSION_MESSAGE;
+                    }
+
                     @Override
                     public void onEvent(Event event) {
-                        if (workMicros > 0) java.util.concurrent.locks.LockSupport.parkNanos(workMicros * 1_000L);
+                        if (workMicros > 0) {
+                            java.util.concurrent.locks.LockSupport.parkNanos(workMicros * 1_000L);
+                        }
                         PlayerMessageEvent message = (PlayerMessageEvent) event;
                         game.sendToPlayer(Events.networkEvent(message.getSource()), message.getPlayerSession())
-                                .whenComplete((report, error) -> { if (error != null) message.getPlayerSession().close(); });
+                                .whenComplete((report, error) -> {
+                                    if (error != null) {
+                                        message.getPlayerSession().close();
+                                    }
+                                });
                     }
                 });
                 context.getBean(ServerManager.class).startServers();
                 port = ((java.net.InetSocketAddress) AbstractNettyServer.ALL_CHANNELS.stream()
                         .filter(channel -> channel instanceof ServerChannel).findFirst().orElseThrow().localAddress()).getPort();
             }
-            if (verify) verifyNetwork(host, port, websocket);
-            else runLoad(host, port, websocket, options);
-            if (context != null) System.out.println("FLOW " + MAPPER.writeValueAsString(FlowControlMetrics.snapshot()));
+            if (verify) {
+                verifyNetwork(host, port, websocket);
+            }
+            else {
+                runLoad(host, port, websocket, options);
+            }
+            if (context != null) {
+                System.out.println("FLOW " + MAPPER.writeValueAsString(FlowControlMetrics.snapshot()));
+            }
         } finally {
             if (context != null) {
                 context.close();
                 if (verify && (FlowControlMetrics.ACTIVE_CONNECTIONS.sum() != 0
                         || FlowControlMetrics.PENDING_WRITES.sum() != 0
                         || FlowControlMetrics.PENDING_SOCKET_BYTES.sum() != 0
+                        || FlowControlMetrics.PENDING_PAYLOAD_BYTES.sum() != 0
+                        || context.getBean(com.akakata.communication.OutboundBudget.class).pendingBytes() != 0
                         || FlowControlMetrics.PAUSED_CHANNELS.sum() != 0
                         || context.getBean(com.akakata.service.SessionService.class).size() != 0
                         || !context.getBean(Game.class).getSessions().isEmpty()
                         || com.akakata.event.impl.EventDispatchers.sharedGroup().snapshots().stream()
-                                .anyMatch(snapshot -> snapshot.pendingBytes() != 0)))
+                        .anyMatch(snapshot -> snapshot.pendingBytes() != 0))) {
                     throw new IllegalStateException("Transport or session resources survived context shutdown");
+                }
             }
         }
     }
@@ -116,10 +137,10 @@ public final class NetworkLoadTest {
     /**
      * Runs bounded virtual clients and computes exact observed latency percentiles.
      *
-     * @param host target hostname
-     * @param port target listening port
+     * @param host      target hostname
+     * @param port      target listening port
      * @param websocket whether to use WebSocket framing
-     * @param options workload configuration
+     * @param options   workload configuration
      * @throws Exception if client completion exceeds the workload deadline
      */
     private static void runLoad(String host, int port, boolean websocket, Map<String, String> options) throws Exception {
@@ -127,41 +148,51 @@ public final class NetworkLoadTest {
         int window = number(options, "window", 16), payloadBytes = number(options, "payload-bytes", 128);
         int readDelay = number(options, "slow-read-millis", 0), timeout = number(options, "timeout-seconds", 60);
         if (clients <= 0 || messages <= 0 || window <= 0 || payloadBytes < 0 || payloadBytes > 60000
-                || readDelay < 0 || timeout <= 0) throw new IllegalArgumentException("Invalid workload limits");
+                || readDelay < 0 || timeout <= 0) {
+            throw new IllegalArgumentException("Invalid workload limits");
+        }
         String payload = "x".repeat(payloadBytes);
         List<Long> latencies = Collections.synchronizedList(new ArrayList<>());
         LongAdder failures = new LongAdder(), completed = new LongAdder();
         long started = System.nanoTime();
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
             List<Future<?>> tasks = new ArrayList<>();
-            for (int client = 0; client < clients; client++) tasks.add(executor.submit(() -> {
-                int received = 0;
-                try (WireClient connection = new WireClient(host, port, websocket)) {
-                    connection.login();
-                    for (int base = 0; base < messages; base += window) {
-                        int count = Math.min(window, messages - base);
-                        long[] submitted = new long[count];
-                        for (int offset = 0; offset < count; offset++) {
-                            submitted[offset] = System.nanoTime();
-                            connection.send(applicationFrame(Events.SESSION_MESSAGE, Map.of("sequence", base + offset, "payload", payload)));
+            for (int client = 0; client < clients; client++) {
+                tasks.add(executor.submit(() -> {
+                    int received = 0;
+                    try (WireClient connection = new WireClient(host, port, websocket)) {
+                        connection.login();
+                        for (int base = 0; base < messages; base += window) {
+                            int count = Math.min(window, messages - base);
+                            long[] submitted = new long[count];
+                            for (int offset = 0; offset < count; offset++) {
+                                submitted[offset] = System.nanoTime();
+                                connection.send(applicationFrame(Events.SESSION_MESSAGE, Map.of("sequence", base + offset, "payload", payload)));
+                            }
+                            for (int offset = 0; offset < count; offset++) {
+                                if (readDelay > 0) {
+                                    Thread.sleep(readDelay);
+                                }
+                                requireSequence(connection.read(), base + offset);
+                                latencies.add(System.nanoTime() - submitted[offset]);
+                                received++;
+                                completed.increment();
+                            }
                         }
-                        for (int offset = 0; offset < count; offset++) {
-                            if (readDelay > 0) Thread.sleep(readDelay);
-                            requireSequence(connection.read(), base + offset);
-                            latencies.add(System.nanoTime() - submitted[offset]);
-                            received++;
-                            completed.increment();
-                        }
+                    } catch (Exception failure) {
+                        failures.add(messages - received);
+                        System.err.println("Client stopped after " + received + " replies: " + failure.getClass().getSimpleName());
                     }
-                } catch (Exception failure) {
-                    failures.add(messages - received);
-                    System.err.println("Client stopped after " + received + " replies: " + failure.getClass().getSimpleName());
-                }
-            }));
+                }));
+            }
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeout);
             try {
-                for (Future<?> task : tasks) task.get(Math.max(1, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
-            } finally { tasks.forEach(task -> task.cancel(true)); }
+                for (Future<?> task : tasks) {
+                    task.get(Math.max(1, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+                }
+            } finally {
+                tasks.forEach(task -> task.cancel(true));
+            }
         }
         double seconds = (System.nanoTime() - started) / 1_000_000_000.0;
         long[] observed = latencies.stream().mapToLong(Long::longValue).sorted().toArray();
@@ -174,8 +205,8 @@ public final class NetworkLoadTest {
     /**
      * Verifies actual authentication transition, FIFO replies and hostile input cleanup.
      *
-     * @param host target hostname
-     * @param port target port
+     * @param host      target hostname
+     * @param port      target port
      * @param websocket selected transport
      * @throws Exception if a wire contract or connection deadline is violated
      */
@@ -184,9 +215,12 @@ public final class NetworkLoadTest {
             client.login();
             // Cross the login deadline; the authenticated connection must survive it.
             Thread.sleep(650);
-            for (int sequence = 0; sequence < 32; sequence++)
+            for (int sequence = 0; sequence < 32; sequence++) {
                 client.send(applicationFrame(Events.SESSION_MESSAGE, Map.of("sequence", sequence)));
-            for (int sequence = 0; sequence < 32; sequence++) requireSequence(client.read(), sequence);
+            }
+            for (int sequence = 0; sequence < 32; sequence++) {
+                requireSequence(client.read(), sequence);
+            }
             client.send(applicationFrame(websocket ? Events.LOG_IN_SUCCESS : Events.NETWORK_MESSAGE, Map.of("sequence", 32)));
             client.requireClosed();
         }
@@ -223,32 +257,39 @@ public final class NetworkLoadTest {
         byte[] json = MAPPER.writeValueAsBytes(source);
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         DataOutputStream output = new DataOutputStream(bytes);
-        output.writeByte(opcode); output.writeInt(json.length); output.write(json);
+        output.writeByte(opcode);
+        output.writeInt(json.length);
+        output.write(json);
         return bytes.toByteArray();
     }
 
     /**
      * Validates one ordered echo response independently of server-side admission counters.
      *
-     * @param frame received application bytes
+     * @param frame    received application bytes
      * @param expected expected sequence number
      * @throws IOException if the response shape, size or sequence is invalid
      */
     private static void requireSequence(byte[] frame, int expected) throws IOException {
         DataInputStream input = new DataInputStream(new ByteArrayInputStream(frame));
-        if (input.readUnsignedByte() != Events.NETWORK_MESSAGE) throw new IOException("Unexpected response opcode");
+        if (input.readUnsignedByte() != Events.NETWORK_MESSAGE) {
+            throw new IOException("Unexpected response opcode");
+        }
         int bytes = input.readInt();
-        if (bytes != input.available()) throw new IOException("Invalid response length");
+        if (bytes != input.available()) {
+            throw new IOException("Invalid response length");
+        }
         var object = MAPPER.readValue(input.readNBytes(bytes), Map.class);
-        if (!(object.get("sequence") instanceof Number sequence) || sequence.intValue() != expected)
+        if (!(object.get("sequence") instanceof Number sequence) || sequence.intValue() != expected) {
             throw new IOException("Response sequence mismatch: " + object);
+        }
     }
 
     /**
      * Reads an integer option using a documented default.
      *
-     * @param options parsed command-line arguments
-     * @param name option name
+     * @param options  parsed command-line arguments
+     * @param name     option name
      * @param fallback default integer
      * @return parsed value
      */
@@ -259,7 +300,7 @@ public final class NetworkLoadTest {
     /**
      * Computes a nearest-rank percentile over sorted end-to-end observations.
      *
-     * @param nanos sorted observed durations
+     * @param nanos    sorted observed durations
      * @param quantile requested fractional percentile
      * @return observed latency in milliseconds, or zero when no replies completed
      */
@@ -296,8 +337,8 @@ public final class NetworkLoadTest {
         /**
          * Connects a socket and performs the WebSocket upgrade when selected.
          *
-         * @param host target hostname
-         * @param port listening port
+         * @param host      target hostname
+         * @param port      listening port
          * @param websocket transport selection
          * @throws IOException if connection or upgrade validation fails
          */
@@ -305,7 +346,8 @@ public final class NetworkLoadTest {
             this.websocket = websocket;
             try {
                 socket.connect(new java.net.InetSocketAddress(host, port), 5000);
-                socket.setSoTimeout(5000); socket.setTcpNoDelay(true);
+                socket.setSoTimeout(5000);
+                socket.setTcpNoDelay(true);
                 socket.setReceiveBufferSize(8192);
                 input = new DataInputStream(socket.getInputStream());
                 output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream(), 65536));
@@ -317,12 +359,18 @@ public final class NetworkLoadTest {
                     ByteArrayOutputStream headers = new ByteArrayOutputStream();
                     int last = 0;
                     while (last != 0x0d0a0d0a && headers.size() < 16384) {
-                        int next = input.readUnsignedByte(); headers.write(next); last = last << 8 | next;
+                        int next = input.readUnsignedByte();
+                        headers.write(next);
+                        last = last << 8 | next;
                     }
-                    if (!headers.toString(StandardCharsets.US_ASCII).startsWith("HTTP/1.1 101"))
+                    if (!headers.toString(StandardCharsets.US_ASCII).startsWith("HTTP/1.1 101")) {
                         throw new IOException("WebSocket upgrade rejected");
+                    }
                 }
-            } catch (IOException failure) { socket.close(); throw failure; }
+            } catch (IOException failure) {
+                socket.close();
+                throw failure;
+            }
         }
 
         /**
@@ -332,7 +380,9 @@ public final class NetworkLoadTest {
          */
         private void login() throws IOException {
             send(new byte[]{Events.LOG_IN, 0, 0, 0, 1, 'x'});
-            if (read()[0] != Events.LOG_IN_SUCCESS) throw new IOException("Login rejected");
+            if (read()[0] != Events.LOG_IN_SUCCESS) {
+                throw new IOException("Login rejected");
+            }
         }
 
         /**
@@ -342,16 +392,27 @@ public final class NetworkLoadTest {
          * @throws IOException if transport submission fails
          */
         private void send(byte[] bytes) throws IOException {
-            if (bytes.length > 65535) throw new IOException("Client application frame too large");
-            if (!websocket) { output.writeShort(bytes.length); output.write(bytes); }
-            else {
+            if (bytes.length > 65535) {
+                throw new IOException("Client application frame too large");
+            }
+            if (!websocket) {
+                output.writeShort(bytes.length);
+                output.write(bytes);
+            } else {
                 output.writeByte(0x82);
-                if (bytes.length < 126) output.writeByte(0x80 | bytes.length);
-                else { output.writeByte(0x80 | 126); output.writeShort(bytes.length); }
-                int mask = ThreadLocalRandom.current().nextInt(); output.writeInt(mask);
+                if (bytes.length < 126) {
+                    output.writeByte(0x80 | bytes.length);
+                }
+                else {
+                    output.writeByte(0x80 | 126);
+                    output.writeShort(bytes.length);
+                }
+                int mask = ThreadLocalRandom.current().nextInt();
+                output.writeInt(mask);
                 byte[] masked = bytes.clone();
-                for (int index = 0; index < masked.length; index++)
+                for (int index = 0; index < masked.length; index++) {
                     masked[index] = (byte) (masked[index] ^ (mask >>> (24 - 8 * (index % 4)) & 255));
+                }
                 output.write(masked);
             }
             output.flush();
@@ -365,19 +426,37 @@ public final class NetworkLoadTest {
          */
         private byte[] read() throws IOException {
             int length;
-            if (!websocket) length = input.readUnsignedShort();
+            if (!websocket) {
+                length = input.readUnsignedShort();
+            }
             else {
                 int opcode = input.readUnsignedByte() & 15;
                 int size = input.readUnsignedByte();
-                if ((size & 0x80) != 0) throw new IOException("Unexpected masked server frame");
+                if ((size & 0x80) != 0) {
+                    throw new IOException("Unexpected masked server frame");
+                }
                 length = size & 127;
-                if (length == 126) length = input.readUnsignedShort();
-                else if (length == 127) { long large = input.readLong(); if (large > 65535 || large < 0) throw new IOException("Oversized server frame"); length = (int) large; }
-                if (opcode == 8) throw new EOFException("WebSocket closed");
-                if (opcode != 2) throw new IOException("Unexpected WebSocket opcode " + opcode);
+                if (length == 126) {
+                    length = input.readUnsignedShort();
+                }
+                else if (length == 127) {
+                    long large = input.readLong();
+                    if (large > 65535 || large < 0) {
+                        throw new IOException("Oversized server frame");
+                    }
+                    length = (int) large;
+                }
+                if (opcode == 8) {
+                    throw new EOFException("WebSocket closed");
+                }
+                if (opcode != 2) {
+                    throw new IOException("Unexpected WebSocket opcode " + opcode);
+                }
             }
             byte[] bytes = input.readNBytes(length);
-            if (bytes.length != length) throw new EOFException("Truncated server frame");
+            if (bytes.length != length) {
+                throw new EOFException("Truncated server frame");
+            }
             return bytes;
         }
 
@@ -389,8 +468,9 @@ public final class NetworkLoadTest {
         private void requireClosed() throws IOException {
             try {
                 byte[] control = read();
-                if (control.length != 1 || control[0] != Events.DISCONNECT)
+                if (control.length != 1 || control[0] != Events.DISCONNECT) {
                     throw new IOException("Expected terminal transport closure");
+                }
                 read();
                 throw new IOException("Socket remained open after disconnect");
             } catch (EOFException | java.net.SocketException closed) {
@@ -402,6 +482,8 @@ public final class NetworkLoadTest {
          * {@inheritDoc}
          */
         @Override
-        public void close() throws IOException { socket.close(); }
+        public void close() throws IOException {
+            socket.close();
+        }
     }
 }

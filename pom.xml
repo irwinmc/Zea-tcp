@@ -6,11 +6,11 @@
 
     <groupId>com.akakata</groupId>
     <artifactId>zea-tcp</artifactId>
-    <version>0.8.1</version>
+    <version>0.8.2</version>
 
     <name>Zea TCP Transport</name>
     <description>High-performance Netty transport and protocol gateway for the Zea platform.</description>
-    <url>https://github.com/akakata/zea-tcp</url>
+    <url>https://github.com/irwinmc/Zea-tcp</url>
     <inceptionYear>2025</inceptionYear>
 
     <organization>
@@ -39,15 +39,15 @@
     </developers>
 
     <scm>
-        <connection>scm:git:https://github.com/akakata/zea-tcp.git</connection>
-        <developerConnection>scm:git:ssh://git@github.com/akakata/zea-tcp.git</developerConnection>
-        <url>https://github.com/akakata/zea-tcp</url>
+        <connection>scm:git:https://github.com/irwinmc/Zea-tcp.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/irwinmc/Zea-tcp.git</developerConnection>
+        <url>https://github.com/irwinmc/Zea-tcp</url>
         <tag>HEAD</tag>
     </scm>
 
     <issueManagement>
         <system>GitHub Issues</system>
-        <url>https://github.com/akakata/zea-tcp/issues</url>
+        <url>https://github.com/irwinmc/Zea-tcp/issues</url>
     </issueManagement>
 
     <properties>

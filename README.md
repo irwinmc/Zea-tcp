@@ -420,8 +420,8 @@ and callback-duration P95/P99 bucket bounds, socket gauges and lifetime counters
 Prometheus includes these flow series. The older `/metrics/event-dispatcher` endpoint
 continues to return periodically sampled physical session queues.
 
-See the [endpoint reference](docs/MONITORING.md) for exact fields and health checks,
-and the [metrics architecture](docs/METRICS_ARCHITECTURE.md) for integration.
+See the [monitoring guide](docs/MONITORING.md) for exact endpoint fields, health
+checks and application instrumentation.
 
 ## Dependencies
 
@@ -447,10 +447,10 @@ processor is `dagger-compiler` 2.60.1. Netty groups use
 ## Development and Build
 
 ```bash
-mvn clean compile
-mvn test
-mvn clean package
-mvn clean install
+./mvnw clean compile
+./mvnw test
+./mvnw clean package
+./mvnw clean install
 ```
 
 The regression suite covers player-event isolation, shared-shard preservation,
@@ -464,51 +464,14 @@ Examples with `main` methods are executable
 helpers rather than JUnit tests.
 
 The POM configures Maven Compiler 3.13.0, Surefire 3.2.5, JavaDoc 3.12.0 and
-Exec 3.6.1. Its `release` profile adds Enforcer 3.6.3, Sources 3.3.1, JavaDoc attachment,
-GPG 3.2.8 signing and Central Publishing 0.11.0. Normal development builds do not
-require signing credentials.
-
-### Publish to Maven Central
-
-[The release workflow](.github/workflows/publish-maven-central.yml) runs when a
-GitHub Release is published. It checks out the release tag, checks that its version
-matches the POM, runs tests and strict English JavaDoc checks with Java 21, then
-signs and automatically publishes the main JAR, sources, JavaDoc and POM.
-The job waits for Central to report the deployment as published.
-
-The workflow uses Maven Wrapper 3.3.4 with checksum-pinned Maven 3.9.16 for both
-verification and deployment. Use `./mvnw` for local releases as well; the release
-profile rejects other Maven versions. Maven 3.10.0 adds staging repository metadata
-that Central Publishing 0.11.0 does not remove, causing Portal validation to fail.
-
-Before publication, the workflow tests the real release profile against a local
-publisher using a temporary signing key and synthetic credentials. It verifies
-bundle contents, signatures, checksums and authentication. The release profile
-skips redundant local artifact installation before the publisher's own staging.
-Publishing uses the dedicated Maven server ID `central-publisher`.
-
-Configure these repository secrets under **Settings → Secrets and variables →
-Actions → New repository secret**:
-
-| Secret | Value |
-| --- | --- |
-| `MAVEN_CENTRAL_USERNAME` | Username generated with a Central Portal user token |
-| `MAVEN_CENTRAL_PASSWORD` | Password generated with the same Portal token |
-| `GPG_PRIVATE_KEY` | Complete ASCII-armored export of the signing private key |
-| `GPG_PASSPHRASE` | Passphrase protecting that private key |
-
-The Central account must have publishing access to `com.akakata`, and the signing
-public key must be available to Central. Use a release tag such as `v0.8.3` or
-`0.8.3` matching the POM at that tag. Already published versions cannot be replaced;
-choose a new version for subsequent releases. See the
-[publishing guide](docs/PUBLISHING.md) for token setup, key preparation, local
-verification and troubleshooting.
+Exec 3.6.1. Normal development builds do not require publishing credentials.
+Use the bundled Maven wrapper for reproducible repository builds.
 
 ### Generate API Documentation
 
 ```bash
-mvn compile javadoc:javadoc javadoc:test-javadoc
-mvn compile javadoc:jar
+./mvnw compile javadoc:javadoc javadoc:test-javadoc
+./mvnw compile javadoc:jar
 ```
 
 Open `target/reports/apidocs/index.html` for the framework API and
@@ -517,93 +480,21 @@ The archive is `target/zea-tcp-0.8.3-javadoc.jar`. Compilation generates the Dag
 component types needed by JavaDoc. Documentation uses English, UTF-8 and strict
 doclint checks; generated Dagger sources are excluded.
 
-### Local Dispatcher Load Test
-
-After preparing the example classpath above:
-
-```bash
-java \
-  -cp "target/test-classes:target/classes:target/dependency/*" \
-  com.akakata.benchmark.SimpleLoadTest
-```
-
-The helper uses four producers, counts accepted and rejected events separately,
-and waits for a queue barrier before reporting completed throughput and mean
-latency. It is a local diagnostic rather than a capacity guarantee or a tail-latency
-benchmark. `mvn test-compile exec:java` defaults to this helper.
-
-### Real TCP and WebSocket Load Tests
-
-```bash
-java -cp "target/test-classes:target/classes:target/dependency/*" \
-  com.akakata.benchmark.NetworkLoadTest \
-  --transport=tcp --clients=16 --messages=1000 --window=16 --payload-bytes=128
-java -cp "target/test-classes:target/classes:target/dependency/*" \
-  com.akakata.benchmark.NetworkLoadTest \
-  --transport=websocket --clients=8 --messages=500 --window=64 \
-  --payload-bytes=8192 --slow-read-millis=20
-```
-
-The driver starts the production context on an ephemeral port, authenticates real
-clients, installs an explicit ordered echo Game handler and verifies reply sequence.
-It reports completed/failed requests, throughput and exact observed P50/P95/P99.
-Each client authenticates and completes `--warmup-messages=100` before all ready
-clients start the timed workload. Set this option to zero after a separate warmup
-run. Failures and workload deadline expiry produce a nonzero process exit status.
-Receive buffers use the operating-system default; `--receive-buffer-bytes=8192`
-explicitly selects a constrained reader for diagnostics.
-Use `--business-micros=100` to introduce a controlled callback delay,
-`--socket-bytes=16384` to constrain encoded output, and `--timeout-seconds=60`
-to bound the whole run. Client read delay is included in measured latency.
-Each invocation runs one transport and closes its owned context; use separate JVMs
-for repeated or multi-process runs. External-server mode uses `--host=... --port=...`
-and requires the same login format and sequence-preserving echo handler.
-These synthetic workloads provide evidence for tuning; production capacity still
-requires representative game logic and deployment-level multi-process tests.
-
-For server-only resource measurements, start the echo context separately:
-
-```bash
-java -cp "target/test-classes:target/classes:target/dependency/*" \
-  com.akakata.benchmark.NetworkLoadTest --server-only --transport=tcp
-```
-
-It prints `READY` with a loopback ephemeral port. Standard-input commands `snapshot`
-and `stop` capture server-only CPU/GC/heap/direct-buffer/flow counters and close the
-context. EOF also closes it. Run clients in another JVM with that `--port` and
-warm up before taking before/after server snapshots. CPU/GC/allocation differences
-describe the complete snapshot interval; client latency/throughput excludes its
-per-connection warmup. Live-thread allocation counters exclude terminated threads.
-The explicit test resource `props/benchmark.properties` configures one boss,
-one I/O worker and one Session shard before context construction. Supply a custom
-classpath resource with `--config=...` for thread-budget comparisons. Every required
-listener binds loopback explicitly. The helper enables anonymous login only for
-this isolated echo workload.
-
-Preserve logs and a report for every verification command:
-
-```bash
-python3 scripts/test_report.py --report-dir remote-test-results/my-run \
-  --name regression -- ./mvnw --batch-mode --no-transfer-progress test
-```
-
-The runner writes an aggregate JSON/text report and individual reports for every
-JUnit case, including failures. Remote workload reports must additionally identify
-artifact checksums, server/client resource limits, warmup and measurement intervals,
-and any safety stop. Local SSH credentials and reports are excluded from Git.
-
 ## Documentation
+
+Start with the [documentation index](docs/README.md). The guides describe supported
+framework behavior and application integration.
 
 | Guide | Contents |
 | --- | --- |
-| [Configuration](docs/CONFIGURATION.md) | Properties, loading, protocols and fixed limits |
-| [Publishing](docs/PUBLISHING.md) | GitHub Releases, Maven Central credentials, signing and deployment |
-| [Event loops and lifecycle](docs/EVENT_LOOP.md) | Threads, routing, concurrency, shutdown and payload ownership |
-| [Monitoring](docs/MONITORING.md) | Health responses, JSON fields and Prometheus names |
-| [Several JVMs on one host](docs/MULTI_PROCESS_TUNING.md) | CPU, memory and queue budgets for measured multi-process deployments |
-| [Scaling out independent processes](docs/SCALE_OUT.md) | External placement, sticky Game ownership, node health and proposed cluster capabilities |
-| [Metrics architecture](docs/METRICS_ARCHITECTURE.md) | Collectors, instrumentation and sampling lifecycle |
+| [Configuration and protocols](docs/CONFIGURATION.md) | Properties, loading, wire formats and resource limits |
+| [Core components and security](docs/CORE_COMPONENTS.md) | Application providers, authentication and token configuration |
+| [Event loops and lifecycle](docs/EVENT_LOOP.md) | Ordering, concurrency, backpressure, shutdown and payload ownership |
+| [Slow business operations](docs/SLOW_BUSINESS.md) | Bounded offloading and ordered completion of blocking work |
+| [Monitoring](docs/MONITORING.md) | Health checks, JSON/Prometheus fields and application instrumentation |
 | [Banner customization](docs/BANNER_CUSTOMIZATION.md) | Classpath banners, overrides and displayed version behavior |
+| [0.8.3 release notes](docs/RELEASE_NOTES_0.8.3.md) | Changes, compatibility and migration from 0.8.2 |
+| [0.8.2 release notes](docs/RELEASE_NOTES_0.8.2.md) | Changes and migration from 0.8.1 |
 
 ## License and Support
 

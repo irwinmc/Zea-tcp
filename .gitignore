@@ -41,6 +41,9 @@ build/
 /remote-test.local.json
 /remote-test-results/
 
+### Local Maintainer Documentation ###
+/.internal-docs/
+
 ### Python Test Helpers ###
 __pycache__/
 *.pyc

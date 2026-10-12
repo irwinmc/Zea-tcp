@@ -23,12 +23,6 @@ encoding allocations, and preserves ordered Session and Game delivery.
   failure or overflow, retaining the frame-limit exception.
 - Add regressions for unicast ownership, mixed send ordering, burst and slow-reader
   backpressure, exact JSON bytes, protocol boundaries and failed serialization.
-- Add isolated single-process benchmark helpers with resource guards, artifact
-  checksums, separate client/server accounting, per-test reports and cleanup.
-  Keep local SSH credentials and generated reports outside Git.
-- Document CPU/memory budgets, measured latency targets and proposed external
-  placement with sticky Game ownership. A cluster registry, gateway and live
-  state migration are not implemented by this release.
 
 ## Migration from 0.8.2
 
@@ -42,30 +36,17 @@ encoding allocations, and preserves ordered Session and Game delivery.
    documented native-buffer ownership contract. Unicast follows the normal
    Game-to-Session-to-socket retention path; fan-out keeps its shared encoding lease.
 4. Keep authentication and required listener endpoint configuration from 0.8.2.
-   Use controlled tests to establish deployment budgets. Proposed multi-process
-   placement does not share in-memory Game state or recover a failed node.
+   Validate resource budgets with the application's actual handlers and traffic.
 
 See [configuration](CONFIGURATION.md), [event ownership](EVENT_LOOP.md),
-[monitoring](MONITORING.md), [process budgets](MULTI_PROCESS_TUNING.md) and
-[scale-out design](SCALE_OUT.md) for the complete contracts and limitations.
+[monitoring](MONITORING.md) and [slow business operations](SLOW_BUSINESS.md)
+for the complete application contracts.
 
 ## Validation
 
-The release checks include 250 regression cases, strict production and test
-JavaDoc, and a signed Maven publication fixture using a local publisher server.
-GitHub Actions repeats these checks before signing and publishing to Maven Central.
-
-An implementation candidate was exercised in 43 isolated remote workloads,
-including baseline comparisons and repeated capacity probes. They completed
-606016 measured request/reply pairs with zero failed replies. Tests ran one
-framework server at a time, with separate bounded clients and fractional CPU
-quotas on an eight-vCPU, approximately-16-GiB host. Existing Java, MySQL and Redis
-process identities were preserved, and task-owned remote resources were removed.
-
-The longer-warmup 4 KiB JSON echo comparison reduced observed live-thread heap
-allocation from about 18.0 KB to 8.4 KB per reply, approximately 53%. CPU and
-throughput changes varied across rounds; no stable end-to-end speedup is claimed.
-These synthetic, closed-loop measurements do not establish unrestricted process
-limits, maximum online connections or production multi-process capacity.
+The release checks include 250 regression cases and strict production and test
+JavaDoc. Coverage includes ordering, backpressure, native-buffer ownership,
+protocol boundaries and real TCP/WebSocket behavior. GitHub Actions validates
+the release artifacts before publication.
 
 Maven coordinates: `com.akakata:zea-tcp:0.8.3`.

@@ -78,6 +78,71 @@ readings are available independently; dispatcher depths are sampled.
 The JSON examples below are illustrative. Real runtime values vary, and the
 examples' zero counters reflect an application without added instrumentation.
 
+## Application Instrumentation
+
+Use these public methods to populate the legacy application counters:
+
+| Method | Meaning |
+| --- | --- |
+| `recordConnection()` / `recordDisconnection()` | Record one connection and its matching disconnection |
+| `recordMessageReceived()` / `recordMessageSent()` | Record an application-defined received or sent message |
+| `recordBytesReceived(long)` / `recordBytesSent(long)` | Record bytes using a consistent frame or payload definition |
+| `recordError()` | Record an application-defined error |
+
+Count successful sends at write completion when that is the intended meaning.
+Instrumentation placement determines what is counted; preserve buffer ownership
+and avoid recording the same operation twice.
+
+
+The following handler demonstrates an application-owned instrumentation point.
+Install it in the application pipeline; it is not installed by default:
+
+```java
+package com.example;
+
+import com.akakata.metrics.ServerMetrics;
+import io.netty.buffer.ByteBuf;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
+
+public final class InboundMetricsHandler extends ChannelInboundHandlerAdapter {
+    private final ServerMetrics metrics = ServerMetrics.getInstance();
+
+    @Override
+    public void channelActive(ChannelHandlerContext ctx) throws Exception {
+        metrics.recordConnection();
+        super.channelActive(ctx);
+    }
+
+    @Override
+    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+        metrics.recordDisconnection();
+        super.channelInactive(ctx);
+    }
+
+    @Override
+    public void channelRead(ChannelHandlerContext ctx, Object message) throws Exception {
+        metrics.recordMessageReceived();
+        if (message instanceof ByteBuf buffer) {
+            metrics.recordBytesReceived(buffer.readableBytes());
+        }
+        super.channelRead(ctx, message);
+    }
+
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+        metrics.recordError();
+        super.exceptionCaught(ctx, cause);
+    }
+}
+```
+
+Placement determines whether a received object represents a socket read, a frame
+or an application event. Place byte accounting where bytes are visible, and
+message accounting after the appropriate decoder. This handler forwards messages
+and leaves their ownership unchanged. Account for pipeline replacement after TCP
+login if installing custom handlers there.
+
 ## Combined Metrics
 
 `GET /metrics` returns the legacy groups shown below plus a live `flow_control`
@@ -372,4 +437,4 @@ plain-text error body.
 - [HttpRequestHandler](../src/main/java/com/akakata/handlers/HttpRequestHandler.java)
 - [HealthCheckHandler](../src/main/java/com/akakata/server/http/HealthCheckHandler.java)
 - [MetricsHandler](../src/main/java/com/akakata/server/http/MetricsHandler.java)
-- [Collector architecture](METRICS_ARCHITECTURE.md)
+- [Event loops and lifecycle](EVENT_LOOP.md)

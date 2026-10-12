@@ -112,13 +112,17 @@ git diff --check
 - JavaDoc uses strict doclint with errors and warnings treated as failures, including
   private members and test sources. Do not edit generated Dagger files or `target/`.
 - If IntelliJ compilation races with Maven output, verify in a temporary snapshot
-  outside the checkout. Exclude `.git`, `target`, `.idea` and local secret-bearing
-  configuration such as `remote-test.local.json`; preserve that file in the checkout.
+  outside the checkout. Exclude `.git`, `target`, `.idea`, `.internal-docs` and local
+  secret-bearing configuration such as `remote-test.local.json`; preserve local files.
 
 ## Documentation and Git
 
 - Keep README, relevant `docs/` guides, JavaDoc and examples consistent with actual
   implementation and dependency versions. Describe unreleased changes accurately.
+- Keep public documentation focused on supported usage, configuration, protocol
+  contracts, monitoring and release changes. Store maintainer publishing runbooks,
+  internal benchmarks, deployment budgets and unimplemented designs only in the
+  Git-ignored `.internal-docs/` directory. Do not link public guides to local notes.
 - Consult [event ownership](docs/EVENT_LOOP.md), [configuration](docs/CONFIGURATION.md),
   [core components and security](docs/CORE_COMPONENTS.md), and
   [slow business operations](docs/SLOW_BUSINESS.md) when touching those areas.
@@ -129,7 +133,10 @@ git diff --check
   `Zea TCP 0.8.2`. Read the version from the POM at the release tag, without the
   tag's `v` prefix or a descriptive subtitle. Put change summaries and migration
   details in the release notes.
-- Use the Maven wrapper for releases and follow [publishing](docs/PUBLISHING.md).
+- Use the Maven wrapper for releases and the
+  [publishing workflow](.github/workflows/publish-maven-central.yml).
+  Local maintainers may also consult `.internal-docs/PUBLISHING.md` when present;
+  this ignored guide must not be required in a fresh clone.
   Run `.github/scripts/test-central-publishing.py` when changing the publishing
   workflow or release profile. Never replace an already published Maven version or
   alter release tags as part of an unrelated code change.

@@ -254,7 +254,8 @@ or a negative value disables scheduling. The legacy sampler reads shared dispatc
 queues only. Live `/metrics/flow-control` and Prometheus flow series separately
 include the Game, byte budgets, admission outcomes and timing bucket bounds; they
 remain available with sampling disabled. See
-[metrics architecture](METRICS_ARCHITECTURE.md) for cached values and shutdown.
+[monitoring](MONITORING.md) for cached values and
+[event lifecycle](EVENT_LOOP.md) for shutdown ownership.
 
 ## Identifier Node Names
 

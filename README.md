@@ -10,7 +10,7 @@ credential-keyed session cache and HTTP monitoring endpoints.
 
 This documentation describes **0.8.3**, including ordered unicast, streaming JSON
 encoding and bounded socket backpressure. Dependency versions below come from
-[pom.xml](pom.xml). See the [0.8.3 release notes](docs/RELEASE_NOTES_0.8.3.md)
+[pom.xml](pom.xml). See the [0.8.3 changelog](CHANGELOG.md#083)
 for changes and migration requirements.
 
 ## Features
@@ -482,8 +482,9 @@ doclint checks; generated Dagger sources are excluded.
 
 ## Documentation
 
-Start with the [documentation index](docs/README.md). The guides describe supported
-framework behavior and application integration.
+Start with the [quick start](#quick-start). The guides below describe supported
+framework behavior and application integration. Version changes and migration
+requirements are collected in the root [changelog](CHANGELOG.md).
 
 | Guide | Contents |
 | --- | --- |
@@ -493,8 +494,7 @@ framework behavior and application integration.
 | [Slow business operations](docs/SLOW_BUSINESS.md) | Bounded offloading and ordered completion of blocking work |
 | [Monitoring](docs/MONITORING.md) | Health checks, JSON/Prometheus fields and application instrumentation |
 | [Banner customization](docs/BANNER_CUSTOMIZATION.md) | Classpath banners, overrides and displayed version behavior |
-| [0.8.3 release notes](docs/RELEASE_NOTES_0.8.3.md) | Changes, compatibility and migration from 0.8.2 |
-| [0.8.2 release notes](docs/RELEASE_NOTES_0.8.2.md) | Changes and migration from 0.8.1 |
+| [Changelog](CHANGELOG.md) | Release changes, compatibility and migration requirements |
 
 ## License and Support
 

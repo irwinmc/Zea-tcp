@@ -419,10 +419,35 @@ TCP/WebSocket write order, socket byte budgets and concurrent capacity admission
 Examples with `main` methods are executable
 helpers rather than JUnit tests.
 
-The POM configures Maven Compiler 3.13.0, Surefire 3.2.5, JavaDoc 3.12.0,
-Exec 3.6.1 and Central Publishing 0.7.0. Its `release` profile adds Sources 3.3.1,
-JavaDoc attachment and GPG 3.2.8 signing. Normal development builds do not require
-signing credentials.
+The POM configures Maven Compiler 3.13.0, Surefire 3.2.5, JavaDoc 3.12.0 and
+Exec 3.6.1. Its `release` profile adds Sources 3.3.1, JavaDoc attachment,
+GPG 3.2.8 signing and Central Publishing 0.11.0. Normal development builds do not
+require signing credentials.
+
+### Publish to Maven Central
+
+[The release workflow](.github/workflows/publish-maven-central.yml) runs when a
+GitHub Release is published. It checks out the release tag, checks that its version
+matches the POM, runs tests and strict English JavaDoc checks with Java 21, then
+signs and automatically publishes the main JAR, sources, JavaDoc and POM.
+The job waits for Central to report the deployment as published.
+
+Configure these repository secrets under **Settings → Secrets and variables →
+Actions → New repository secret**:
+
+| Secret | Value |
+| --- | --- |
+| `MAVEN_CENTRAL_USERNAME` | Username generated with a Central Portal user token |
+| `MAVEN_CENTRAL_PASSWORD` | Password generated with the same Portal token |
+| `GPG_PRIVATE_KEY` | Complete ASCII-armored export of the signing private key |
+| `GPG_PASSPHRASE` | Passphrase protecting that private key |
+
+The Central account must have publishing access to `com.akakata`, and the signing
+public key must be available to Central. Use a release tag such as `v0.8.0` or
+`0.8.0` matching the POM at that tag. Already published versions cannot be replaced;
+choose a new version for subsequent releases. See the
+[publishing guide](docs/PUBLISHING.md) for token setup, key preparation, local
+verification and troubleshooting.
 
 ### Generate API Documentation
 
@@ -481,6 +506,7 @@ requires representative game logic and deployment-level multi-process tests.
 | Guide | Contents |
 | --- | --- |
 | [Configuration](docs/CONFIGURATION.md) | Properties, loading, protocols and fixed limits |
+| [Publishing](docs/PUBLISHING.md) | GitHub Releases, Maven Central credentials, signing and deployment |
 | [Event loops and lifecycle](docs/EVENT_LOOP.md) | Threads, routing, concurrency, shutdown and payload ownership |
 | [Monitoring](docs/MONITORING.md) | Health responses, JSON fields and Prometheus names |
 | [Metrics architecture](docs/METRICS_ARCHITECTURE.md) | Collectors, instrumentation and sampling lifecycle |

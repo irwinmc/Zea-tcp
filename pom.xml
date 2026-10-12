@@ -58,6 +58,7 @@
         <io.netty.version>4.2.19.Final</io.netty.version>
         <dagger.version>2.60.1</dagger.version>
         <exec.mainClass>com.akakata.benchmark.SimpleLoadTest</exec.mainClass>
+        <central.skipPublishing>false</central.skipPublishing>
     </properties>
 
     <dependencies>
@@ -194,17 +195,6 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.2.5</version>
             </plugin>
-            <plugin>
-                <groupId>org.sonatype.central</groupId>
-                <artifactId>central-publishing-maven-plugin</artifactId>
-                <version>0.7.0</version>
-                <extensions>true</extensions>
-                <configuration>
-                    <publishingServerId>central</publishingServerId>
-                    <autoPublish>false</autoPublish>
-                    <checksums>required</checksums>
-                </configuration>
-            </plugin>
         </plugins>
     </build>
 
@@ -221,7 +211,7 @@
                             <execution>
                                 <id>attach-sources</id>
                                 <goals>
-                                    <goal>jar</goal>
+                                    <goal>jar-no-fork</goal>
                                 </goals>
                             </execution>
                         </executions>
@@ -251,6 +241,19 @@
                                 </goals>
                             </execution>
                         </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <version>0.11.0</version>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <publishingServerId>central</publishingServerId>
+                            <autoPublish>true</autoPublish>
+                            <waitUntil>published</waitUntil>
+                            <skipPublishing>${central.skipPublishing}</skipPublishing>
+                            <checksums>all</checksums>
+                        </configuration>
                     </plugin>
                 </plugins>
             </build>

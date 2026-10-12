@@ -18,6 +18,8 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -334,10 +336,12 @@ class BackpressureAndBroadcastRegressionTest {
     /**
      * Completes queued send futures and releases their native references on Game closure.
      *
+     * @param unicast whether to queue one explicit recipient instead of broadcasting
      * @throws Exception if callback or closure completion fails
      */
-    @Test
-    void closingGameCompletesPendingSendFuturesAndReleasesPayloads() throws Exception {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void closingGameCompletesPendingSendFuturesAndReleasesPayloads(boolean unicast) throws Exception {
         DefaultGame game = new DefaultGame();
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
@@ -348,9 +352,11 @@ class BackpressureAndBroadcastRegressionTest {
         ByteBuf payload = Unpooled.buffer().writeByte(1);
         CompletableFuture<Void> closed = new CompletableFuture<>();
         try {
+            PlayerSession recipient = player(game, new NettyEventDispatcher(), new CopyOnWriteArrayList<>());
             game.send(Events.event(null, 9_003));
             assertTrue(entered.await(3, TimeUnit.SECONDS));
-            var send = game.sendBroadcast(Events.networkEvent(payload));
+            var send = unicast ? game.sendToPlayer(Events.networkEvent(payload), recipient)
+                    : game.sendBroadcast(Events.networkEvent(payload));
             payload.release();
             Thread.startVirtualThread(() -> {
                 try {

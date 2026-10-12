@@ -59,12 +59,13 @@ public final class NetworkLoadTest {
             throw new IllegalArgumentException("Transport must be tcp or websocket");
         }
         boolean verify = options.containsKey("verify");
+        boolean serverOnly = options.containsKey("server-only");
         int port = number(options, "port", 0);
         String host = options.getOrDefault("host", "127.0.0.1");
         ServerContext context = null;
         try {
             if (port == 0) {
-                context = new ServerContext();
+                context = new ServerContext(options.getOrDefault("config", "props/benchmark.properties"));
                 var properties = context.getConfigManager().getProperties();
                 properties.setProperty("security.allow.anonymous", "true");
                 properties.setProperty("server.tcp.enabled", Boolean.toString(!websocket));
@@ -73,11 +74,8 @@ public final class NetworkLoadTest {
                 properties.setProperty("tcp.port", "0");
                 properties.setProperty("web.socket.port", "0");
                 properties.setProperty("metrics.event.interval.seconds", "0");
-                properties.setProperty("bossThreadCount", "1");
-                properties.setProperty("workerThreadCount", "2");
-                properties.setProperty("session.dispatcher.shards", "2");
-                properties.setProperty("socket.login.timeout.millis", verify ? "500" : "30000");
-                properties.setProperty("socket.read.idle.millis", verify ? "1500" : "120000");
+                properties.setProperty("socket.login.timeout.millis", verify ? options.getOrDefault("verify-login-millis", "500") : "30000");
+                properties.setProperty("socket.read.idle.millis", verify ? options.getOrDefault("verify-idle-millis", "1500") : "120000");
                 properties.setProperty("socket.maximum.pending.bytes", options.getOrDefault("socket-bytes", "1048576"));
                 context.initialize();
                 Game game = context.getBean(Game.class);
@@ -106,10 +104,24 @@ public final class NetworkLoadTest {
                 port = ((java.net.InetSocketAddress) AbstractNettyServer.ALL_CHANNELS.stream()
                         .filter(channel -> channel instanceof ServerChannel).findFirst().orElseThrow().localAddress()).getPort();
             }
-            if (verify) {
-                verifyNetwork(host, port, websocket);
-            }
-            else {
+            if (serverOnly) {
+                if (context == null) {
+                    throw new IllegalArgumentException("Server-only mode requires an embedded server");
+                }
+                System.out.println("READY " + MAPPER.writeValueAsString(Map.of("port", port, "pid", ProcessHandle.current().pid())));
+                System.out.flush();
+                try (BufferedReader commands = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
+                    String command;
+                    while ((command = commands.readLine()) != null && !command.equals("stop")) {
+                        if (command.equals("snapshot")) {
+                            System.out.println("SERVER_METRICS " + MAPPER.writeValueAsString(serverMetrics()));
+                            System.out.flush();
+                        }
+                    }
+                }
+            } else if (verify) {
+                verifyNetwork(host, port, websocket, number(options, "verify-login-millis", 500));
+            } else {
                 runLoad(host, port, websocket, options);
             }
             if (context != null) {
@@ -118,7 +130,7 @@ public final class NetworkLoadTest {
         } finally {
             if (context != null) {
                 context.close();
-                if (verify && (FlowControlMetrics.ACTIVE_CONNECTIONS.sum() != 0
+                if (FlowControlMetrics.ACTIVE_CONNECTIONS.sum() != 0
                         || FlowControlMetrics.PENDING_WRITES.sum() != 0
                         || FlowControlMetrics.PENDING_SOCKET_BYTES.sum() != 0
                         || FlowControlMetrics.PENDING_PAYLOAD_BYTES.sum() != 0
@@ -127,11 +139,39 @@ public final class NetworkLoadTest {
                         || context.getBean(com.akakata.service.SessionService.class).size() != 0
                         || !context.getBean(Game.class).getSessions().isEmpty()
                         || com.akakata.event.impl.EventDispatchers.sharedGroup().snapshots().stream()
-                        .anyMatch(snapshot -> snapshot.pendingBytes() != 0))) {
+                        .anyMatch(snapshot -> snapshot.pendingBytes() != 0)) {
                     throw new IllegalStateException("Transport or session resources survived context shutdown");
                 }
+                System.out.println("CLEANUP_OK");
             }
         }
+    }
+
+    /**
+     * Captures server-only CPU, GC, allocation and direct-memory evidence at a workload boundary.
+     *
+     * @return JVM counters and flow-control snapshots, excluding any separate client process
+     */
+    private static Map<String, Object> serverMetrics() {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("sample_time_utc", java.time.Instant.now().toString());
+        var operatingSystem = (com.sun.management.OperatingSystemMXBean) java.lang.management.ManagementFactory.getOperatingSystemMXBean();
+        result.put("process_cpu_nanos", operatingSystem.getProcessCpuTime());
+        result.put("heap_used_bytes", java.lang.management.ManagementFactory.getMemoryMXBean().getHeapMemoryUsage().getUsed());
+        result.put("gc_count", java.lang.management.ManagementFactory.getGarbageCollectorMXBeans().stream()
+                .mapToLong(bean -> Math.max(0, bean.getCollectionCount())).sum());
+        result.put("gc_millis", java.lang.management.ManagementFactory.getGarbageCollectorMXBeans().stream()
+                .mapToLong(bean -> Math.max(0, bean.getCollectionTime())).sum());
+        var threads = (com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean();
+        if (threads.isThreadAllocatedMemorySupported()) {
+            threads.setThreadAllocatedMemoryEnabled(true);
+            result.put("live_thread_allocated_bytes", Arrays.stream(threads.getThreadAllocatedBytes(threads.getAllThreadIds()))
+                    .filter(bytes -> bytes > 0).sum());
+        }
+        result.put("buffer_pools", java.lang.management.ManagementFactory.getPlatformMXBeans(java.lang.management.BufferPoolMXBean.class).stream()
+                .map(bean -> Map.of("name", bean.getName(), "used_bytes", bean.getMemoryUsed(), "count", bean.getCount())).toList());
+        result.put("flow", FlowControlMetrics.snapshot());
+        return result;
     }
 
     /**
@@ -147,21 +187,34 @@ public final class NetworkLoadTest {
         int clients = number(options, "clients", 16), messages = number(options, "messages", 1000);
         int window = number(options, "window", 16), payloadBytes = number(options, "payload-bytes", 128);
         int readDelay = number(options, "slow-read-millis", 0), timeout = number(options, "timeout-seconds", 60);
+        int warmup = number(options, "warmup-messages", 100);
+        int receiveBuffer = number(options, "receive-buffer-bytes", 0);
         if (clients <= 0 || messages <= 0 || window <= 0 || payloadBytes < 0 || payloadBytes > 60000
-                || readDelay < 0 || timeout <= 0) {
+                || readDelay < 0 || timeout <= 0 || warmup < 0 || receiveBuffer < 0) {
             throw new IllegalArgumentException("Invalid workload limits");
         }
         String payload = "x".repeat(payloadBytes);
         List<Long> latencies = Collections.synchronizedList(new ArrayList<>());
         LongAdder failures = new LongAdder(), completed = new LongAdder();
-        long started = System.nanoTime();
+        long started = 0;
+        CountDownLatch ready = new CountDownLatch(clients);
+        CountDownLatch start = new CountDownLatch(1);
+        boolean deadlineExceeded = false;
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
             List<Future<?>> tasks = new ArrayList<>();
             for (int client = 0; client < clients; client++) {
                 tasks.add(executor.submit(() -> {
                     int received = 0;
-                    try (WireClient connection = new WireClient(host, port, websocket)) {
+                    boolean readySignalled = false;
+                    try (WireClient connection = new WireClient(host, port, websocket, receiveBuffer)) {
                         connection.login();
+                        for (int sequence = 0; sequence < warmup; sequence++) {
+                            connection.send(applicationFrame(Events.SESSION_MESSAGE, Map.of("sequence", sequence, "payload", payload)));
+                            requireSequence(connection.read(), sequence);
+                        }
+                        ready.countDown();
+                        readySignalled = true;
+                        start.await();
                         for (int base = 0; base < messages; base += window) {
                             int count = Math.min(window, messages - base);
                             long[] submitted = new long[count];
@@ -182,24 +235,44 @@ public final class NetworkLoadTest {
                     } catch (Exception failure) {
                         failures.add(messages - received);
                         System.err.println("Client stopped after " + received + " replies: " + failure.getClass().getSimpleName());
+                    } finally {
+                        if (!readySignalled) {
+                            ready.countDown();
+                        }
                     }
                 }));
             }
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeout);
             try {
+                if (!ready.await(timeout, TimeUnit.SECONDS)) {
+                    throw new TimeoutException("Client warmup deadline exceeded");
+                }
+                if (started == 0) {
+                    started = System.nanoTime();
+                }
+                start.countDown();
                 for (Future<?> task : tasks) {
                     task.get(Math.max(1, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
                 }
+            } catch (TimeoutException failure) {
+                deadlineExceeded = true;
+                if (started == 0) {
+                    started = System.nanoTime();
+                }
             } finally {
+                start.countDown();
                 tasks.forEach(task -> task.cancel(true));
             }
         }
         double seconds = (System.nanoTime() - started) / 1_000_000_000.0;
         long[] observed = latencies.stream().mapToLong(Long::longValue).sorted().toArray();
         System.out.printf(Locale.ROOT,
-                "RESULT transport=%s clients=%d completed=%d failed=%d elapsed_seconds=%.3f replies_per_second=%.1f p50_ms=%.3f p95_ms=%.3f p99_ms=%.3f%n",
-                websocket ? "websocket" : "tcp", clients, completed.sum(), failures.sum(), seconds,
+                "RESULT transport=%s clients=%d completed=%d failed=%d warmup_messages=%d deadline_exceeded=%s elapsed_seconds=%.3f replies_per_second=%.1f p50_ms=%.3f p95_ms=%.3f p99_ms=%.3f%n",
+                websocket ? "websocket" : "tcp", clients, completed.sum(), failures.sum(), warmup, deadlineExceeded, seconds,
                 completed.sum() / seconds, quantile(observed, .50), quantile(observed, .95), quantile(observed, .99));
+        if (failures.sum() != 0 || deadlineExceeded || completed.sum() != (long) clients * messages) {
+            throw new IllegalStateException("Workload did not complete all requested replies");
+        }
     }
 
     /**
@@ -208,13 +281,14 @@ public final class NetworkLoadTest {
      * @param host      target hostname
      * @param port      target port
      * @param websocket selected transport
+     * @param loginMillis configured authentication deadline to cross after successful login
      * @throws Exception if a wire contract or connection deadline is violated
      */
-    private static void verifyNetwork(String host, int port, boolean websocket) throws Exception {
+    private static void verifyNetwork(String host, int port, boolean websocket, int loginMillis) throws Exception {
         try (WireClient client = new WireClient(host, port, websocket)) {
             client.login();
             // Cross the login deadline; the authenticated connection must survive it.
-            Thread.sleep(650);
+            Thread.sleep(loginMillis + 150L);
             for (int sequence = 0; sequence < 32; sequence++) {
                 client.send(applicationFrame(Events.SESSION_MESSAGE, Map.of("sequence", sequence)));
             }
@@ -343,12 +417,27 @@ public final class NetworkLoadTest {
          * @throws IOException if connection or upgrade validation fails
          */
         private WireClient(String host, int port, boolean websocket) throws IOException {
+            this(host, port, websocket, 0);
+        }
+
+        /**
+         * Connects a workload socket with an optional deliberately constrained receive buffer.
+         *
+         * @param host target hostname
+         * @param port listening port
+         * @param websocket transport selection
+         * @param receiveBuffer positive receive-buffer hint, or zero for the operating-system default
+         * @throws IOException if connection or upgrade fails
+         */
+        private WireClient(String host, int port, boolean websocket, int receiveBuffer) throws IOException {
             this.websocket = websocket;
             try {
+                if (receiveBuffer > 0) {
+                    socket.setReceiveBufferSize(receiveBuffer);
+                }
                 socket.connect(new java.net.InetSocketAddress(host, port), 5000);
                 socket.setSoTimeout(5000);
                 socket.setTcpNoDelay(true);
-                socket.setReceiveBufferSize(8192);
                 input = new DataInputStream(socket.getInputStream());
                 output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream(), 65536));
                 if (websocket) {

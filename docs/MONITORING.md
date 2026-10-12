@@ -1,6 +1,6 @@
 # Monitoring Endpoints
 
-Zea TCP Transport 0.8.2 serves health and metrics endpoints through its HTTP
+Zea TCP Transport 0.8.3 serves health and metrics endpoints through its HTTP
 listener, whose bundled port is 8081. Enable `server.http.enabled` and use the
 configured `http.port`. The HTTP-only repository example uses port 18081 instead.
 See the [configuration guide](CONFIGURATION.md).
@@ -251,7 +251,7 @@ are conservative storage charges, not exact JVM memory readings.
 
 Transport fields `active_connections`, `paused_channels`, `pending_writes` and
 `pending_socket_bytes` and `pending_payload_bytes` are live gauges. `connection_rejections`, `login_timeouts`,
-`idle_timeouts`, `http_timeouts`, `read_pauses`, `pause_timeouts`, `write_rejections`, `encoded_frames`
+`idle_timeouts`, `http_timeouts`, `read_pauses`, `pause_timeouts`, `write_rejections`, `write_timeouts`, `encoded_frames`
 and `encoding_reuses` are cumulative counters. Active connections count admitted
 TCP/WebSocket/HTTP sockets including unauthenticated clients. HTTP additionally
 has its own connection sublimit and absolute request deadline. Encoded byte gauges remain charged until the write promise settles.

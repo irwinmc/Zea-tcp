@@ -11,7 +11,8 @@ import java.util.List;
  * Encodes events as bounded JSON application frames.
  *
  * <p>Shared Game sends reuse a canonical read-only application frame with independent
- * recipient indices. Ordinary sends serialize directly to bytes without String conversion.
+ * recipient indices. Ordinary sends stream JSON into a bounded native frame without
+ * a whole-payload heap array or String conversion. Failed partial output is released.
  */
 @Sharable
 public class JsonEncoder extends MessageToMessageEncoder<Event> {

@@ -125,6 +125,10 @@ git diff --check
 - Inspect the working tree before editing. Preserve unrelated user changes and keep
   commits focused on the authorized work. Do not commit, push or publish without
   authorization for that action.
+- Use exactly `Zea TCP <version>` for every GitHub Release title, for example
+  `Zea TCP 0.8.2`. Read the version from the POM at the release tag, without the
+  tag's `v` prefix or a descriptive subtitle. Put change summaries and migration
+  details in the release notes.
 - Use the Maven wrapper for releases and follow [publishing](docs/PUBLISHING.md).
   Run `.github/scripts/test-central-publishing.py` when changing the publishing
   workflow or release profile. Never replace an already published Maven version or

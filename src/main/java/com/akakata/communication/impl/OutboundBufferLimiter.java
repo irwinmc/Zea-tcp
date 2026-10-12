@@ -54,7 +54,7 @@ final class OutboundBufferLimiter extends ChannelOutboundHandlerAdapter {
     }
 
     /**
-     * Rejects an encoded write that exceeds its byte budget or channel water mark.
+     * Rejects an encoded write that exceeds a hard per-channel or aggregate byte budget.
      *
      * @param ctx     the transport-side handler context
      * @param message the encoded buffer or frame transferred to this handler
@@ -66,10 +66,10 @@ final class OutboundBufferLimiter extends ChannelOutboundHandlerAdapter {
         long bytes = message instanceof ByteBuf buffer ? buffer.readableBytes()
                 : message instanceof ByteBufHolder holder ? holder.content().readableBytes()
                 : Math.max(0, ctx.channel().config().getMessageSizeEstimator().newHandle().size(message));
-        if (!ctx.channel().isWritable() || bytes > maximumPendingBytes - pendingBytes || !budget.reserve(bytes)) {
+        if (bytes > maximumPendingBytes - pendingBytes || !budget.reserve(bytes)) {
             FlowControlMetrics.WRITE_REJECTIONS.increment();
             ReferenceCountUtil.release(message);
-            promise.tryFailure(new RejectedExecutionException("Socket encoded-byte budget or water mark exceeded"));
+            promise.tryFailure(new RejectedExecutionException("Socket encoded-byte budget exceeded"));
             ctx.close();
             return;
         }

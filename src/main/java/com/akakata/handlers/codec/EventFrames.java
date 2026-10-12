@@ -11,6 +11,8 @@ import tools.jackson.databind.SerializationFeature;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.nio.charset.StandardCharsets;
+import java.io.OutputStream;
+import java.util.Objects;
 
 /**
  * Builds bounded application frames without UTF-8 String round trips or composite allocations.
@@ -24,9 +26,15 @@ public final class EventFrames {
     private static final ObjectMapper MAPPER = JsonMapper.builder().disable(SerializationFeature.FAIL_ON_EMPTY_BEANS).build();
 
     /**
+     * Largest application frame representable by the two-byte transport prefix.
+     */
+    private static final int MAXIMUM_FRAME_BYTES = 65_535;
+
+    /**
      * Prevents construction of this encoding utility.
      */
-    private EventFrames() {}
+    private EventFrames() {
+    }
 
     /**
      * Encodes an opcode with an optional length-prefixed JSON object.
@@ -36,27 +44,43 @@ public final class EventFrames {
      * @return caller-owned application frame excluding transport headers
      */
     public static ByteBuf json(ByteBufAllocator allocator, Event event) {
-        if (event instanceof SharedNetworkEvent shared)
+        if (event instanceof SharedNetworkEvent shared) {
             return shared.encodedFrame("JSON", () -> encodeJson(allocator, event));
+        }
         return encodeJson(allocator, event);
     }
 
     /**
-     * Builds one canonical JSON frame before any native allocation on serialization failure.
+     * Streams JSON into one bounded native frame and releases partial output on failure.
      *
      * @param allocator the native allocator
      * @param event the source event
      * @return newly allocated application frame
      */
     private static ByteBuf encodeJson(ByteBufAllocator allocator, Event event) {
-        byte[] payload = event.getSource() == null ? null : MAPPER.writeValueAsBytes(event.getSource());
-        int size = payload == null ? 1 : 5 + payload.length;
-        validateSize(size);
-        ByteBuf frame = allocator.buffer(size, size);
-        frame.writeByte(event.getType());
-        if (payload != null) frame.writeInt(payload.length).writeBytes(payload);
-        FlowControlMetrics.ENCODED_FRAMES.increment();
-        return frame;
+        Object source = event.getSource();
+        ByteBuf frame = allocator.buffer(source == null ? 1 : 256, MAXIMUM_FRAME_BYTES);
+        FrameOutputStream output = null;
+        try {
+            frame.writeByte(event.getType());
+            if (source != null) {
+                frame.writeInt(0);
+                output = new FrameOutputStream(frame);
+                MAPPER.writeValue(output, source);
+                if (output.overflow != null) {
+                    throw output.overflow;
+                }
+                frame.setInt(1, frame.writerIndex() - 5);
+            }
+            FlowControlMetrics.ENCODED_FRAMES.increment();
+            return frame;
+        } catch (RuntimeException | Error failure) {
+            frame.release();
+            if (output != null && output.overflow != null) {
+                throw output.overflow;
+            }
+            throw failure;
+        }
     }
 
     /**
@@ -67,8 +91,9 @@ public final class EventFrames {
      * @return caller-owned SBE-style frame excluding the TCP length prefix
      */
     public static ByteBuf sbe(ByteBufAllocator allocator, Event event) {
-        if (event instanceof SharedNetworkEvent shared)
+        if (event instanceof SharedNetworkEvent shared) {
             return shared.encodedFrame("SBE", () -> encodeSbe(allocator, event));
+        }
         return encodeSbe(allocator, event);
     }
 
@@ -88,11 +113,16 @@ public final class EventFrames {
                 : MAPPER.writeValueAsBytes(source);
         int length = nativeSource != null ? nativeSource.readableBytes() : payload == null ? 0 : payload.length;
         validateSize(8 + length);
-        if (event.getType() < 0 || event.getType() > 255) throw new IllegalArgumentException("Invalid event opcode");
+        if (event.getType() < 0 || event.getType() > 255) {
+            throw new IllegalArgumentException("Invalid event opcode");
+        }
         ByteBuf frame = allocator.buffer(8 + length, 8 + length);
         frame.writeShortLE(length).writeShortLE(event.getType()).writeShortLE(1).writeShortLE(1);
-        if (nativeSource != null) frame.writeBytes(nativeSource, nativeSource.readerIndex(), length);
-        else if (payload != null) frame.writeBytes(payload);
+        if (nativeSource != null) {
+            frame.writeBytes(nativeSource, nativeSource.readerIndex(), length);
+        } else if (payload != null) {
+            frame.writeBytes(payload);
+        }
         FlowControlMetrics.ENCODED_FRAMES.increment();
         return frame;
     }
@@ -104,6 +134,66 @@ public final class EventFrames {
      * @throws TooLongFrameException if the frame exceeds 65535 bytes
      */
     private static void validateSize(int bytes) {
-        if (bytes < 0 || bytes > 65_535) throw new TooLongFrameException("Application frame exceeds 65535 bytes");
+        if (bytes < 0 || bytes > MAXIMUM_FRAME_BYTES) {
+            throw new TooLongFrameException("Application frame exceeds 65535 bytes");
+        }
+    }
+
+    /**
+     * Writes JSON without a whole-payload heap array or transferring native ownership.
+     * Closing this stream does not release the caller-owned frame.
+     */
+    private static final class FrameOutputStream extends OutputStream {
+
+        /**
+         * Frame owned by the surrounding encoder until successful publication.
+         */
+        private final ByteBuf frame;
+
+        /**
+         * Captured limit failure preserved when Jackson wraps an output exception.
+         */
+        private TooLongFrameException overflow;
+
+        /**
+         * Creates a stream that borrows one partially written application frame.
+         *
+         * @param frame the frame receiving the serialized payload
+         */
+        private FrameOutputStream(ByteBuf frame) {
+            this.frame = frame;
+        }
+
+        /**
+         * {@inheritDoc}
+         */
+        @Override
+        public void write(int value) {
+            checkRemaining(1);
+            frame.writeByte(value);
+        }
+
+        /**
+         * {@inheritDoc}
+         */
+        @Override
+        public void write(byte[] bytes, int offset, int length) {
+            Objects.checkFromIndexSize(offset, length, bytes.length);
+            checkRemaining(length);
+            frame.writeBytes(bytes, offset, length);
+        }
+
+        /**
+         * Rejects a write before native growth can exceed the protocol frame budget.
+         *
+         * @param length the nonnegative number of bytes to append
+         * @throws TooLongFrameException if the complete frame would exceed 65535 bytes
+         */
+        private void checkRemaining(int length) {
+            if (length > MAXIMUM_FRAME_BYTES - frame.writerIndex()) {
+                overflow = new TooLongFrameException("Application frame exceeds 65535 bytes");
+                throw overflow;
+            }
+        }
     }
 }

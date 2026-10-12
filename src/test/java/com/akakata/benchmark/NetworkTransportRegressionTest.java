@@ -48,7 +48,42 @@ class NetworkTransportRegressionTest {
             assertTrue(read(log).contains("NETWORK_REGRESSION_OK " + transport), () -> read(log));
             assertTrue(read(log).contains("ServerContext shutdown complete"), () -> read(log));
         } finally {
-            if (child.isAlive()) { child.destroyForcibly(); child.waitFor(2, TimeUnit.SECONDS); }
+            if (child.isAlive()) {
+                child.destroyForcibly();
+                child.waitFor(2, TimeUnit.SECONDS);
+            }
+        }
+    }
+
+    /**
+     * Exercises the previously failing 64-message burst with fast and delayed real readers.
+     *
+     * @param transport selected TCP or WebSocket transport
+     * @throws Exception if a bounded child workload fails
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"tcp", "websocket"})
+    @Timeout(40)
+    void largeBurstsSurviveNormalAndSlowReaders(String transport) throws Exception {
+        for (int delay : new int[]{0, 2}) {
+            Path log = directory.resolve(transport + "-burst-" + delay + ".log");
+            String classpath = System.getProperty("surefire.test.class.path", System.getProperty("java.class.path"));
+            Process child = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                    "-cp", classpath, NetworkLoadTest.class.getName(), "--transport=" + transport,
+                    "--clients=1", "--messages=512", "--window=64", "--payload-bytes=4096",
+                    "--warmup-messages=8", "--slow-read-millis=" + delay, "--timeout-seconds=12")
+                    .redirectErrorStream(true).redirectOutput(log.toFile()).start();
+            try {
+                assertTrue(child.waitFor(16, TimeUnit.SECONDS), () -> read(log));
+                assertEquals(0, child.exitValue(), () -> read(log));
+                assertTrue(read(log).contains("completed=512 failed=0"), () -> read(log));
+                assertTrue(read(log).contains("CLEANUP_OK"), () -> read(log));
+            } finally {
+                if (child.isAlive()) {
+                    child.destroyForcibly();
+                    child.waitFor(2, TimeUnit.SECONDS);
+                }
+            }
         }
     }
 
@@ -59,7 +94,10 @@ class NetworkTransportRegressionTest {
      * @return captured diagnostics or the read failure message
      */
     private static String read(Path path) {
-        try { return Files.readString(path); }
-        catch (Exception failure) { return failure.toString(); }
+        try {
+            return Files.readString(path);
+        } catch (Exception failure) {
+            return failure.toString();
+        }
     }
 }

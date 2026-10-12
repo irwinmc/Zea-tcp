@@ -36,3 +36,11 @@ build/
 
 ### Claude ###
 .claude/
+
+### Local Remote Tests ###
+/remote-test.local.json
+/remote-test-results/
+
+### Python Test Helpers ###
+__pycache__/
+*.pyc

@@ -1,6 +1,6 @@
 # Event Loops, Dispatch and Lifecycle
 
-This guide describes Zea TCP Transport 0.8.2 with Netty 4.2.19.Final and Java 21,
+This guide describes Zea TCP Transport 0.8.3 with Netty 4.2.19.Final and Java 21,
 including application injection, security and resource policies.
 See [configuration](CONFIGURATION.md) for consumed properties and wire formats.
 
@@ -129,6 +129,12 @@ observe membership when their action executes. Selected sends copy their collect
 at submission, deduplicate session instances and reject players from other Games.
 Disconnected selections are skipped. Closure can cancel work that has not started.
 
+`sendToPlayer()` validates its single recipient and queues an immutable singleton
+selection directly. It does not create the multi-recipient identity set or staging
+list. An explicit selection that resolves to one recipient uses ordinary event
+retention across Game, Session and socket admission, without a broadcast encoding
+lease. This preserves both executor boundaries and their rejection/closure rules.
+
 The default `SESSION_MESSAGE` callback posts a `PlayerMessageEvent` to the Game.
 Its `getPlayerSession()` identifies the authenticated sender; `getSource()` remains
 the decoded payload. Register a Game handler for `Events.SESSION_MESSAGE` and choose
@@ -219,7 +225,8 @@ custom positive pause duration; there is no default properties key for that dura
 
 `SocketMessageSender` caps pending application writes before adding I/O tasks:
 `socket.maximum.pending.writes` defaults to 1,024. Every accepted write is scheduled
-on the Channel event loop in FIFO batches of at most 64, flushing once per batch.
+on the Channel event loop in FIFO batches of at most 64. A 32 KiB source-estimate
+threshold triggers earlier flushing, as does a Channel water-mark transition.
 Submitting from an I/O callback cannot overtake earlier admitted writes. The transport-side buffer limiter
 also caps encoded pending bytes using `socket.maximum.pending.bytes`, defaulting
 to 1,048,576 bytes. `socket.maximum.pending.payload.bytes` separately bounds
@@ -227,10 +234,18 @@ estimated retained sources before encoding, defaulting to 1 MiB. The context-wid
 `socket.total.pending.bytes` allowance defaults to 256 MiB and charges both sources
 and encoded buffers while both are retained. Shared broadcast sources are charged
 per recipient as logical pressure. Login, WebSocket upgrade and HTTP response
-pipelines also enforce encoded admission. Channel write-buffer water marks remain
-an additional limit.
-No retry queue is created. A budget violation, unwritable write or transport-write
-failure completes the write exceptionally and closes the connection.
+pipelines also enforce encoded admission. Channel write-buffer water marks pause
+the existing bounded application FIFO; writability notifications resume it without
+polling or moving writes to a second queue. A temporary water-mark transition does
+not reject a write. Hard count/source/encoded/aggregate budget violations and
+transport-write failures still close the connection.
+
+The sender maintains one timer for its oldest outstanding write, including writes
+already forwarded to Netty. The default admission-to-completion deadline is five
+seconds. The four-argument sender constructor accepts a positive custom deadline
+in milliseconds; there is no properties key for it. Completion and channel closure
+cancel or replace the timer and return all reservations. `write_timeouts` counts
+connections closed by this deadline. Timers execute on the channel event loop.
 
 A write future is uncancellable so cancellation cannot release a native source
 while an encoder still uses it. Event sources are independently retained until
@@ -292,7 +307,8 @@ reference and retains an additional reference for each accepted delivery.
 | Boundary | Ownership Rule |
 | --- | --- |
 | Session, dispatcher or Game submission | Caller keeps its original reference; each queued owner retains its own |
-| Game recipient send | Game task retains its source; one fan-out lease retains the source and cached frames; recipients and socket promises retain that lease |
+| Game unicast or single selection | Game, Session and socket admission each capture their own native source reference until completion or cancellation |
+| Game fan-out send | Game task retains its source; one fan-out lease retains the source and cached frames; recipients and socket promises retain that lease |
 | Rejection, cancellation or queued shutdown | Release the abandoned delivery's retained reference |
 | Handler or queued action | Borrow the payload until the synchronous callback returns |
 | Running callback during close | Keep its retained reference until the callback finishes |
@@ -303,7 +319,7 @@ reference and retains an additional reference for each accepted delivery.
 | `MessageBufferEventEncoder` | Copy readable bytes without consuming the borrowed source reference |
 
 Events and payloads are not deep-copied. Do not mutate an event after publication.
-Each explicit Game send creates one `SharedNetworkEvent` lease and lazily caches
+Multi-recipient selections and broadcasts create one `SharedNetworkEvent` lease and lazily cache
 one application frame per wire format. TCP and WebSocket JSON share that frame.
 Recipient buffers are retained read-only duplicates with independent indices.
 Failed or cancelled recipients cannot release another recipient's source or frame;

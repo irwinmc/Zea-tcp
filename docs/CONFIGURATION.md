@@ -1,6 +1,6 @@
 # Configuration Guide
 
-This guide describes the configuration consumed by Zea TCP Transport 0.8.2,
+This guide describes the configuration consumed by Zea TCP Transport 0.8.3,
 including component, security and expanded resource policies.
 Dependency versions and build commands are listed in the [README](../README.md).
 
@@ -202,9 +202,14 @@ message. The shared aggregate owner charges sources and encoded bytes together
 while both exist. Broadcast sources are charged per recipient as logical pressure.
 Login, upgrade and direct HTTP pipeline responses participate in encoded admission.
 Native source and encoded reservations return on promise completion or closure.
-Neither aggregate admission nor payload estimates bound kernel buffers or exact RSS. Overflow or a nonwritable write fails the write and closes that connection;
-there is no unlimited retry queue. Writes drain in FIFO batches of at most 64 and
-flush once per batch. One Game send caches encoding per wire format, sharing JSON
+Neither aggregate admission nor payload estimates bound kernel buffers or exact RSS.
+Hard budget overflow fails the write and closes that connection. An unwritable
+channel pauses the existing bounded FIFO and resumes on writability notification.
+Writes drain in batches of at most 64, with earlier flushing at a 32 KiB source
+estimate or water-mark transition. A single timer bounds the oldest queued or
+forwarded write to five seconds by default; the four-argument sender constructor
+can change that deadline. No unlimited retry queue is created.
+Multi-recipient Game sends cache encoding per wire format, sharing JSON
 application frames between TCP and WebSocket recipients. Inbound reads pause above
 count or byte high water marks and resume from low-water notifications. The bridge's default five-second pause deadline
 is separate from callback execution and is only customizable programmatically.
@@ -376,6 +381,13 @@ bytes to the Netty frame decoder limit for the prefix. The wire format limits th
 application frame to 65,535 bytes. The standalone three-argument login initializer
 retains its 1,024-byte total login-frame default; the configured graph supplies the
 explicit limit.
+
+JSON output streams directly into a native application frame with a maximum
+capacity of 65,535 bytes. It does not create a whole-payload heap byte array.
+The encoder patches the inner payload length after successful serialization and
+releases partial output on serialization failure or size overflow. Native capacity
+may grow while encoding and can exceed readable bytes within this frame ceiling;
+socket byte reservations count readable encoded bytes, not allocator capacity.
 
 ### Login
 

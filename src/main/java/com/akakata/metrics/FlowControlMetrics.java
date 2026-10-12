@@ -71,9 +71,14 @@ public final class FlowControlMetrics {
     public static final LongAdder HTTP_TIMEOUTS = new LongAdder();
 
     /**
-     * Socket writes rejected by count, byte or writable-state admission.
+     * Socket writes rejected by count or byte admission.
      */
     public static final LongAdder WRITE_REJECTIONS = new LongAdder();
+
+    /**
+     * Connections closed because an admitted socket write exceeded its completion deadline.
+     */
+    public static final LongAdder WRITE_TIMEOUTS = new LongAdder();
 
     /**
      * Actual application-frame encodings, including cached fan-out frames.
@@ -166,6 +171,7 @@ public final class FlowControlMetrics {
         result.put("pending_payload_bytes", PENDING_PAYLOAD_BYTES.sum());
         result.put("http_timeouts", HTTP_TIMEOUTS.sum());
         result.put("write_rejections", WRITE_REJECTIONS.sum());
+        result.put("write_timeouts", WRITE_TIMEOUTS.sum());
         result.put("encoded_frames", ENCODED_FRAMES.sum());
         result.put("encoding_reuses", ENCODING_REUSES.sum());
         return result;

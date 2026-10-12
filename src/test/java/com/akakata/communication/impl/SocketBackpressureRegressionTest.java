@@ -269,21 +269,164 @@ class SocketBackpressureRegressionTest {
     }
 
     /**
-     * Honors channel writability before retaining a rejected Event source.
+     * Keeps temporary water-mark pressure in the bounded FIFO and resumes without losing ownership.
      */
     @Test
-    void unwritableChannelRejectsWithoutRetainingTheCallerOwnedEventSource() {
+    void unwritableChannelPausesAndResumesTheCallerOwnedEventSource() {
         EmbeddedChannel channel = new EmbeddedChannel(new MessageBufferEventEncoder());
-        SocketMessageSender sender = new SocketMessageSender(channel);
+        OutboundBudget budget = new OutboundBudget(1024);
+        SocketMessageSender sender = new SocketMessageSender(channel, OutboundLimits.DEFAULT, budget);
         ByteBuf payload = Unpooled.buffer().writeByte(1);
         try {
             channel.unsafe().outboundBuffer().setUserDefinedWritability(1, false);
             var future = sender.sendMessage(Events.networkEvent(new NettyMessageBuffer(payload)));
-            assertInstanceOf(RejectedExecutionException.class, future.cause());
+            channel.runPendingTasks();
+            assertFalse(future.isDone());
+            assertEquals(2, payload.refCnt());
+            assertTrue(channel.isOpen());
+            assertNull(channel.readOutbound());
+            assertEquals(1, sender.pendingWrites());
+            channel.unsafe().outboundBuffer().setUserDefinedWritability(1, true);
+            channel.runPendingTasks();
+            assertTrue(future.isSuccess());
+            ReferenceCountUtil.release(channel.readOutbound());
             assertEquals(1, payload.refCnt());
-            assertFalse(channel.isOpen());
+            assertEquals(0, budget.pendingBytes());
+            assertEquals(0, sender.pendingWrites());
         } finally {
             channel.finishAndReleaseAll();
+            payload.release();
+        }
+    }
+
+    /**
+     * Flushes large bursts below the default water mark through both production event encoders.
+     *
+     * @param websocket whether to use WebSocket instead of TCP framing
+     */
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void largeBurstSurvivesTheDefaultWaterMark(boolean websocket) {
+        EmbeddedChannel channel = websocket
+                ? new EmbeddedChannel(new WebSocket13FrameEncoder(false), new WebSocketEventEncoder())
+                : new EmbeddedChannel(new LengthFieldPrepender(2), new JsonEncoder());
+        EmbeddedChannel decoder = websocket
+                ? new EmbeddedChannel(new WebSocket13FrameDecoder(false, false, 65_535), new WebSocketEventDecoder())
+                : new EmbeddedChannel(new LengthFieldBasedFrameDecoder(65_535, 0, 2, 0, 2), new JsonDecoder());
+        OutboundBudget budget = new OutboundBudget(4 * 1024 * 1024);
+        SocketMessageSender sender = new SocketMessageSender(channel, OutboundLimits.DEFAULT, budget);
+        List<ChannelFuture> writes = new ArrayList<>();
+        try {
+            for (int sequence = 0; sequence < 64; sequence++) {
+                writes.add(sender.sendMessage(Events.networkEvent(Map.of("sequence", sequence, "payload", "x".repeat(4096)))));
+            }
+            channel.runPendingTasks();
+            Object frame;
+            while ((frame = channel.readOutbound()) != null) {
+                decoder.writeInbound(frame);
+            }
+            for (int sequence = 0; sequence < 64; sequence++) {
+                assertTrue(writes.get(sequence).isSuccess());
+                Event response = decoder.readInbound();
+                assertEquals(sequence, ((Map<?, ?>) response.getSource()).get("sequence"));
+            }
+            assertTrue(channel.isActive());
+            assertEquals(0, sender.pendingWrites());
+            assertEquals(0, sender.pendingPayloadBytes());
+            assertEquals(0, budget.pendingBytes());
+            assertNull(decoder.readInbound());
+        } finally {
+            channel.finishAndReleaseAll();
+            decoder.finishAndReleaseAll();
+        }
+    }
+
+    /**
+     * Bounds stalled queued and forwarded writes with one deadline and returns every native credit.
+     *
+     * @param forwarded whether the write has already entered a stalled outbound handler
+     */
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void stalledWriteDeadlineClosesAndReleasesBothOwnershipStages(boolean forwarded) {
+        EmbeddedChannel channel = new EmbeddedChannel(new MessageBufferEventEncoder());
+        OutboundBudget budget = new OutboundBudget(1024);
+        SocketMessageSender sender = new SocketMessageSender(channel, OutboundLimits.DEFAULT, budget, 1000);
+        ByteBuf payload = Unpooled.buffer().writeInt(42);
+        long timeouts = com.akakata.metrics.FlowControlMetrics.WRITE_TIMEOUTS.sum();
+        try {
+            if (forwarded) {
+                SocketMessageSender.installOutboundBudget(channel.pipeline(), OutboundLimits.DEFAULT, budget);
+                channel.pipeline().addFirst(new HoldingTransport());
+            } else {
+                channel.unsafe().outboundBuffer().setUserDefinedWritability(1, false);
+            }
+            ChannelFuture future = sender.sendMessage(Events.networkEvent(new NettyMessageBuffer(payload)));
+            payload.release();
+            channel.runPendingTasks();
+            assertFalse(future.isDone());
+            assertTrue(budget.pendingBytes() > 0);
+            channel.advanceTimeBy(2, java.util.concurrent.TimeUnit.SECONDS);
+            channel.runScheduledPendingTasks();
+            channel.runPendingTasks();
+            assertFalse(channel.isOpen());
+            assertTrue(future.isDone());
+            assertFalse(future.isSuccess());
+            assertEquals(0, payload.refCnt());
+            assertEquals(0, sender.pendingWrites());
+            assertEquals(0, sender.pendingPayloadBytes());
+            assertEquals(0, budget.pendingBytes());
+            assertEquals(timeouts + 1, com.akakata.metrics.FlowControlMetrics.WRITE_TIMEOUTS.sum());
+        } finally {
+            channel.finishAndReleaseAll();
+            if (payload.refCnt() > 0) {
+                payload.release();
+            }
+        }
+    }
+
+    /**
+     * Returns completed source credits even if shutdown rejects the next oldest-write deadline.
+     */
+    @Test
+    void rejectedDeadlineReplacementCannotLeakCompletedWriteCredits() {
+        EmbeddedChannel transport = new EmbeddedChannel(new MessageBufferEventEncoder());
+        var schedules = new java.util.concurrent.atomic.AtomicInteger();
+        EventLoop loop = (EventLoop) Proxy.newProxyInstance(EventLoop.class.getClassLoader(),
+                new Class<?>[]{EventLoop.class}, (proxy, method, arguments) -> {
+                    if (method.getName().equals("schedule") && schedules.incrementAndGet() > 1) {
+                        throw new RejectedExecutionException("Loop stopped during deadline replacement");
+                    }
+                    return method.invoke(transport.eventLoop(), arguments);
+                });
+        Channel channel = (Channel) Proxy.newProxyInstance(Channel.class.getClassLoader(),
+                new Class<?>[]{Channel.class}, (proxy, method, arguments) -> {
+                    if (method.getName().equals("eventLoop")) {
+                        return loop;
+                    }
+                    if (method.getName().equals("newPromise")) {
+                        return new DefaultChannelPromise(transport, loop);
+                    }
+                    return method.invoke(transport, arguments);
+                });
+        OutboundBudget budget = new OutboundBudget(1024);
+        SocketMessageSender sender = new SocketMessageSender(channel, OutboundLimits.DEFAULT, budget);
+        ByteBuf payload = Unpooled.buffer().writeInt(42);
+        try {
+            var first = sender.sendMessage(Events.networkEvent(new NettyMessageBuffer(payload)));
+            var second = sender.sendMessage(Events.networkEvent(new NettyMessageBuffer(payload)));
+            transport.runPendingTasks();
+            assertEquals(2, schedules.get());
+            assertTrue(first.isDone());
+            assertTrue(second.isDone());
+            assertFalse(transport.isOpen());
+            assertEquals(0, sender.pendingWrites());
+            assertEquals(0, sender.pendingPayloadBytes());
+            assertEquals(0, budget.pendingBytes());
+            transport.finishAndReleaseAll();
+            assertEquals(1, payload.refCnt());
+        } finally {
+            transport.finishAndReleaseAll();
             payload.release();
         }
     }

@@ -312,7 +312,11 @@ public abstract class AbstractGame implements Game {
      */
     @Override
     public CompletableFuture<DeliveryReport> sendToPlayer(NetworkEvent networkEvent, PlayerSession recipient) {
-        return sendToPlayers(networkEvent, List.of(recipient));
+        Objects.requireNonNull(recipient, "recipient");
+        if (recipient.getGame() != this) {
+            throw new IllegalArgumentException("Recipient belongs to another Game");
+        }
+        return queueSend(networkEvent, List.of(recipient));
     }
 
     /**
@@ -349,8 +353,36 @@ public abstract class AbstractGame implements Game {
         }
         DeliveryReport[] result = new DeliveryReport[1];
         return eventDispatcher.submit(event,
-                delivered -> result[0] = deliverToSessions((NetworkEvent) delivered,
+                delivered -> result[0] = selected != null && selected.size() == 1
+                        ? deliverToSession((NetworkEvent) delivered, selected.getFirst())
+                        : deliverToSessions((NetworkEvent) delivered,
                         selected == null ? sessions : selected)).thenApply(ignored -> result[0]);
+    }
+
+    /**
+     * Publishes a single recipient without constructing a fan-out encoding lease.
+     *
+     * <p>The Game delivery retains its source while the Session takes its own
+     * admission reference. The Session and socket retain that source independently
+     * until their ordered work completes, following the normal event ownership rules.
+     *
+     * @param networkEvent the borrowed Game-ordered outbound event
+     * @param recipient    the selected session instance
+     * @return recipient queue admission counts
+     */
+    private DeliveryReport deliverToSession(NetworkEvent networkEvent, PlayerSession recipient) {
+        if (isShuttingDown || recipient.getGame() != this || !recipient.isConnected() || recipient.isShuttingDown()) {
+            return new DeliveryReport(0, 0, 1);
+        }
+        if (recipient.onEvent(networkEvent)) {
+            return new DeliveryReport(1, 0, 0);
+        }
+        try {
+            recipient.close();
+        } catch (Exception failure) {
+            LOG.error("Failed to close overloaded recipient {}", recipient.getId(), failure);
+        }
+        return new DeliveryReport(0, 1, 0);
     }
 
     /**

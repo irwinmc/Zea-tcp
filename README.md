@@ -8,9 +8,9 @@ Zea TCP Transport is a Java game-server foundation built on Netty. It provides T
 HTTP and WebSocket listeners, player sessions, asynchronous event dispatch, a
 credential-keyed session cache and HTTP monitoring endpoints.
 
-This documentation describes **0.8.2**, including application component injection,
-secure authentication defaults and bounded resource management. Dependency versions
-below come from [pom.xml](pom.xml). See the [0.8.2 release notes](docs/RELEASE_NOTES_0.8.2.md)
+This documentation describes **0.8.3**, including ordered unicast, streaming JSON
+encoding and bounded socket backpressure. Dependency versions below come from
+[pom.xml](pom.xml). See the [0.8.3 release notes](docs/RELEASE_NOTES_0.8.3.md)
 for changes and migration requirements.
 
 ## Features
@@ -24,6 +24,7 @@ for changes and migration requirements.
 - Business task/byte budgets, bounded batched socket writes and event-driven read recovery.
 - Login deadlines, read-idle expiry and shared TCP/WebSocket/HTTP socket admission.
 - Shared broadcast encoding and live Session/Game flow metrics with timing percentiles.
+- Ordered unicast avoids broadcast-cache setup; JSON output streams into bounded native frames.
 - Configurable session admission that preserves existing players when full.
 - Coordinated session, game, cache, dispatcher and network shutdown.
 - Dagger assembly with application-selected Game, authentication and service providers.
@@ -48,7 +49,7 @@ reconnection and client connection pooling are not implemented.
 <dependency>
     <groupId>com.akakata</groupId>
     <artifactId>zea-tcp</artifactId>
-    <version>0.8.2</version>
+    <version>0.8.3</version>
 </dependency>
 ```
 
@@ -134,7 +135,7 @@ Other executable examples are `com.akakata.HttpOnlyServer` (HTTP port 18081),
 `com.akakata.AdvancedTestServer`. They live in
 [src/test/java/com/akakata](src/test/java/com/akakata).
 
-`mvn package` produces the library JAR `target/zea-tcp-0.8.2.jar`. It does not bundle
+`mvn package` produces the library JAR `target/zea-tcp-0.8.3.jar`. It does not bundle
 runtime dependencies or configure a `Main-Class`. The provided [run.sh](run.sh)
 expects an application-owned executable `server.jar` in the working directory;
 create that application artifact before using the script.
@@ -497,8 +498,8 @@ Actions → New repository secret**:
 | `GPG_PASSPHRASE` | Passphrase protecting that private key |
 
 The Central account must have publishing access to `com.akakata`, and the signing
-public key must be available to Central. Use a release tag such as `v0.8.2` or
-`0.8.2` matching the POM at that tag. Already published versions cannot be replaced;
+public key must be available to Central. Use a release tag such as `v0.8.3` or
+`0.8.3` matching the POM at that tag. Already published versions cannot be replaced;
 choose a new version for subsequent releases. See the
 [publishing guide](docs/PUBLISHING.md) for token setup, key preparation, local
 verification and troubleshooting.
@@ -512,7 +513,7 @@ mvn compile javadoc:jar
 
 Open `target/reports/apidocs/index.html` for the framework API and
 `target/reports/testapidocs/index.html` for examples and regression-test helpers.
-The archive is `target/zea-tcp-0.8.2-javadoc.jar`. Compilation generates the Dagger
+The archive is `target/zea-tcp-0.8.3-javadoc.jar`. Compilation generates the Dagger
 component types needed by JavaDoc. Documentation uses English, UTF-8 and strict
 doclint checks; generated Dagger sources are excluded.
 
@@ -546,6 +547,11 @@ java -cp "target/test-classes:target/classes:target/dependency/*" \
 The driver starts the production context on an ephemeral port, authenticates real
 clients, installs an explicit ordered echo Game handler and verifies reply sequence.
 It reports completed/failed requests, throughput and exact observed P50/P95/P99.
+Each client authenticates and completes `--warmup-messages=100` before all ready
+clients start the timed workload. Set this option to zero after a separate warmup
+run. Failures and workload deadline expiry produce a nonzero process exit status.
+Receive buffers use the operating-system default; `--receive-buffer-bytes=8192`
+explicitly selects a constrained reader for diagnostics.
 Use `--business-micros=100` to introduce a controlled callback delay,
 `--socket-bytes=16384` to constrain encoded output, and `--timeout-seconds=60`
 to bound the whole run. Client read delay is included in measured latency.
@@ -555,6 +561,37 @@ and requires the same login format and sequence-preserving echo handler.
 These synthetic workloads provide evidence for tuning; production capacity still
 requires representative game logic and deployment-level multi-process tests.
 
+For server-only resource measurements, start the echo context separately:
+
+```bash
+java -cp "target/test-classes:target/classes:target/dependency/*" \
+  com.akakata.benchmark.NetworkLoadTest --server-only --transport=tcp
+```
+
+It prints `READY` with a loopback ephemeral port. Standard-input commands `snapshot`
+and `stop` capture server-only CPU/GC/heap/direct-buffer/flow counters and close the
+context. EOF also closes it. Run clients in another JVM with that `--port` and
+warm up before taking before/after server snapshots. CPU/GC/allocation differences
+describe the complete snapshot interval; client latency/throughput excludes its
+per-connection warmup. Live-thread allocation counters exclude terminated threads.
+The explicit test resource `props/benchmark.properties` configures one boss,
+one I/O worker and one Session shard before context construction. Supply a custom
+classpath resource with `--config=...` for thread-budget comparisons. Every required
+listener binds loopback explicitly. The helper enables anonymous login only for
+this isolated echo workload.
+
+Preserve logs and a report for every verification command:
+
+```bash
+python3 scripts/test_report.py --report-dir remote-test-results/my-run \
+  --name regression -- ./mvnw --batch-mode --no-transfer-progress test
+```
+
+The runner writes an aggregate JSON/text report and individual reports for every
+JUnit case, including failures. Remote workload reports must additionally identify
+artifact checksums, server/client resource limits, warmup and measurement intervals,
+and any safety stop. Local SSH credentials and reports are excluded from Git.
+
 ## Documentation
 
 | Guide | Contents |
@@ -563,6 +600,8 @@ requires representative game logic and deployment-level multi-process tests.
 | [Publishing](docs/PUBLISHING.md) | GitHub Releases, Maven Central credentials, signing and deployment |
 | [Event loops and lifecycle](docs/EVENT_LOOP.md) | Threads, routing, concurrency, shutdown and payload ownership |
 | [Monitoring](docs/MONITORING.md) | Health responses, JSON fields and Prometheus names |
+| [Several JVMs on one host](docs/MULTI_PROCESS_TUNING.md) | CPU, memory and queue budgets for measured multi-process deployments |
+| [Scaling out independent processes](docs/SCALE_OUT.md) | External placement, sticky Game ownership, node health and proposed cluster capabilities |
 | [Metrics architecture](docs/METRICS_ARCHITECTURE.md) | Collectors, instrumentation and sampling lifecycle |
 | [Banner customization](docs/BANNER_CUSTOMIZATION.md) | Classpath banners, overrides and displayed version behavior |
 

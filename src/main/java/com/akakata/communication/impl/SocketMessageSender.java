@@ -12,22 +12,28 @@ import com.akakata.util.NettyUtils;
 import io.netty.channel.*;
 import io.netty.handler.codec.MessageToMessageEncoder;
 import io.netty.util.ReferenceCountUtil;
+import io.netty.util.concurrent.ScheduledFuture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.channels.ClosedChannelException;
-import java.util.HashSet;
+import java.util.ArrayDeque;
+import java.util.LinkedHashSet;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Sends ordered socket writes with bounded admission and encoded-buffer accounting.
  *
  * <p>Event writes retain the native payload until the write future completes.
  * Writes always enter the channel event-loop queue in admission order. A full write
- * count, source, encoded or aggregate budget, or a nonwritable channel, fails the write and closes the
- * connection. This prevents later updates from following a rejected state update.
+ * count, source, encoded or aggregate budget fails the write and closes the
+ * connection. Channel water marks pause the bounded FIFO until writability returns.
+ * An admitted write that exceeds its completion deadline also closes the connection.
+ * This prevents later updates from following a rejected state update.
  * For raw Netty messages, normal pipeline ownership rules apply, including release
  * on admission rejection. Closing selects an
  * event encoder when available and otherwise writes a one-byte disconnect opcode.
@@ -40,6 +46,11 @@ public class SocketMessageSender implements MessageSender {
      * Logger for component lifecycle and diagnostic messages.
      */
     private static final Logger LOG = LoggerFactory.getLogger(SocketMessageSender.class);
+
+    /**
+     * Source-estimate threshold for an early batch flush, independent of hard budgets.
+     */
+    private static final long BATCH_BYTES = 32 * 1024;
 
     /**
      * Associated transport channel.
@@ -64,17 +75,43 @@ public class SocketMessageSender implements MessageSender {
     /**
      * Admitted writes, including queued event-loop tasks; guarded by this sender.
      */
-    private final Set<PendingWrite> pending = new HashSet<>();
+    private final Set<PendingWrite> pending = new LinkedHashSet<>();
 
     /**
      * FIFO admission order consumed in bounded batches by the channel event loop.
      */
-    private final java.util.ArrayDeque<PendingWrite> queued = new java.util.ArrayDeque<>();
+    private final ArrayDeque<PendingWrite> queued = new ArrayDeque<>();
 
     /**
      * Whether a batch drain has been scheduled or is executing; guarded by this sender.
      */
     private boolean drainScheduled;
+
+    /**
+     * Positive maximum time from admission to transport completion.
+     */
+    private final long writeTimeoutNanos;
+
+    /**
+     * Single deadline task and its oldest outstanding write; guarded by this sender.
+     */
+    private ScheduledFuture<?> writeDeadline;
+
+    /**
+     * Write whose admission timestamp owns the current deadline; guarded by this sender.
+     */
+    private PendingWrite deadlineWrite;
+
+    /**
+     * Writability subscription installed on the event loop when writes first drain.
+     */
+    private final ChannelInboundHandlerAdapter recoveryHandler = new ChannelInboundHandlerAdapter() {
+        @Override
+        public void channelWritabilityChanged(ChannelHandlerContext ctx) {
+            resumeWrites();
+            ctx.fireChannelWritabilityChanged();
+        }
+    };
 
     /**
      * Terminal sender flag published before overload or explicit closure.
@@ -108,9 +145,26 @@ public class SocketMessageSender implements MessageSender {
      * @param budget  the aggregate reservation owner
      */
     public SocketMessageSender(Channel channel, OutboundLimits limits, OutboundBudget budget) {
+        this(channel, limits, budget, 5_000);
+    }
+
+    /**
+     * Creates a sender with a bounded deadline covering queued and forwarded writes.
+     *
+     * @param channel            the transport channel
+     * @param limits             the per-connection admission limits
+     * @param budget             the aggregate reservation owner
+     * @param maximumWriteMillis positive admission-to-completion deadline in milliseconds
+     * @throws IllegalArgumentException if the deadline is not positive
+     */
+    public SocketMessageSender(Channel channel, OutboundLimits limits, OutboundBudget budget, long maximumWriteMillis) {
+        if (maximumWriteMillis <= 0) {
+            throw new IllegalArgumentException("Socket write deadline must be positive");
+        }
         this.channel = Objects.requireNonNull(channel, "channel");
         this.limits = Objects.requireNonNull(limits, "limits");
         this.budget = Objects.requireNonNull(budget, "budget");
+        this.writeTimeoutNanos = TimeUnit.MILLISECONDS.toNanos(maximumWriteMillis);
         channel.closeFuture().addListener(ignored -> failPendingWrites());
     }
 
@@ -142,13 +196,13 @@ public class SocketMessageSender implements MessageSender {
             channel.close();
             return channel.newFailedFuture(failure);
         }
-        if (bytes < 0 || pending.size() >= limits.maximumPendingWrites() || !channel.isWritable()
+        if (bytes < 0 || pending.size() >= limits.maximumPendingWrites()
                 || bytes > limits.maximumPendingPayloadBytes() - pendingPayloadBytes || !budget.reserve(bytes)) {
             FlowControlMetrics.WRITE_REJECTIONS.increment();
             closed = true;
             releaseRawMessage(message);
             channel.close();
-            return channel.newFailedFuture(new RejectedExecutionException("Socket write budget or water mark exceeded"));
+            return channel.newFailedFuture(new RejectedExecutionException("Socket write budget exceeded"));
         }
         Object payload;
         try {
@@ -200,27 +254,104 @@ public class SocketMessageSender implements MessageSender {
     }
 
     /**
-     * Writes at most 64 admitted messages in FIFO order and flushes once per batch.
+     * Drains FIFO writes with count and source-byte flush thresholds, pausing at water marks.
      */
     private void drainWrites() {
-        for (int i = 0; i < 64; i++) {
-            PendingWrite write;
-            synchronized (this) {
-                write = queued.pollFirst();
+        try {
+            installOutboundBudget(channel.pipeline(), limits, budget);
+            if (channel.pipeline().context(recoveryHandler) == null) {
+                channel.pipeline().addLast(recoveryHandler);
             }
-            if (write == null) {
-                break;
+            armWriteDeadline();
+            long batchBytes = 0;
+            boolean needsFlush = false;
+            for (int i = 0; i < 64; i++) {
+                PendingWrite write;
+                synchronized (this) {
+                    write = queued.peekFirst();
+                }
+                if (write == null || closed || !channel.isActive()) {
+                    break;
+                }
+                if (!channel.isWritable() || (needsFlush && write.bytes > BATCH_BYTES - batchBytes)) {
+                    channel.flush();
+                    needsFlush = false;
+                    batchBytes = 0;
+                }
+                if (!channel.isWritable()) {
+                    break;
+                }
+                synchronized (this) {
+                    queued.pollFirst();
+                }
+                writeOnEventLoop(write);
+                needsFlush = true;
+                batchBytes += Math.min(write.bytes, BATCH_BYTES);
+                if (batchBytes >= BATCH_BYTES || !channel.isWritable()) {
+                    channel.flush();
+                    needsFlush = false;
+                    batchBytes = 0;
+                }
             }
-            writeOnEventLoop(write);
+            if (needsFlush) {
+                channel.flush();
+            }
+        } catch (Throwable failure) {
+            closed = true;
+            failPendingWrites(failure);
+            channel.close();
         }
-        channel.flush();
         synchronized (this) {
-            if (queued.isEmpty()) {
-                drainScheduled = false;
-            } else {
-                scheduleDrain();
-            }
+            drainScheduled = false;
+            resumeWrites();
         }
+    }
+
+    /**
+     * Coalesces recovery into one FIFO drain without polling an unwritable transport.
+     */
+    private synchronized void resumeWrites() {
+        if (!closed && channel.isActive() && channel.isWritable() && !queued.isEmpty() && !drainScheduled) {
+            drainScheduled = true;
+            scheduleDrain();
+        }
+    }
+
+    /**
+     * Maintains one timer for the oldest admitted write, including already forwarded writes.
+     */
+    private synchronized void armWriteDeadline() {
+        PendingWrite oldest = pending.isEmpty() ? null : pending.iterator().next();
+        if (oldest == deadlineWrite) {
+            return;
+        }
+        if (writeDeadline != null) {
+            writeDeadline.cancel(false);
+            writeDeadline = null;
+        }
+        deadlineWrite = oldest;
+        if (oldest != null && !closed) {
+            PendingWrite target = oldest;
+            long delay = Math.max(0, writeTimeoutNanos - (System.nanoTime() - target.admittedNanos));
+            writeDeadline = channel.eventLoop().schedule(() -> expireWrite(target), delay, TimeUnit.NANOSECONDS);
+        }
+    }
+
+    /**
+     * Closes a stalled transport without releasing any source ahead of transport ownership.
+     *
+     * @param target the write owning this deadline
+     */
+    private void expireWrite(PendingWrite target) {
+        synchronized (this) {
+            if (closed || !pending.contains(target) || deadlineWrite != target) {
+                return;
+            }
+            closed = true;
+        }
+        FlowControlMetrics.WRITE_TIMEOUTS.increment();
+        failPendingWrites(new TimeoutException("Socket write completion deadline exceeded"));
+        channel.close();
     }
 
     /**
@@ -232,7 +363,7 @@ public class SocketMessageSender implements MessageSender {
         if (write.promise.isDone()) {
             return;
         }
-        if (closed || !channel.isActive() || !channel.isWritable()) {
+        if (closed || !channel.isActive()) {
             write.promise.tryFailure(new RejectedExecutionException("Socket stopped accepting ordered writes"));
             closed = true;
             channel.close();
@@ -273,6 +404,14 @@ public class SocketMessageSender implements MessageSender {
         if (!write.promise.isSuccess()) {
             closed = true;
             channel.close();
+        } else if (!closed && channel.eventLoop().inEventLoop()) {
+            try {
+                armWriteDeadline();
+            } catch (Throwable failure) {
+                closed = true;
+                failPendingWrites(failure);
+                channel.close();
+            }
         }
     }
 
@@ -280,14 +419,28 @@ public class SocketMessageSender implements MessageSender {
      * Resolves queued writes when transport closure precedes their event-loop task.
      */
     private void failPendingWrites() {
+        failPendingWrites(new ClosedChannelException());
+    }
+
+    /**
+     * Fails all remaining admission ownership and cancels its deadline on terminal closure.
+     *
+     * @param failure the terminal write cause
+     */
+    private void failPendingWrites(Throwable failure) {
         PendingWrite[] writes;
         synchronized (this) {
             closed = true;
             writes = pending.toArray(PendingWrite[]::new);
             queued.clear();
+            if (writeDeadline != null) {
+                writeDeadline.cancel(false);
+                writeDeadline = null;
+            }
+            deadlineWrite = null;
         }
         for (PendingWrite write : writes) {
-            write.promise.tryFailure(new ClosedChannelException());
+            write.promise.tryFailure(failure);
             completeWrite(write);
         }
     }
@@ -444,6 +597,11 @@ public class SocketMessageSender implements MessageSender {
          * Captured source estimate reserved until this write completes.
          */
         private final long bytes;
+
+        /**
+         * Monotonic admission timestamp used by the shared per-sender deadline.
+         */
+        private final long admittedNanos = System.nanoTime();
 
         /**
          * Whether ownership has been transferred to the outbound pipeline.

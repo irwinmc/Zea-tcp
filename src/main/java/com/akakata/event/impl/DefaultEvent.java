@@ -48,6 +48,32 @@ public class DefaultEvent implements Event, Serializable {
      */
     protected long timeStamp;
 
+    /**
+     * Captured byte estimate, or -1 when derived from the source.
+     *
+     * @serial Captured payload charge used for executor admission.
+     */
+    private long payloadSize = -1;
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public long getPayloadSize() {
+        return payloadSize < 0 ? Event.super.getPayloadSize() : payloadSize;
+    }
+
+    /**
+     * Captures a conservative payload charge before event publication.
+     *
+     * @param bytes the nonnegative estimated storage
+     * @throws IllegalArgumentException if the charge is negative
+     */
+    public void setPayloadSize(long bytes) {
+        if (bytes < 0) throw new IllegalArgumentException("Negative payload charge");
+        payloadSize = bytes;
+    }
+
     // ==================== Getter/Setter ====================
 
     /**
@@ -89,6 +115,7 @@ public class DefaultEvent implements Event, Serializable {
     @Override
     public void setSource(Object source) {
         this.source = source;
+        payloadSize = -1;
     }
 
     /**

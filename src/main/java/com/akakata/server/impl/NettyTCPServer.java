@@ -31,7 +31,7 @@ public class NettyTCPServer extends AbstractNettyServer {
     /**
      * Creates a netty tcp server instance with the supplied dependencies.
      *
-     * @param nettyConfig the server bind and channel settings
+     * @param nettyConfig        the server bind and channel settings
      * @param channelInitializer the initializer for accepted channels
      */
     public NettyTCPServer(NettyConfig nettyConfig, ChannelInitializer<? extends Channel> channelInitializer) {

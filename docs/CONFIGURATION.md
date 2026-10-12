@@ -44,9 +44,17 @@ The **bundled value** is the value in this checkout's default resource.
 | `protocol.type` | `SBE` | `JSON` | TCP login decoder and post-login protocol |
 | `metrics.event.interval.seconds` | `30` | Absent | Shared-dispatcher queue sampling period in seconds |
 | `session.maximum` | `10000` | `10000` | Positive credential-slot admission limit; full capacity rejects new logins |
+| `session.dispatcher.shards` | `max(2, highestOneBit(availableProcessors))` | `2` | Shared session executors, positive and rounded up to a power of two |
+| `session.queue.capacity` | `32768` | `32768` | Pending tasks per fixed session executor, at least 16 |
+| `session.queue.bytes` | `67108864` | `67108864` | Estimated retained payload bytes per session executor, including running work |
 | `game.queue.capacity` | `32768` | `32768` | Maximum pending Game tasks; must be at least 16 |
+| `game.queue.bytes` | `67108864` | `67108864` | Estimated admitted Game payload bytes, including running work |
+| `socket.maximum.connections` | `20000` | `20000` | Shared TCP/WebSocket socket slots including unauthenticated clients |
+| `socket.login.timeout.millis` | `30000` | `30000` | Positive connection-to-authentication deadline, including WebSocket upgrade |
+| `socket.read.idle.millis` | `120000` | `120000` | Read inactivity expiry; zero disables it |
 | `socket.maximum.pending.writes` | `1024` | `1024` | Positive maximum admitted socket writes awaiting completion |
 | `socket.maximum.pending.bytes` | `1048576` | `1048576` | Positive maximum encoded bytes awaiting socket completion |
+| `protocol.maximum.frame.bytes` | `65535` | `65535` | Inbound application frame bytes, between 8 and 65535; excludes transport headers |
 
 These values are read by
 [ServerContext](../src/main/java/com/akakata/context/ServerContext.java),
@@ -94,28 +102,63 @@ select them through this property.
 ### Admission and Socket Budgets
 
 ```properties
+# Session Admission
 session.maximum=10000
+
+# Session Event Dispatch
+session.dispatcher.shards=2
+session.queue.capacity=32768
+session.queue.bytes=67108864
+
+# Game Event Dispatch
 game.queue.capacity=32768
+game.queue.bytes=67108864
+
+# Socket Connections and Timeouts
+socket.maximum.connections=20000
+socket.login.timeout.millis=30000
+socket.read.idle.millis=120000
+
+# Socket Outbound Backpressure
 socket.maximum.pending.writes=1024
 socket.maximum.pending.bytes=1048576
+
+# Protocol Frame Limits
+protocol.maximum.frame.bytes=65535
 ```
 
 These limits are consumed by the default Dagger service and TCP/WebSocket login
-providers. Nonpositive slot/write/byte budgets and Game capacities below 16 fail
-initialization. Malformed integer strings follow the loader's ordinary fallback rule.
-Budgets are not automatically resized or reloaded.
+providers. Nonpositive count/byte/login budgets, queue capacities below 16, negative read-idle
+durations and frame limits outside 8..65535 fail initialization. Malformed integer strings follow the loader's ordinary fallback rule.
+Budgets are not automatically resized or reloaded. Session budgets are fixed
+before the first shared dispatcher or session is created. Starting another context
+with conflicting live session budgets fails; complete shared shutdown is terminal.
+The bundled two-shard setting overrides the CPU-derived fallback. Programmatic
+constructors accept custom count and long byte budgets.
+
+Payload budgets are estimates rather than exact JVM-memory ceilings. Native and
+binary sources use readable byte counts; decoded JSON captures a conservative
+graph estimate, and custom Event implementations can override `getPayloadSize()`.
+The default estimate for an unknown application object is 256 bytes; provide a
+conservative override for larger objects. Task counts also bound zero-byte events.
 
 The session limit applies to registered credentials, including logins awaiting
 protocol initialization. At capacity, a new credential fails login while existing
 players remain registered. A reconnect for an existing credential replaces its
 session using the same slot. Online registry entries have no size-based eviction
-or cache TTL. Use explicit lifecycle operations or application transport idle
-handling to release sessions.
+or cache TTL. Explicit closure and configured read-idle expiry release sessions.
+TCP and WebSocket share the socket slot budget even before authentication; HTTP
+monitoring connections do not consume it. Login expiry covers upgrade and session
+initialization. An authenticated connection cancels that deadline while preserving
+its read-idle detector. Incoming bytes reset the read-idle timer; this is transport
+inactivity detection, not an application heartbeat protocol.
 
 Socket write and encoded-byte budgets work alongside Channel write-buffer water
 marks. Overflow or a nonwritable write fails the write and closes that connection;
-there is no unlimited retry queue. Inbound reads pause above queue high water marks
-and resume below low water marks. The bridge's default five-second pause deadline
+there is no unlimited retry queue. Writes drain in FIFO batches of at most 64 and
+flush once per batch. One Game send caches encoding per wire format, sharing JSON
+application frames between TCP and WebSocket recipients. Inbound reads pause above
+count or byte high water marks and resume from low-water notifications. The bridge's default five-second pause deadline
 is separate from callback execution and is only customizable programmatically.
 See [backpressure](EVENT_LOOP.md#network-backpressure) for ownership and recovery.
 
@@ -126,17 +169,30 @@ metrics.event.interval.seconds=5
 ```
 
 A positive value schedules sampling immediately and then at that interval. Zero
-or a negative value disables scheduling. The sampler reads shared dispatcher
-queues only; it does not include a game's dedicated dispatcher. See
+or a negative value disables scheduling. The legacy sampler reads shared dispatcher
+queues only. Live `/metrics/flow-control` and Prometheus flow series separately
+include the Game, byte budgets, admission outcomes and timing bucket bounds; they
+remain available with sampling disabled. See
 [metrics architecture](METRICS_ARCHITECTURE.md) for cached values and shutdown.
+
+## Identifier Node Names
+
+`IdGeneratorService.NODE_NAME` defines the JVM system-property key `ZeaNode`.
+Applications calling `IdGeneratorService.generate()` can pass
+`-DZeaNode=game-1` to produce identifiers such as `game-1-42`. An absent or empty
+value produces a numeric identifier. The method reads the system property on each
+call; `ConfigurationManager` does not load this setting from `conf.properties`.
+
+`generateFor(Class<?>)` uses the supplied class's simple name and ignores the node
+property. Default Session and Game identifiers use this method, so `-DZeaNode`
+does not alter their identifiers. Both generation methods share one process-wide
+atomic counter.
 
 ## Properties Without a Consumer
 
 The bundled `reconnect.delay=300000` entry is not read by the current implementation.
 It does not schedule reconnect attempts, retain disconnected sessions for five
-minutes or change cache expiration. Constants such as login-expiration and
-reconnection keys in `ZealConfig` do not establish runtime configuration support
-unless a component actually consumes them.
+minutes or change cache expiration.
 
 `-Dtcp.port=9090` and `-Dserver.http.enabled=false` do not automatically override
 loaded properties. The framework also does not interpret `-Denv` or `-Dconfig.path`.
@@ -228,9 +284,12 @@ be deserialized into `HashMap<String, Object>`.
 ### TCP Framing
 
 Every TCP packet begins with an unsigned, two-byte **big-endian** length equal to
-the number of following bytes. The prefix excludes itself. The login frame decoder
-has a maximum total frame size of 1,024 bytes. Post-login decoders have a larger
-configured maximum, but the two-byte prefix still limits the body to 65,535 bytes.
+the number of following bytes. The prefix excludes itself. The default graph uses
+`protocol.maximum.frame.bytes` during login and after authentication, adding two
+bytes to the Netty frame decoder limit for the prefix. The wire format limits the
+application frame to 65,535 bytes. The standalone three-argument login initializer
+retains its 1,024-byte total login-frame default; the configured graph supplies the
+explicit limit.
 
 ### Login
 
@@ -260,7 +319,10 @@ JSON bytes: UTF-8
 
 The encoder emits only an opcode when the source is null, but the decoder expects
 a length-prefixed JSON object. Use an object payload for messages intended to be
-decoded by this codec. Incoming opcodes are preserved.
+decoded by this codec. The inner length must be positive and exactly match the
+remaining bytes. JSON roots must be objects with no trailing JSON values. After
+login, the inbound bridge accepts `SESSION_MESSAGE`, `LOG_OUT` and `DISCONNECT`;
+server-only opcodes such as TCP `NETWORK_MESSAGE` close the connection.
 
 ### TCP SBE-Style Envelope After Login
 
@@ -275,12 +337,13 @@ payload: blockLength bytes
 
 The eight-byte header is an SBE-style envelope. There is no generated application
 schema codec in this repository. The encoder copies readable `ByteBuf` contents,
-encodes strings as UTF-8, and serializes other objects as JSON, falling back to
-`toString()` if JSON serialization fails. Null sources produce an empty payload.
+copies byte arrays directly, encodes strings as UTF-8 and serializes other objects
+as JSON. Serialization failure fails the write; null sources produce an empty payload.
 
-The decoder maps the low eight bits of `templateId` to the event opcode. It logs
-schema/version differences rather than rejecting them, drops frames shorter than
-the header, and truncates an oversized declared block length to available bytes.
+The decoder requires a complete header, `schemaId=1`, `version=1`, `templateId`
+between 0 and 255, and block length equal to all remaining bytes. Truncated or
+trailing payloads fail decoding. Authenticated opcode admission follows the same
+bridge policy as TCP JSON.
 The outer TCP size limit leaves at most 65,527 bytes for an SBE payload.
 
 ### WebSocket After Login
@@ -296,10 +359,11 @@ There is no extra two-byte TCP prefix. Incoming `NETWORK_MESSAGE` (`0x34`) is ma
 to `SESSION_MESSAGE` (`0x33`). As with TCP JSON, the encoder can emit a null-source
 opcode-only message, while the normal decoder expects a JSON object.
 
-The initializer uses a 65,536-byte HTTP aggregator for upgrades and
-`WebSocketServerProtocolHandler("/", null, true)`. Compression uses
-`WebSocketServerCompressionHandler(0)`, retaining unlimited decompression allocation
-in the current Netty API. These values are code settings, not properties.
+The initializer uses a 65,536-byte HTTP aggregator for upgrades. Its WebSocket
+protocol configuration accepts path `/`, enables extensions and bounds frame
+payloads using `protocol.maximum.frame.bytes`. The compression handler receives
+the same positive allocation limit. Application and login frames must be complete
+binary frames; fragmented application messages are rejected.
 
 ## Fixed Session and Dispatcher Settings
 
@@ -308,10 +372,10 @@ in the current Netty API. These values are code settings, not properties.
 | Session registry TTL and size eviction | None; explicit lifecycle cleanup |
 | Session admission budget | `session.maximum`, default 10,000 credential slots |
 | Periodic cache cleanup | Every minute; enabled by the default `SessionService` constructor |
-| Shared dispatcher shard count | `max(2, highestOneBit(availableProcessors))` |
-| Shared session pending-task capacity | 32,768 tasks per executor; custom constructors accept another value |
+| Shared dispatcher shard count | `session.dispatcher.shards`; bundled value 2, CPU-derived fallback |
+| Shared session pending-task capacity | `session.queue.capacity`, default 32,768 tasks per executor |
 | Game pending-task capacity | `game.queue.capacity`, default 32,768 tasks |
-| Inbound queue high / low thresholds | 75% / below 50% of pending-task capacity |
+| Inbound queue high / low thresholds | 75% / below 50% of task and payload-byte budgets |
 | Sustained inbound read-pause deadline | Five seconds; custom bridge constructor can change it |
 | Application Game count in the default context | One |
 | Application Game business executors | One, separate from the session shards |
@@ -321,7 +385,10 @@ in the current Netty API. These values are code settings, not properties.
 | Static-file root | `html` under the process working directory |
 
 Settings without a property name in this table remain fixed or programmatic.
-Registry lifetime is independent of cache access and is not a network idle timeout.
+Registry lifetime is independent of cache access; configured transport read-idle
+expiry closes the socket and releases its session. WebSocket application messages
+must be complete binary frames. Fragmented application/login frames are rejected;
+WebSocket frame parsing and compression allocation both use the configured limit.
 See [event loops and lifecycle](EVENT_LOOP.md) for ownership, admission, saturation
 and shutdown behavior.
 

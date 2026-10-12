@@ -35,7 +35,7 @@ public class HealthCheckHandler extends AbstractHttpHandler {
     /**
      * Routes a health request to the basic, liveness or readiness response.
      *
-     * @param ctx channel handler context
+     * @param ctx     channel handler context
      * @param request HTTP request
      */
     public void handleHealthCheck(ChannelHandlerContext ctx, FullHttpRequest request) {
@@ -159,7 +159,7 @@ public class HealthCheckHandler extends AbstractHttpHandler {
     /**
      * Creates a small JSON response containing status and message values.
      *
-     * @param status the JSON health-status value
+     * @param status  the JSON health-status value
      * @param message the message or string to send
      * @return the JSON response text
      */

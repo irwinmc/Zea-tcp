@@ -1,16 +1,12 @@
 package com.akakata.handlers.codec;
 
 import com.akakata.event.Events;
-import com.akakata.util.NettyUtils;
-import tools.jackson.core.type.TypeReference;
-import tools.jackson.databind.ObjectMapper;
-import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandler.Sharable;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.handler.codec.CorruptedFrameException;
 import io.netty.handler.codec.MessageToMessageDecoder;
 import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
 
-import java.util.HashMap;
 import java.util.List;
 
 /**
@@ -31,32 +27,20 @@ public class WebSocketEventDecoder extends MessageToMessageDecoder<BinaryWebSock
     }
 
     /**
-     * Generic type information for decoding JSON object maps.
+     * Shared strict JSON application-frame decoder.
      */
-    private final TypeReference<HashMap<String, Object>> typeRef = new TypeReference<HashMap<String, Object>>() {
-    };
-
-    /**
-     * JSON mapper configured for this codec.
-     */
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final JsonDecoder decoder = new JsonDecoder();
 
     /**
      * {@inheritDoc}
      */
     @Override
     protected void decode(ChannelHandlerContext ctx, BinaryWebSocketFrame frame, List<Object> out) throws Exception {
-        ByteBuf msg = frame.content();
-
-        int opcode = msg.readUnsignedByte();
-        if (opcode == Events.NETWORK_MESSAGE) {
-            opcode = Events.SESSION_MESSAGE;
+        if (!frame.isFinalFragment()) {
+            throw new CorruptedFrameException("Fragmented application messages are unsupported");
         }
-
-        // Borrow the frame content rather than allocating a copy that may leak on malformed JSON.
-        ByteBuf data = msg.readSlice(msg.readableBytes());
-        HashMap<String, Object> source = objectMapper.readValue(NettyUtils.readString(data), typeRef);
-
-        out.add(Events.event(source, opcode));
+        com.akakata.event.Event event = decoder.decode(ctx, frame.content());
+        if (event.getType() == Events.NETWORK_MESSAGE) event.setType(Events.SESSION_MESSAGE);
+        out.add(event);
     }
 }

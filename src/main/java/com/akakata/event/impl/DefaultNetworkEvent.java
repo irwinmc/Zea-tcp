@@ -61,6 +61,7 @@ public class DefaultNetworkEvent extends DefaultEvent implements NetworkEvent {
     public DefaultNetworkEvent(Event event, Channel channel) {
         this.setSource(event.getSource());
         this.setTimeStamp(event.getTimeStamp());
+        setPayloadSize(event.getPayloadSize());
         this.channel = channel;
         super.setType(Events.NETWORK_MESSAGE);
     }

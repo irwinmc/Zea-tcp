@@ -2,15 +2,14 @@ package com.akakata.handlers;
 
 import com.akakata.app.Game;
 import com.akakata.app.PlayerSession;
-import com.akakata.communication.impl.SocketMessageSender;
 import com.akakata.communication.OutboundLimits;
+import com.akakata.communication.impl.SocketMessageSender;
 import com.akakata.event.Event;
 import com.akakata.event.Events;
 import com.akakata.protocols.Protocol;
 import com.akakata.service.LoginService;
 import com.akakata.util.ByteBufHolder;
 import com.akakata.util.NettyUtils;
-import tools.jackson.databind.ObjectMapper;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.*;
@@ -19,6 +18,7 @@ import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.WebSocketFrame;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import tools.jackson.databind.ObjectMapper;
 
 import javax.inject.Inject;
 
@@ -104,7 +104,7 @@ public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocket
     public void channelRead0(ChannelHandlerContext ctx, WebSocketFrame frame) {
         var channel = ctx.channel();
 
-        if (!(frame instanceof BinaryWebSocketFrame binaryFrame)) {
+        if (!(frame instanceof BinaryWebSocketFrame binaryFrame) || !binaryFrame.isFinalFragment()) {
             LOG.warn("Received non-binary WebSocket frame from {}, closing", channel.remoteAddress());
             sendLoginFailureAndClose(channel);
             return;
@@ -202,6 +202,7 @@ public class WebSocketLoginHandler extends SimpleChannelInboundHandler<WebSocket
             LOG.debug("Applying WebSocket protocol: {}", protocol.getClass().getSimpleName());
             protocol.applyProtocol(session);
             game.onLogin(session);
+            TransportLifecycleHandler.authenticated(channel);
         }
     }
 

@@ -1,5 +1,7 @@
 package com.akakata.event;
 
+import com.akakata.event.impl.DefaultEvent;
+
 /**
  * Carries an event type, a payload or source object, and a caller-defined timestamp.
  *
@@ -10,7 +12,7 @@ package com.akakata.event;
  *
  * @author Kelvin
  * @see Events
- * @see com.akakata.event.impl.DefaultEvent
+ * @see DefaultEvent
  * @see EventHandler
  */
 public interface Event {
@@ -21,6 +23,19 @@ public interface Event {
      * @return the event type
      */
     int getType();
+
+    /**
+     * Estimates payload storage charged to the business executor until cleanup.
+     *
+     * <p>This is a flow-control estimate, not a measurement of JVM object size.
+     * Custom payload implementations should override this method with a conservative
+     * byte charge. Publication requires immutable payloads.
+     *
+     * @return a nonnegative estimated byte charge
+     */
+    default long getPayloadSize() {
+        return EventResources.estimateBytes(getSource());
+    }
 
     /**
      * Sets the event opcode. Fixed-type event implementations may reject changes.

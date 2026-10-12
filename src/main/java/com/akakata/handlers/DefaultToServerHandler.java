@@ -2,19 +2,24 @@ package com.akakata.handlers;
 
 import com.akakata.app.PlayerSession;
 import com.akakata.event.Event;
-import com.akakata.event.Events;
+import com.akakata.event.EventDispatcher;
 import com.akakata.event.EventResources;
+import com.akakata.event.Events;
 import com.akakata.event.impl.NettyEventDispatcher;
 import com.akakata.event.impl.ShardedEventDispatcher;
-import com.akakata.event.EventDispatcher;
+import com.akakata.metrics.FlowControlMetrics;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
+import io.netty.handler.codec.DecoderException;
 import io.netty.handler.timeout.IdleStateEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Submits decoded events to a player session and releases the inbound payload reference.
@@ -50,9 +55,14 @@ public class DefaultToServerHandler extends SimpleChannelInboundHandler<Event> {
     private boolean paused;
 
     /**
-     * Scheduled queue recovery probe, confined to the channel event loop.
+     * Low-water subscriptions owned by a read pause, confined to the channel event loop.
      */
-    private ScheduledFuture<?> recoveryProbe;
+    private final List<AutoCloseable> recoveryRegistrations = new ArrayList<>();
+
+    /**
+     * Coalesces recovery signals into at most one queued channel task.
+     */
+    private final AtomicBoolean recoveryScheduled = new AtomicBoolean();
 
     /**
      * Scheduled deadline for a sustained pause, confined to the channel event loop.
@@ -71,7 +81,7 @@ public class DefaultToServerHandler extends SimpleChannelInboundHandler<Event> {
     /**
      * Creates an inbound bridge with a configurable sustained-pressure deadline.
      *
-     * @param playerSession the session associated with the channel
+     * @param playerSession      the session associated with the channel
      * @param maximumPauseMillis the positive maximum read-pause duration
      * @throws IllegalArgumentException if the pause deadline is not positive
      */
@@ -91,6 +101,10 @@ public class DefaultToServerHandler extends SimpleChannelInboundHandler<Event> {
     public void channelRead0(ChannelHandlerContext ctx, Event e) throws Exception {
         Object payloadReference = EventResources.payloadReference(e);
         try {
+            if (e.getType() != Events.SESSION_MESSAGE && e.getType() != Events.LOG_OUT && e.getType() != Events.DISCONNECT) {
+                terminate(ctx);
+                return;
+            }
             if (!playerSession.onEvent(e)) {
                 terminate(ctx);
             } else {
@@ -107,6 +121,10 @@ public class DefaultToServerHandler extends SimpleChannelInboundHandler<Event> {
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
         LOG.warn("Exception during network communication: ", cause);
+        if (cause instanceof DecoderException) {
+            terminate(ctx);
+            return;
+        }
 
         // Exception event
         Event event = Events.event(cause, Events.EXCEPTION);
@@ -190,17 +208,42 @@ public class DefaultToServerHandler extends SimpleChannelInboundHandler<Event> {
                 cancelPause();
                 ctx.channel().config().setAutoRead(true);
             }
-        } else if (ctx.channel().config().isAutoRead()
-                && (!ctx.channel().isWritable() || !belowWaterMark(true))) {
+        } else if (ctx.channel().config().isAutoRead() && (!ctx.channel().isWritable() || !belowWaterMark(true))) {
             paused = true;
+            FlowControlMetrics.PAUSED_CHANNELS.increment();
+            FlowControlMetrics.READ_PAUSES.increment();
             ctx.channel().config().setAutoRead(false);
-            pauseDeadline = ctx.executor().schedule(() -> terminate(ctx), maximumPauseMillis, TimeUnit.MILLISECONDS);
+            pauseDeadline = ctx.executor().schedule(() -> {
+                FlowControlMetrics.PAUSE_TIMEOUTS.increment();
+                terminate(ctx);
+            }, maximumPauseMillis, TimeUnit.MILLISECONDS);
+            watchQueue(ctx, playerSession.getEventDispatcher());
+            if (playerSession.getGame() != null) watchQueue(ctx, playerSession.getGame().getEventDispatcher());
         }
-        if (paused && (recoveryProbe == null || recoveryProbe.isDone())) {
-            recoveryProbe = ctx.executor().schedule(() -> {
-                recoveryProbe = null;
-                updateReadState(ctx);
-            }, 10, TimeUnit.MILLISECONDS);
+
+    }
+
+    /**
+     * Subscribes to executor recovery and coalesces notifications on the channel loop.
+     *
+     * @param ctx        the associated channel context
+     * @param dispatcher the fixed session or Game queue
+     */
+    private void watchQueue(ChannelHandlerContext ctx, EventDispatcher dispatcher) {
+        if (dispatcher instanceof ShardedEventDispatcher group) dispatcher = group.getShardForSession(playerSession);
+        if (dispatcher instanceof NettyEventDispatcher netty) {
+            recoveryRegistrations.add(netty.addDrainListener(() -> {
+                if (recoveryScheduled.compareAndSet(false, true)) {
+                    try {
+                        ctx.executor().execute(() -> {
+                            recoveryScheduled.set(false);
+                            if (paused) updateReadState(ctx);
+                        });
+                    } catch (java.util.concurrent.RejectedExecutionException stopped) {
+                        recoveryScheduled.set(false);
+                    }
+                }
+            }));
         }
     }
 
@@ -224,14 +267,15 @@ public class DefaultToServerHandler extends SimpleChannelInboundHandler<Event> {
      * Samples one bounded Netty business queue without changing its execution order.
      *
      * @param dispatcher the queue owner, possibly a custom implementation
-     * @param high whether to use the high threshold
+     * @param high       whether to use the high threshold
      * @return whether the queue is below the selected threshold
      */
     private static boolean belowWaterMark(EventDispatcher dispatcher, boolean high) {
         if (dispatcher instanceof NettyEventDispatcher netty) {
             int capacity = netty.getQueueCapacity();
             int threshold = high ? capacity - capacity / 4 : capacity / 2;
-            return netty.getQueueSize() < threshold;
+            long byteThreshold = high ? netty.getQueueBytes() - netty.getQueueBytes() / 4 : Math.max(1, netty.getQueueBytes() / 2);
+            return netty.getQueueSize() < threshold && netty.getPendingBytes() < byteThreshold;
         }
         return true;
     }
@@ -240,11 +284,16 @@ public class DefaultToServerHandler extends SimpleChannelInboundHandler<Event> {
      * Cancels tasks owned by a read pause and clears the ownership marker.
      */
     private void cancelPause() {
+        if (paused) FlowControlMetrics.PAUSED_CHANNELS.decrement();
         paused = false;
-        if (recoveryProbe != null) {
-            recoveryProbe.cancel(false);
-            recoveryProbe = null;
+        for (AutoCloseable registration : recoveryRegistrations) {
+            try {
+                registration.close();
+            } catch (Exception failure) {
+                LOG.warn("Recovery unsubscription failed", failure);
+            }
         }
+        recoveryRegistrations.clear();
         if (pauseDeadline != null) {
             pauseDeadline.cancel(false);
             pauseDeadline = null;

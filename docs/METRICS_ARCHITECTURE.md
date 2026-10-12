@@ -1,8 +1,9 @@
 # Metrics Architecture
 
-Zea TCP Transport 0.8.0 exposes two process-wide collectors:
+Zea TCP Transport 0.8.0 exposes three process-wide metric sources:
 `ServerMetrics` for explicit counters and direct runtime readings, and
-`EventDispatcherMetrics` for sampled shared-dispatcher queue depths.
+`EventDispatcherMetrics` for sampled shared-dispatcher queue depths, and
+`FlowControlMetrics` for live Session/Game snapshots and instrumented transport flow.
 [Monitoring](MONITORING.md) describes their HTTP output.
 
 ## Data Flow
@@ -19,8 +20,9 @@ EventDispatcherMetrics --+                    --> queue JSON endpoint
 ServerMetrics --------------> HealthCheckHandler --> local health checks
 ```
 
-Both collectors use static singleton instances accessed by `getInstance()`, rather
-than context-specific Dagger scopes. Metrics from multiple applications in the
+The legacy collectors use static singleton instances accessed by `getInstance()`.
+Flow counters are static LongAdders; the current context registers its owned Game
+for snapshot sampling and clears that reference during closure. Metrics from multiple applications in the
 same JVM are not isolated.
 
 ## ServerMetrics
@@ -177,12 +179,36 @@ responsible for calling `stop()` at the end of their process lifecycle. Merely
 reading `getShardCount()` can initialize the process-wide shared dispatcher if it
 has not already been initialized.
 
+## FlowControlMetrics
+
+Executor counters and fixed-size wait/execution histograms are guarded by the
+existing admission monitor. Snapshots contain task count, estimated retained bytes,
+both budgets, accepted/completed/cancelled/rejected counts and P95/P99 power-of-two
+microsecond bucket upper bounds. Byte credits remain occupied through native cleanup.
+Percentiles are bounded-memory approximations; actual network latency is measured
+by `NetworkLoadTest` with observed sorted durations.
+
+Transport gauges and cumulative counters use LongAdder. Admission, lifetime guards,
+read-pressure transitions, socket promises, encoded-byte promises and shared encoding
+update them directly. Queue-recovery notifications do not reorder business tasks
+or execute application callbacks on network threads. Gauges return credits when
+their associated close/write future completes. HTTP connections are excluded from
+the TCP/WebSocket connection quota and gauge. Context closure clears the sampled
+Game reference so metrics do not retain a terminated Game executor.
+
+Live snapshots are available with the legacy periodic sampler disabled. Each
+executor snapshot is coherent under its own monitor; the full process response
+and LongAdder readings are not transactional. Keep default pipelines or explicitly
+instrument equivalent boundaries when replacing initializers or senders.
+
 ## HTTP Serialization
 
 `MetricsHandler` uses Jackson 3.2.3's `tools.jackson.databind.ObjectMapper`.
 Its `/metrics` response includes server, connection, traffic, system and error
-groups. Queue metrics are exposed only through `/metrics/event-dispatcher` and
-currently have no Prometheus entries.
+groups plus `flow_control`. The legacy `/metrics/event-dispatcher` endpoint remains
+sampled and session-only. `/metrics/flow-control` and Prometheus include live Game
+and Session budgets, outcomes and timing percentile bounds. Metric serialization
+releases each temporary native response buffer after the HTTP helper copies it.
 
 Heap and traffic fields with the `_mb` suffix use integer division by 1,024 squared.
 CPU output is rounded to two decimal places. Prometheus heap-byte values are

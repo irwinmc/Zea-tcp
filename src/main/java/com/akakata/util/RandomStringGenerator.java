@@ -24,7 +24,7 @@ public class RandomStringGenerator {
     /**
      * Alphabet used by the random identifier generator.
      */
-    private static final char[] alphaNumberic = new char[]{'A', 'B', 'C', 'D', 'E', 'F',
+    private static final char[] alphaNumeric = new char[]{'A', 'B', 'C', 'D', 'E', 'F',
             'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S',
             'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f',
             'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's',
@@ -53,8 +53,8 @@ public class RandomStringGenerator {
         try {
             SecureRandom wheel = SecureRandom.getInstance("SHA1PRNG");
             for (int i = 0; i < len; i++) {
-                int nextChar = wheel.nextInt(alphaNumberic.length);
-                randomChars[i] = alphaNumberic[nextChar];
+                int nextChar = wheel.nextInt(alphaNumeric.length);
+                randomChars[i] = alphaNumeric[nextChar];
             }
             random = new String(randomChars);
         } catch (NoSuchAlgorithmException e) {

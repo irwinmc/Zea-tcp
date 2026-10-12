@@ -48,14 +48,14 @@ public class JsonProtocol extends AbstractNettyProtocol {
      * All dependencies are injected via Dagger 2 and configured in {@code ProtocolModule}.
      * </p>
      *
-     * @param jsonDecoder decodes incoming JSON messages to Event objects
-     * @param jsonEncoder encodes outgoing Event objects to JSON format
+     * @param jsonDecoder          decodes incoming JSON messages to Event objects
+     * @param jsonEncoder          encodes outgoing Event objects to JSON format
      * @param lengthFieldPrepender prepends 2-byte length header to outgoing messages
      */
     @Inject
     public JsonProtocol(JsonDecoder jsonDecoder,
-                       JsonEncoder jsonEncoder,
-                       LengthFieldPrepender lengthFieldPrepender) {
+                        JsonEncoder jsonEncoder,
+                        LengthFieldPrepender lengthFieldPrepender) {
         super("JSON_PROTOCOL");
         this.jsonDecoder = jsonDecoder;
         this.jsonEncoder = jsonEncoder;
@@ -72,7 +72,7 @@ public class JsonProtocol extends AbstractNettyProtocol {
         ChannelPipeline pipeline = NettyUtils.getPipeLineOfConnection(playerSession);
 
         // Upstream handlers or encoders (i.e towards server) are added to pipeline now.
-        pipeline.addLast("lengthDecoder", createLengthBasedFrameDecoder());
+        pipeline.addLast("lengthDecoder", createLengthBasedFrameDecoder(pipeline));
         pipeline.addLast("jsonDecoder", jsonDecoder);
         pipeline.addLast("eventHandler", new DefaultToServerHandler(playerSession));
 

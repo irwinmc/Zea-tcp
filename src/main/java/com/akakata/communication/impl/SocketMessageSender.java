@@ -3,28 +3,29 @@ package com.akakata.communication.impl;
 import com.akakata.communication.MessageSender;
 import com.akakata.communication.OutboundLimits;
 import com.akakata.event.Event;
-import com.akakata.event.Events;
 import com.akakata.event.EventResources;
+import com.akakata.event.Events;
 import com.akakata.handlers.codec.EventEncoder;
 import com.akakata.handlers.codec.JsonEncoder;
 import com.akakata.handlers.codec.MessageBufferEventEncoder;
 import com.akakata.handlers.codec.SbeEventEncoder;
 import com.akakata.handlers.codec.WebSocketEventEncoder;
+import com.akakata.metrics.FlowControlMetrics;
 import com.akakata.util.NettyUtils;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelPipeline;
-import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelPromise;
-import io.netty.util.ReferenceCountUtil;
 import io.netty.handler.codec.MessageToMessageEncoder;
+import io.netty.util.ReferenceCountUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.channels.ClosedChannelException;
 import java.util.HashSet;
-import java.util.Set;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.RejectedExecutionException;
 
 /**
@@ -63,6 +64,16 @@ public class SocketMessageSender implements MessageSender {
     private final Set<PendingWrite> pending = new HashSet<>();
 
     /**
+     * FIFO admission order consumed in bounded batches by the channel event loop.
+     */
+    private final java.util.ArrayDeque<PendingWrite> queued = new java.util.ArrayDeque<>();
+
+    /**
+     * Whether a batch drain has been scheduled or is executing; guarded by this sender.
+     */
+    private boolean drainScheduled;
+
+    /**
      * Terminal sender flag published before overload or explicit closure.
      */
     private volatile boolean closed;
@@ -89,7 +100,7 @@ public class SocketMessageSender implements MessageSender {
     }
 
     /**
-     * Writes and flushes a message through the channel.
+     * Admits an ordered message for a batched channel write and flush.
      *
      * <p>For an event, a captured native payload is retained until the write future
      * completes, including failed writes. The caller keeps its original event-payload
@@ -106,6 +117,7 @@ public class SocketMessageSender implements MessageSender {
             return channel.newFailedFuture(new ClosedChannelException());
         }
         if (pending.size() >= limits.maximumPendingWrites() || !channel.isWritable()) {
+            FlowControlMetrics.WRITE_REJECTIONS.increment();
             closed = true;
             releaseRawMessage(message);
             channel.close();
@@ -116,15 +128,53 @@ public class SocketMessageSender implements MessageSender {
         promise.setUncancellable();
         PendingWrite write = new PendingWrite(message, payload, promise);
         pending.add(write);
+        queued.addLast(write);
+        FlowControlMetrics.PENDING_WRITES.increment();
         promise.addListener(ignored -> completeWrite(write));
-        try {
-            channel.eventLoop().execute(() -> writeOnEventLoop(write));
-        } catch (Throwable failure) {
-            promise.tryFailure(failure);
-            // A stopped event loop may also reject the promise's cleanup listener.
-            completeWrite(write);
+        if (!drainScheduled) {
+            drainScheduled = true;
+            scheduleDrain();
         }
         return promise;
+    }
+
+    /**
+     * Schedules a single ordered drain and settles all ownership if the loop stops.
+     */
+    private void scheduleDrain() {
+        try { channel.eventLoop().execute(this::drainWrites); }
+        catch (Throwable failure) {
+            PendingWrite[] writes;
+            synchronized (this) {
+                closed = true;
+                drainScheduled = false;
+                queued.clear();
+                writes = pending.toArray(PendingWrite[]::new);
+            }
+            for (PendingWrite write : writes) {
+                write.promise.tryFailure(failure);
+                // A stopped loop can also reject promise notification tasks.
+                completeWrite(write);
+            }
+            channel.close();
+        }
+    }
+
+    /**
+     * Writes at most 64 admitted messages in FIFO order and flushes once per batch.
+     */
+    private void drainWrites() {
+        for (int i = 0; i < 64; i++) {
+            PendingWrite write;
+            synchronized (this) { write = queued.pollFirst(); }
+            if (write == null) break;
+            writeOnEventLoop(write);
+        }
+        channel.flush();
+        synchronized (this) {
+            if (queued.isEmpty()) drainScheduled = false;
+            else scheduleDrain();
+        }
     }
 
     /**
@@ -147,7 +197,7 @@ public class SocketMessageSender implements MessageSender {
                 channel.pipeline().addFirst("zeaOutboundBudget", new OutboundBufferLimiter(limits));
             }
             write.forwarded = true;
-            channel.writeAndFlush(write.message, write.promise);
+            channel.write(write.message, write.promise);
         } catch (Throwable failure) {
             write.promise.tryFailure(failure);
             channel.close();
@@ -165,6 +215,7 @@ public class SocketMessageSender implements MessageSender {
                 return;
             }
         }
+        FlowControlMetrics.PENDING_WRITES.decrement();
         EventResources.releasePayload(write.payload);
         if (!write.forwarded) {
             releaseRawMessage(write.message);
@@ -183,9 +234,11 @@ public class SocketMessageSender implements MessageSender {
         synchronized (this) {
             closed = true;
             writes = pending.toArray(PendingWrite[]::new);
+            queued.clear();
         }
         for (PendingWrite write : writes) {
             write.promise.tryFailure(new ClosedChannelException());
+            completeWrite(write);
         }
     }
 
@@ -236,7 +289,7 @@ public class SocketMessageSender implements MessageSender {
             return;
         }
 
-        // Fallback：在缺乏事件编码器的管道（如登录阶段）中，只写入最小长度的断开指令
+        // Login pipelines without an event encoder use a one-byte disconnect opcode.
         channel.writeAndFlush(NettyUtils.createBufferForOpcode(event.getType()))
                 .addListener(ChannelFutureListener.CLOSE);
     }

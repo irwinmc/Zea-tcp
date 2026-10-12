@@ -21,7 +21,7 @@ public class ApiHandler extends AbstractHttpHandler {
     /**
      * Writes the placeholder API response.
      *
-     * @param ctx the channel handler context
+     * @param ctx     the channel handler context
      * @param request the full HTTP request
      */
     public void handleApiRequest(ChannelHandlerContext ctx, FullHttpRequest request) {

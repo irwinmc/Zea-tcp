@@ -6,6 +6,7 @@ import com.akakata.context.NetworkBootstrap;
 import com.akakata.handlers.HttpRequestHandler;
 import com.akakata.handlers.LoginHandler;
 import com.akakata.handlers.WebSocketLoginHandler;
+import com.akakata.server.ConnectionAdmission;
 import com.akakata.server.NettyConfig;
 import com.akakata.server.Server;
 import com.akakata.server.ServerManager;
@@ -26,6 +27,7 @@ import io.netty.handler.codec.LengthFieldPrepender;
 
 import javax.inject.Named;
 import javax.inject.Singleton;
+
 import java.util.HashMap;
 import java.util.Map;
 
@@ -160,14 +162,15 @@ public abstract class ServerModule {
      * @param decoder the inbound decoder or object converter
      * @param loginHandler the login handler
      * @param prepender the prepender
+     * @param admission the shared TCP/WebSocket admission policy
      * @return the login channel initializer instance
      */
     @Provides
     @Singleton
     static LoginChannelInitializer provideLoginChannelInitializer(@Named("tcpDecoder") ChannelHandler decoder,
                                                                   LoginHandler loginHandler,
-                                                                  LengthFieldPrepender prepender) {
-        return new LoginChannelInitializer(decoder, loginHandler, prepender);
+                                                                  LengthFieldPrepender prepender, ConnectionAdmission admission) {
+        return new LoginChannelInitializer(admission.limits().maximumFrameBytes() + 2, decoder, loginHandler, prepender, admission);
     }
 
     /**
@@ -186,12 +189,13 @@ public abstract class ServerModule {
      * Provides the web socket server channel initializer dependency for the application component.
      *
      * @param handler the handler or request router
+     * @param admission the shared TCP/WebSocket admission policy
      * @return the web socket server channel initializer instance
      */
     @Provides
     @Singleton
-    static WebSocketServerChannelInitializer provideWebSocketServerChannelInitializer(WebSocketLoginHandler handler) {
-        return new WebSocketServerChannelInitializer(handler);
+    static WebSocketServerChannelInitializer provideWebSocketServerChannelInitializer(WebSocketLoginHandler handler, ConnectionAdmission admission) {
+        return new WebSocketServerChannelInitializer(handler, admission);
     }
 
     // ============================================================

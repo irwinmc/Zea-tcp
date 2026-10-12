@@ -81,7 +81,7 @@ public class StaticFileHandler {
     /**
      * Validates a static-file request, applies cache headers and starts an asynchronous transfer.
      *
-     * @param ctx the channel handler context
+     * @param ctx     the channel handler context
      * @param request the full HTTP request
      * @throws Exception if file access or transfer setup fails
      */
@@ -199,7 +199,7 @@ public class StaticFileHandler {
     /**
      * Writes a plain-text file-serving error response and closes the channel.
      *
-     * @param ctx channel handler context
+     * @param ctx    channel handler context
      * @param status HTTP response status
      */
     private void sendError(ChannelHandlerContext ctx, HttpResponseStatus status) {
@@ -222,7 +222,7 @@ public class StaticFileHandler {
     /**
      * Adds date, expiration, cache-control and last-modified headers for a file.
      *
-     * @param response HTTP response
+     * @param response    HTTP response
      * @param fileToCache file to cache
      * @throws IOException if a required resource cannot be read or decoded
      */
@@ -246,7 +246,7 @@ public class StaticFileHandler {
     /**
      * Sets the response content type from the file name and MIME mapping.
      *
-     * @param res the HTTP response
+     * @param res  the HTTP response
      * @param file the file to determine content type for
      */
     private void setContentTypeHeader(HttpResponse res, Path file) {
@@ -297,7 +297,7 @@ public class StaticFileHandler {
     /**
      * Closes the file handle after its asynchronous channel transfer completes.
      *
-     * @param raf the open file handle
+     * @param raf  the open file handle
      * @param path the transferred file path
      */
     private record FileCloseListener(RandomAccessFile raf, Path path) implements ChannelFutureListener {

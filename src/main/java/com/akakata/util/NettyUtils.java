@@ -3,6 +3,7 @@ package com.akakata.util;
 import com.akakata.app.PlayerSession;
 import com.akakata.communication.Transform;
 import com.akakata.communication.impl.SocketMessageSender;
+import com.akakata.handlers.TransportLifecycleHandler;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
@@ -12,7 +13,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.charset.Charset;
-import java.util.NoSuchElementException;
 
 /**
  * Provides Netty pipeline helpers and binary string or object framing.
@@ -68,7 +68,8 @@ public class NettyUtils {
     }
 
     /**
-     * Removes every handler from a pipeline. A null pipeline is ignored.
+     * Removes protocol handlers while preserving installed transport lifetime guards.
+     * A null pipeline is ignored.
      *
      * @param pipeline the Netty handler pipeline
      */
@@ -76,16 +77,11 @@ public class NettyUtils {
         if (pipeline == null) {
             return;
         }
-        try {
-            int counter = 0;
-
-            while (pipeline.first() != null) {
-                pipeline.removeFirst();
-                counter++;
+        for (String name : java.util.List.copyOf(pipeline.names())) {
+            if (pipeline.get(name) != null && !name.equals("zeaReadIdle")
+                    && !(pipeline.get(name) instanceof TransportLifecycleHandler)) {
+                pipeline.remove(name);
             }
-            LOG.debug("Removed {} handlers from pipeline", counter);
-        } catch (NoSuchElementException e) {
-            // all elements removed.
         }
     }
 
@@ -107,7 +103,7 @@ public class NettyUtils {
      * <p>The current implementation reads individual strings as UTF-8 even in the
      * overload accepting a charset. Remaining array entries stay null.
      *
-     * @param buffer the caller-owned source buffer
+     * @param buffer       the caller-owned source buffer
      * @param numOfStrings the requested number of strings
      * @return the decoded string array
      */
@@ -121,9 +117,9 @@ public class NettyUtils {
      * <p>The current implementation reads individual strings as UTF-8 even in the
      * overload accepting a charset. Remaining array entries stay null.
      *
-     * @param buffer the caller-owned source buffer
+     * @param buffer       the caller-owned source buffer
      * @param numOfStrings the requested number of strings
-     * @param charset the character encoding; null selects UTF-8 where supported
+     * @param charset      the character encoding; null selects UTF-8 where supported
      * @return the decoded string array
      */
     public static String[] readStrings(ByteBuf buffer, int numOfStrings, Charset charset) {
@@ -161,7 +157,7 @@ public class NettyUtils {
      * with a length decode exactly that many bytes. UTF-8 is used unless a charset is
      * supplied; null charsets also select UTF-8. Slice conversion failures are logged.
      *
-     * @param buffer the caller-owned source buffer
+     * @param buffer  the caller-owned source buffer
      * @param charset the character encoding; null selects UTF-8 where supported
      * @return the decoded string, or {@code null} if no framed string can be decoded
      */
@@ -204,8 +200,8 @@ public class NettyUtils {
      * with a length decode exactly that many bytes. UTF-8 is used unless a charset is
      * supplied; null charsets also select UTF-8. Slice conversion failures are logged.
      *
-     * @param buffer the caller-owned source buffer
-     * @param length the number of bytes or characters requested
+     * @param buffer  the caller-owned source buffer
+     * @param length  the number of bytes or characters requested
      * @param charset the character encoding; null selects UTF-8 where supported
      * @return the decoded string, or {@code null} if no framed string can be decoded
      */
@@ -243,7 +239,7 @@ public class NettyUtils {
      * strings use UTF-8 in the current implementation.
      *
      * @param charset the character encoding; null selects UTF-8 where supported
-     * @param msgs the strings to encode
+     * @param msgs    the strings to encode
      * @return the concatenated buffer, or {@code null} for no strings or an encoding failure
      */
     public static ByteBuf writeStrings(Charset charset, String... msgs) {
@@ -280,7 +276,7 @@ public class NettyUtils {
      * <p>UTF-8 is used by default and for a null charset. The caller owns the returned
      * buffer and must release it or transfer it to a pipeline. Encoding failures are logged.
      *
-     * @param msg the message or buffer being processed
+     * @param msg     the message or buffer being processed
      * @param charset the character encoding; null selects UTF-8 where supported
      * @return the allocated framed buffer, or {@code null} if encoding fails
      */
@@ -308,9 +304,9 @@ public class NettyUtils {
      * <p>The converter must retain a native slice that it keeps beyond the caller's
      * buffer lifetime. Conversion failures are logged and return null.
      *
-     * @param <T> an unused type parameter retained by the current helper signature
-     * @param <V> the converted value type
-     * @param buffer the caller-owned source buffer
+     * @param <T>     an unused type parameter retained by the current helper signature
+     * @param <V>     the converted value type
+     * @param buffer  the caller-owned source buffer
      * @param decoder the inbound decoder or object converter
      * @return the decoded object, or {@code null} if framing or conversion fails
      */
@@ -338,9 +334,9 @@ public class NettyUtils {
      * <p>The returned composite owns the converter's buffer reference. The caller must
      * release the result or transfer it to a pipeline. Conversion failures are logged.
      *
-     * @param <V> the converted value type
+     * @param <V>     the converted value type
      * @param encoder the outbound encoder or object converter
-     * @param object the object to convert or compare
+     * @param object  the object to convert or compare
      * @return the caller-owned framed buffer, or {@code null} if encoding fails
      */
     public static <V> ByteBuf writeObject(Transform<V, ByteBuf> encoder, V object) {
@@ -363,7 +359,7 @@ public class NettyUtils {
      * <p>When requested, advances the reader index by the copied size; it does not
      * release or destroy the native buffer.
      *
-     * @param buf the source native buffer
+     * @param buf           the source native buffer
      * @param isReadDestroy whether to advance the source reader index while copying
      * @return the copied readable bytes
      */

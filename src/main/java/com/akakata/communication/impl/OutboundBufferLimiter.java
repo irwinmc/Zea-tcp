@@ -1,6 +1,7 @@
 package com.akakata.communication.impl;
 
 import com.akakata.communication.OutboundLimits;
+import com.akakata.metrics.FlowControlMetrics;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufHolder;
 import io.netty.channel.ChannelHandlerContext;
@@ -49,13 +50,18 @@ final class OutboundBufferLimiter extends ChannelOutboundHandlerAdapter {
                 : message instanceof ByteBufHolder holder ? holder.content().readableBytes()
                 : Math.max(0, ctx.channel().config().getMessageSizeEstimator().newHandle().size(message));
         if (!ctx.channel().isWritable() || bytes > maximumPendingBytes - pendingBytes) {
+            FlowControlMetrics.WRITE_REJECTIONS.increment();
             ReferenceCountUtil.release(message);
             promise.tryFailure(new RejectedExecutionException("Socket encoded-byte budget or water mark exceeded"));
             ctx.close();
             return;
         }
         pendingBytes += bytes;
-        promise.addListener(completed -> pendingBytes -= bytes);
+        FlowControlMetrics.PENDING_SOCKET_BYTES.add(bytes);
+        promise.addListener(completed -> {
+            pendingBytes -= bytes;
+            FlowControlMetrics.PENDING_SOCKET_BYTES.add(-bytes);
+        });
         ctx.write(message, promise);
     }
 }

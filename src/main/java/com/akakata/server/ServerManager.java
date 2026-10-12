@@ -13,9 +13,9 @@ public interface ServerManager {
      * <p>The legacy Flash port parameter is retained for compatibility and is unused
      * by the default implementation.
      *
-     * @param flashPort flash policy server port
-     * @param tcpPort the TCP override port; nonpositive values skip the server
-     * @param httpPort http port
+     * @param flashPort     flash policy server port
+     * @param tcpPort       the TCP override port; nonpositive values skip the server
+     * @param httpPort      http port
      * @param webSocketPort web socket port
      * @throws Exception if an enabled server fails to start
      */

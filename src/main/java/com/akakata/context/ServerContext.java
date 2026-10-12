@@ -4,7 +4,9 @@ import com.akakata.app.Game;
 import com.akakata.context.module.DaggerGameServerComponent;
 import com.akakata.context.module.GameServerComponent;
 import com.akakata.event.impl.EventDispatchers;
+import com.akakata.event.impl.NettyEventDispatcher;
 import com.akakata.metrics.EventDispatcherMetrics;
+import com.akakata.metrics.FlowControlMetrics;
 import com.akakata.server.ServerManager;
 import com.akakata.service.SessionService;
 import org.slf4j.Logger;
@@ -58,6 +60,11 @@ public final class ServerContext implements AutoCloseable {
      * Terminal lifecycle flag, published when shutdown begins.
      */
     private boolean closed = false;
+
+    /**
+     * Whether initialization acquired process-wide dispatcher ownership before service creation.
+     */
+    private boolean sharedDispatcherConfigured;
 
     /**
      * Game associated with this session or component.
@@ -122,6 +129,11 @@ public final class ServerContext implements AutoCloseable {
 
         LOG.info("Initializing ServerContext...");
         try {
+            EventDispatchers.configure(configManager.getInt("session.dispatcher.shards",
+                            Math.max(2, Integer.highestOneBit(Runtime.getRuntime().availableProcessors()))),
+                    configManager.getInt("session.queue.capacity", NettyEventDispatcher.DEFAULT_QUEUE_CAPACITY),
+                    configManager.getInt("session.queue.bytes", (int) NettyEventDispatcher.DEFAULT_QUEUE_BYTES));
+            sharedDispatcherConfigured = true;
             GameServerComponent component = DaggerGameServerComponent.builder()
                     .configurationManager(configManager)
                     .networkBootstrap(networkBootstrap)
@@ -134,6 +146,7 @@ public final class ServerContext implements AutoCloseable {
             // Initialize ServerManager (it manages all servers internally)
             serverManager = component.serverManager();
 
+            FlowControlMetrics.gameDispatcher((NettyEventDispatcher) game.getEventDispatcher());
             startDispatcherMetrics();
             initialized = true;
             LOG.info("ServerContext initialization complete");
@@ -224,8 +237,10 @@ public final class ServerContext implements AutoCloseable {
             }
         }
 
+        FlowControlMetrics.gameDispatcher(null);
+
         // Avoid creating the shared dispatcher when closing an uninitialized context.
-        if (game != null || sessionService != null) {
+        if (sharedDispatcherConfigured || game != null || sessionService != null) {
             try {
                 EventDispatchers.shutdownSharedDispatcher();
             } catch (Exception e) {

@@ -33,7 +33,7 @@ public abstract class AbstractHttpHandler {
      * Writes a plain-text error response and closes the channel. The CORS overload adds
      * cross-origin headers when enabled.
      *
-     * @param ctx channel handler context
+     * @param ctx    channel handler context
      * @param status HTTP response status
      */
     protected void sendError(ChannelHandlerContext ctx, HttpResponseStatus status) {
@@ -44,8 +44,8 @@ public abstract class AbstractHttpHandler {
      * Writes a plain-text error response and closes the channel. The CORS overload adds
      * cross-origin headers when enabled.
      *
-     * @param ctx channel handler context
-     * @param status HTTP response status
+     * @param ctx        channel handler context
+     * @param status     HTTP response status
      * @param enableCors whether to add CORS headers
      */
     protected void sendError(ChannelHandlerContext ctx, HttpResponseStatus status, boolean enableCors) {
@@ -69,7 +69,7 @@ public abstract class AbstractHttpHandler {
      * <p>Copying advances the supplied buffer's reader index. The caller remains
      * responsible for releasing its original reference after this method returns.
      *
-     * @param ctx channel handler context
+     * @param ctx     channel handler context
      * @param content caller-owned content copied into the response
      */
     protected void sendHttpResponse(ChannelHandlerContext ctx, ByteBuf content) {
@@ -82,8 +82,8 @@ public abstract class AbstractHttpHandler {
      * <p>Copying advances the supplied buffer's reader index. The caller remains
      * responsible for releasing its original reference after this method returns.
      *
-     * @param ctx channel handler context
-     * @param content caller-owned content copied into the response
+     * @param ctx         channel handler context
+     * @param content     caller-owned content copied into the response
      * @param contentType content type (e.g., "application/json; charset=UTF-8")
      */
     protected void sendHttpResponse(ChannelHandlerContext ctx, ByteBuf content, String contentType) {

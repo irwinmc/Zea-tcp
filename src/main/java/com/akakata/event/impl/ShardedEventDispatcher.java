@@ -73,6 +73,19 @@ public class ShardedEventDispatcher implements EventDispatcher, AutoCloseable {
      * @throws IllegalArgumentException if either value is outside its supported range
      */
     public ShardedEventDispatcher(int shardCount, int queueCapacity) {
+        this(shardCount, queueCapacity, NettyEventDispatcher.DEFAULT_QUEUE_BYTES);
+    }
+
+    /**
+     * Creates fixed session executors with independent count and byte budgets.
+     *
+     * @param shardCount positive shard count rounded up to a power of two
+     * @param queueCapacity maximum pending tasks per executor, at least 16
+     * @param queueBytes positive retained payload budget per executor
+     * @throws IllegalArgumentException if a budget is invalid
+     */
+    public ShardedEventDispatcher(int shardCount, int queueCapacity, long queueBytes) {
+        if (queueBytes <= 0) throw new IllegalArgumentException("Positive payload budget required");
         if (shardCount <= 0 || shardCount > (1 << 30) || queueCapacity < 16) {
             throw new IllegalArgumentException("Positive shard count and queue capacity of at least 16 required");
         }
@@ -82,7 +95,7 @@ public class ShardedEventDispatcher implements EventDispatcher, AutoCloseable {
                 new DefaultThreadFactory("zea-business", false), queueCapacity, RejectedExecutionHandlers.reject());
         this.shards = new NettyEventDispatcher[count];
         for (int i = 0; i < count; i++) {
-            shards[i] = new NettyEventDispatcher(executorGroup.next(), queueCapacity);
+            shards[i] = new NettyEventDispatcher(executorGroup.next(), queueCapacity, queueBytes);
         }
         executorGroup.terminationFuture().addListener(future -> {
             if (future.isSuccess()) {
@@ -301,4 +314,14 @@ public class ShardedEventDispatcher implements EventDispatcher, AutoCloseable {
         }
         return sizes;
     }
+
+    /**
+     * Captures flow metrics for each fixed session executor.
+     *
+     * @return immutable snapshots in shard-index order
+     */
+    public List<DispatcherSnapshot> snapshots() {
+        return java.util.Arrays.stream(shards).map(NettyEventDispatcher::snapshot).toList();
+    }
+
 }

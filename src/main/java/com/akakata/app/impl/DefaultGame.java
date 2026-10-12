@@ -32,6 +32,16 @@ public class DefaultGame extends AbstractGame {
     }
 
     /**
+     * Creates the default Game with bounded tasks and retained payload storage.
+     *
+     * @param queueCapacity maximum pending Game tasks, at least 16
+     * @param queueBytes positive admitted payload budget including running work
+     */
+    public DefaultGame(int queueCapacity, long queueBytes) {
+        super("ZEA_GAME", queueCapacity, queueBytes);
+    }
+
+    /**
      * Registers a default handler that forwards inbound Game work and sends outbound events.
      *
      * @param playerSession the player session

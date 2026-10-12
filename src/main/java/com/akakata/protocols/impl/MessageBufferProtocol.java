@@ -62,7 +62,7 @@ public class MessageBufferProtocol extends AbstractNettyProtocol {
         ChannelPipeline pipeline = NettyUtils.getPipeLineOfConnection(playerSession);
 
         // Upstream handlers or encoders (i.e towards server) are added to pipeline now.
-        pipeline.addLast("lengthDecoder", createLengthBasedFrameDecoder());
+        pipeline.addLast("lengthDecoder", createLengthBasedFrameDecoder(pipeline));
         pipeline.addLast("messageBufferEventDecoder", messageBufferEventDecoder);
         pipeline.addLast("eventHandler", new DefaultToServerHandler(playerSession));
 

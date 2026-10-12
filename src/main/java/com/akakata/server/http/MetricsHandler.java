@@ -1,8 +1,9 @@
 package com.akakata.server.http;
 
+import com.akakata.event.impl.DispatcherSnapshot;
 import com.akakata.metrics.EventDispatcherMetrics;
+import com.akakata.metrics.FlowControlMetrics;
 import com.akakata.metrics.ServerMetrics;
-import tools.jackson.databind.ObjectMapper;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.http.FullHttpRequest;
@@ -10,6 +11,7 @@ import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.util.CharsetUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import tools.jackson.databind.ObjectMapper;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -45,7 +47,7 @@ public class MetricsHandler extends AbstractHttpHandler {
     /**
      * Routes requests to JSON metric groups or Prometheus output.
      *
-     * @param ctx channel handler context
+     * @param ctx     channel handler context
      * @param request HTTP request
      */
     public void handleMetrics(ChannelHandlerContext ctx, FullHttpRequest request) {
@@ -62,6 +64,9 @@ public class MetricsHandler extends AbstractHttpHandler {
                 handleSystemMetrics(ctx);
             } else if (uri.startsWith("/metrics/event-dispatcher")) {
                 handleEventDispatcherMetrics(ctx);
+            } else if (uri.startsWith("/metrics/flow-control")) {
+                sendMetricResponse(ctx, Unpooled.copiedBuffer(MAPPER.writeValueAsString(
+                        FlowControlMetrics.snapshot()), CharsetUtil.UTF_8), "application/json; charset=UTF-8");
             } else if (uri.startsWith("/metrics/prometheus")) {
                 handlePrometheusMetrics(ctx);
             } else {
@@ -119,11 +124,13 @@ public class MetricsHandler extends AbstractHttpHandler {
             errors.put("total", metrics.getTotalErrors());
             response.put("errors", errors);
 
+            response.put("flow_control", FlowControlMetrics.snapshot());
+
             // Timestamp
             response.put("timestamp", System.currentTimeMillis());
 
             String json = MAPPER.writeValueAsString(response);
-            sendHttpResponse(ctx, Unpooled.copiedBuffer(json, CharsetUtil.UTF_8), "application/json; charset=UTF-8");
+            sendMetricResponse(ctx, Unpooled.copiedBuffer(json, CharsetUtil.UTF_8), "application/json; charset=UTF-8");
         } catch (Exception e) {
             LOG.error("Failed to serialize all metrics", e);
             sendError(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, true);
@@ -144,7 +151,7 @@ public class MetricsHandler extends AbstractHttpHandler {
             response.put("timestamp", System.currentTimeMillis());
 
             String json = MAPPER.writeValueAsString(response);
-            sendHttpResponse(ctx, Unpooled.copiedBuffer(json, CharsetUtil.UTF_8), "application/json; charset=UTF-8");
+            sendMetricResponse(ctx, Unpooled.copiedBuffer(json, CharsetUtil.UTF_8), "application/json; charset=UTF-8");
         } catch (Exception e) {
             LOG.error("Failed to serialize connection metrics", e);
             sendError(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, true);
@@ -168,7 +175,7 @@ public class MetricsHandler extends AbstractHttpHandler {
             response.put("timestamp", System.currentTimeMillis());
 
             String json = MAPPER.writeValueAsString(response);
-            sendHttpResponse(ctx, Unpooled.copiedBuffer(json, CharsetUtil.UTF_8), "application/json; charset=UTF-8");
+            sendMetricResponse(ctx, Unpooled.copiedBuffer(json, CharsetUtil.UTF_8), "application/json; charset=UTF-8");
         } catch (Exception e) {
             LOG.error("Failed to serialize traffic metrics", e);
             sendError(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, true);
@@ -192,7 +199,7 @@ public class MetricsHandler extends AbstractHttpHandler {
             response.put("timestamp", System.currentTimeMillis());
 
             String json = MAPPER.writeValueAsString(response);
-            sendHttpResponse(ctx, Unpooled.copiedBuffer(json, CharsetUtil.UTF_8), "application/json; charset=UTF-8");
+            sendMetricResponse(ctx, Unpooled.copiedBuffer(json, CharsetUtil.UTF_8), "application/json; charset=UTF-8");
         } catch (Exception e) {
             LOG.error("Failed to serialize system metrics", e);
             sendError(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, true);
@@ -220,7 +227,7 @@ public class MetricsHandler extends AbstractHttpHandler {
             response.put("timestamp", System.currentTimeMillis());
 
             String json = MAPPER.writeValueAsString(response);
-            sendHttpResponse(ctx, Unpooled.copiedBuffer(json, CharsetUtil.UTF_8), "application/json; charset=UTF-8");
+            sendMetricResponse(ctx, Unpooled.copiedBuffer(json, CharsetUtil.UTF_8), "application/json; charset=UTF-8");
         } catch (Exception e) {
             LOG.error("Failed to serialize event dispatcher metrics", e);
             sendError(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, true);
@@ -264,16 +271,26 @@ public class MetricsHandler extends AbstractHttpHandler {
         // Errors
         addPrometheusMetric(prom, "errors_total", "counter", "Total errors", metrics.getTotalErrors());
 
-        sendHttpResponse(ctx, Unpooled.copiedBuffer(prom.toString(), CharsetUtil.UTF_8), "text/plain; charset=UTF-8");
+        FlowControlMetrics.transportSnapshot().forEach((name, value) -> {
+            String type = java.util.Set.of("active_connections", "paused_channels", "pending_writes", "pending_socket_bytes")
+                    .contains(name) ? "gauge" : "counter";
+            addPrometheusMetric(prom, "zea_flow_" + name, type, "Transport flow " + name, value);
+        });
+        var flow = FlowControlMetrics.snapshot();
+        var sessions = com.akakata.event.impl.EventDispatchers.sharedGroup().snapshots();
+        for (int i = 0; i < sessions.size(); i++) appendFlowMetrics(prom, "session", i, sessions.get(i));
+        if (flow.get("game") instanceof DispatcherSnapshot game)
+            appendFlowMetrics(prom, "game", 0, game);
+        sendMetricResponse(ctx, Unpooled.copiedBuffer(prom.toString(), CharsetUtil.UTF_8), "text/plain; charset=UTF-8");
     }
 
     /**
      * Appends HELP, TYPE and sample lines for one Prometheus metric.
      *
-     * @param sb StringBuilder to append to
-     * @param name metric name
-     * @param type metric type (counter, gauge, histogram, summary)
-     * @param help help description
+     * @param sb    StringBuilder to append to
+     * @param name  metric name
+     * @param type  metric type (counter, gauge, histogram, summary)
+     * @param help  help description
      * @param value metric value
      */
     private void addPrometheusMetric(StringBuilder sb, String name, String type, String help, Object value) {
@@ -304,4 +321,53 @@ public class MetricsHandler extends AbstractHttpHandler {
             return String.format("%ds", secs);
         }
     }
+
+    /**
+     * Copies metric response content and releases its temporary source on every path.
+     *
+     * @param ctx         the HTTP channel context
+     * @param content     the owned temporary serialized metrics buffer
+     * @param contentType the response media type
+     */
+    private void sendMetricResponse(ChannelHandlerContext ctx, io.netty.buffer.ByteBuf content, String contentType) {
+        try {
+            sendHttpResponse(ctx, content, contentType);
+        } finally {
+            content.release();
+        }
+    }
+
+    /**
+     * Appends one executor's labelled budgets, counters and histogram percentile bounds.
+     *
+     * @param target   the Prometheus text builder
+     * @param scope    the session or Game scope
+     * @param shard    the fixed executor index
+     * @param snapshot current executor counters
+     */
+    private static void appendFlowMetrics(StringBuilder target, String scope, int shard,
+                                          DispatcherSnapshot snapshot) {
+        Map<String, Long> values = new LinkedHashMap<>();
+        values.put("queued_tasks", (long) snapshot.queued());
+        values.put("pending_bytes", snapshot.pendingBytes());
+        values.put("task_capacity", (long) snapshot.capacity());
+        values.put("byte_budget", snapshot.byteBudget());
+        values.put("accepted", snapshot.accepted());
+        values.put("completed", snapshot.completed());
+        values.put("cancelled", snapshot.cancelled());
+        values.put("rejected", snapshot.rejected());
+        values.put("wait_p95_micros", snapshot.waitP95Micros());
+        values.put("wait_p99_micros", snapshot.waitP99Micros());
+        values.put("execution_p95_micros", snapshot.executionP95Micros());
+        values.put("execution_p99_micros", snapshot.executionP99Micros());
+        values.forEach((name, value) -> {
+            if (scope.equals("session") && shard == 0) {
+                String type = java.util.Set.of("accepted", "completed", "cancelled", "rejected").contains(name) ? "counter" : "gauge";
+                target.append("# TYPE zea_executor_").append(name).append(' ').append(type).append('\n');
+            }
+            target.append("zea_executor_").append(name).append("{scope=\"").append(scope)
+                    .append("\",shard=\"").append(shard).append("\"} ").append(value).append('\n');
+        });
+    }
+
 }

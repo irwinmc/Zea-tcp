@@ -88,7 +88,7 @@ public class SessionService {
      * Creates the session cache with optional periodic cleanup. The one-argument overload enables
      * cleanup.
      *
-     * @param verifier the credential verifier
+     * @param verifier              the credential verifier
      * @param enablePeriodicCleanup whether to schedule cache cleanup every minute
      */
     public SessionService(CredentialsVerifier verifier, boolean enablePeriodicCleanup) {
@@ -98,9 +98,9 @@ public class SessionService {
     /**
      * Creates a registry with a strict credential-slot budget and optional maintenance.
      *
-     * @param verifier the credential verifier
+     * @param verifier              the credential verifier
      * @param enablePeriodicCleanup whether to run cache maintenance every minute
-     * @param maximumSessions the positive number of admitted credentials
+     * @param maximumSessions       the positive number of admitted credentials
      * @throws IllegalArgumentException if the admission limit is not positive
      */
     public SessionService(CredentialsVerifier verifier, boolean enablePeriodicCleanup, int maximumSessions) {
@@ -146,8 +146,8 @@ public class SessionService {
      * The configured registry has no expiration or size-based eviction policy.
      *
      * @param credentials the verified credential identity
-     * @param session the session associated with the operation
-     * @param cause the failure or cache-removal cause
+     * @param session     the session associated with the operation
+     * @param cause       the failure or cache-removal cause
      */
     private void onSessionRemoved(Credentials credentials, PlayerSession session, RemovalCause cause) {
         if (session == null || session.isShuttingDown()) {
@@ -205,7 +205,7 @@ public class SessionService {
      * to that instance.
      *
      * @param credentials the verified credential identity
-     * @param session the session associated with the operation
+     * @param session     the session associated with the operation
      */
     private void onSessionClosed(Credentials credentials, PlayerSession session) {
         synchronized (this) {
@@ -247,7 +247,7 @@ public class SessionService {
      *
      * <p>Invalid arguments, nonplayer sessions and closed resources are rejected.
      *
-     * @param key the attribute or cache key
+     * @param key     the attribute or cache key
      * @param session the session associated with the operation
      * @return {@code true} if registration succeeds; {@code false} if the input or lifecycle state
      * is invalid
@@ -291,7 +291,7 @@ public class SessionService {
      * <p>The overload with an expected session removes the entry only if its current
      * value is that exact instance, preventing stale callbacks from deleting replacements.
      *
-     * @param key the attribute or cache key
+     * @param key      the attribute or cache key
      * @param expected the exact session instance required for removal
      * @return {@code true} if an entry was removed
      */
@@ -317,10 +317,10 @@ public class SessionService {
      * <p>Replacing a session with the same instance does not close it.
      *
      * @param credentials the verified credential identity
-     * @param newSession the replacement player session
+     * @param newSession  the replacement player session
      * @return the previous session, or {@code null} if no entry existed
      * @throws IllegalArgumentException if the credentials or replacement is null
-     * @throws IllegalStateException if the service or replacement session is closed
+     * @throws IllegalStateException    if the service or replacement session is closed
      * @throws SessionCapacityException if a new credential would exceed the admission limit
      */
     public PlayerSession replaceSession(Credentials credentials, PlayerSession newSession) {
@@ -335,7 +335,7 @@ public class SessionService {
      * cleans up the old entry.
      *
      * @param credentials the verified credential identity
-     * @param newSession the replacement player session
+     * @param newSession  the replacement player session
      * @return the previous session, or {@code null} if no entry existed
      * @throws IllegalStateException if the service or new session is closed
      */

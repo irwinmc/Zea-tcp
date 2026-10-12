@@ -1,17 +1,17 @@
 package com.akakata.communication.impl;
 
 import com.akakata.communication.OutboundLimits;
+import com.akakata.event.Event;
 import com.akakata.event.Events;
 import com.akakata.handlers.codec.JsonDecoder;
 import com.akakata.handlers.codec.JsonEncoder;
 import com.akakata.handlers.codec.MessageBufferEventEncoder;
 import com.akakata.handlers.codec.WebSocketEventDecoder;
 import com.akakata.handlers.codec.WebSocketEventEncoder;
-import com.akakata.event.Event;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
@@ -27,8 +27,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
-import java.util.ArrayList;
 import java.lang.reflect.Proxy;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.RejectedExecutionException;
@@ -85,6 +85,87 @@ class SocketBackpressureRegressionTest {
             channel.finishAndReleaseAll();
             decoder.finishAndReleaseAll();
         }
+    }
+
+    /**
+     * Shares one canonical JSON application frame across TCP and WebSocket recipients.
+     */
+    @Test
+    void mixedTransportFanOutEncodesOnceAndReleasesSharedLease() {
+        EmbeddedChannel tcp = new EmbeddedChannel(new JsonEncoder());
+        EmbeddedChannel websocket = new EmbeddedChannel(new WebSocketEventEncoder());
+        var shared = new com.akakata.event.impl.SharedNetworkEvent(Events.networkEvent(Map.of("sequence", 42)));
+        long encoded = com.akakata.metrics.FlowControlMetrics.ENCODED_FRAMES.sum();
+        long reused = com.akakata.metrics.FlowControlMetrics.ENCODING_REUSES.sum();
+        try {
+            var first = new SocketMessageSender(tcp).sendMessage(shared);
+            var second = new SocketMessageSender(websocket).sendMessage(shared);
+            shared.releaseOwner();
+            tcp.runPendingTasks(); websocket.runPendingTasks();
+            assertTrue(first.isSuccess()); assertTrue(second.isSuccess());
+            assertEquals(0, shared.payloadLease().refCnt());
+            ByteBuf tcpFrame = tcp.readOutbound();
+            var wsFrame = (io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame) websocket.readOutbound();
+            try {
+                assertEquals(tcpFrame, wsFrame.content());
+                int originalIndex = wsFrame.content().readerIndex();
+                tcpFrame.readByte();
+                assertEquals(originalIndex, wsFrame.content().readerIndex());
+                assertTrue(tcpFrame.isReadOnly());
+                assertEquals(encoded + 1, com.akakata.metrics.FlowControlMetrics.ENCODED_FRAMES.sum());
+                assertEquals(reused + 1, com.akakata.metrics.FlowControlMetrics.ENCODING_REUSES.sum());
+            } finally { tcpFrame.release(); wsFrame.release(); }
+        } finally { tcp.finishAndReleaseAll(); websocket.finishAndReleaseAll(); }
+    }
+
+    /**
+     * Keeps shared native sources alive across recipient failure and successful binary encoding.
+     */
+    @Test
+    void cancelledRecipientCannotReleaseAnotherRecipientsCachedBinaryPayload() {
+        EmbeddedChannel good = new EmbeddedChannel(new com.akakata.handlers.codec.SbeEventEncoder());
+        EmbeddedChannel bad = new EmbeddedChannel(new com.akakata.handlers.codec.SbeEventEncoder());
+        ByteBuf payload = Unpooled.buffer().writeInt(42);
+        var shared = new com.akakata.event.impl.SharedNetworkEvent(Events.networkEvent(payload));
+        try {
+            var first = new SocketMessageSender(good).sendMessage(shared);
+            var second = new SocketMessageSender(bad, new OutboundLimits(8, 1)).sendMessage(shared);
+            payload.release(); shared.releaseOwner();
+            bad.runPendingTasks();
+            assertFalse(second.isSuccess());
+            assertEquals(1, payload.refCnt());
+            good.runPendingTasks();
+            assertTrue(first.isSuccess());
+            assertEquals(0, payload.refCnt());
+            assertEquals(0, shared.payloadLease().refCnt());
+            ByteBuf frame = good.readOutbound();
+            try { assertEquals(42, frame.getInt(frame.readerIndex() + 8)); }
+            finally { frame.release(); }
+        } finally { good.finishAndReleaseAll(); bad.finishAndReleaseAll(); }
+    }
+
+    /**
+     * Flushes bounded batches while preserving admission order over multiple drain tasks.
+     */
+    @Test
+    void socketWritesFlushOncePerBoundedBatchAndPreserveOrder() {
+        java.util.concurrent.atomic.AtomicInteger flushes = new java.util.concurrent.atomic.AtomicInteger();
+        EmbeddedChannel channel = new EmbeddedChannel(new ChannelDuplexHandler() {
+            @Override
+            public void flush(ChannelHandlerContext ctx) { flushes.incrementAndGet(); ctx.flush(); }
+        });
+        SocketMessageSender sender = new SocketMessageSender(channel, new OutboundLimits(256, 4096));
+        try {
+            for (int i = 0; i < 130; i++) sender.sendMessage(Unpooled.buffer().writeInt(i));
+            channel.runPendingTasks();
+            assertEquals(3, flushes.get());
+            assertEquals(0, sender.pendingWrites());
+            for (int i = 0; i < 130; i++) {
+                ByteBuf frame = channel.readOutbound();
+                try { assertEquals(i, frame.readInt()); } finally { frame.release(); }
+            }
+            assertNull(channel.readOutbound());
+        } finally { channel.finishAndReleaseAll(); }
     }
 
     /**

@@ -30,7 +30,7 @@ public class IndexPageHandler extends AbstractHttpHandler {
     /**
      * Serves the bundled index page as an HTTP response.
      *
-     * @param ctx the channel handler context
+     * @param ctx     the channel handler context
      * @param request the full HTTP request
      * @throws Exception if loading or serving the page fails
      */

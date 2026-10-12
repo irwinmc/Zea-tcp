@@ -21,7 +21,7 @@ public class RpcHandler extends AbstractHttpHandler {
     /**
      * Writes the placeholder RPC response.
      *
-     * @param ctx the channel handler context
+     * @param ctx     the channel handler context
      * @param request the full HTTP request containing RPC call data
      */
     public void handleRpcRequest(ChannelHandlerContext ctx, FullHttpRequest request) {

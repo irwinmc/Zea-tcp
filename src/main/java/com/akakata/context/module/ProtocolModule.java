@@ -1,6 +1,7 @@
 package com.akakata.context.module;
 
 import com.akakata.app.Game;
+import com.akakata.communication.OutboundLimits;
 import com.akakata.context.ConfigurationManager;
 import com.akakata.handlers.LoginHandler;
 import com.akakata.handlers.WebSocketLoginHandler;
@@ -245,14 +246,15 @@ public final class ProtocolModule {
      * @param protocol the protocol to install or associate
      * @param game the associated game
      * @param loginService the authentication coordinator
+     * @param outboundLimits the configured per-connection write and encoded-byte budgets
      * @return the login handler instance
      */
     @Provides
     @Singleton
     static LoginHandler provideLoginHandler(@Named("tcpProtocol") Protocol protocol,
                                             Game game,
-                                            LoginService loginService) {
-        return new LoginHandler(protocol, game, loginService);
+                                            LoginService loginService, OutboundLimits outboundLimits) {
+        return new LoginHandler(protocol, game, loginService, outboundLimits);
     }
 
     /**
@@ -261,13 +263,14 @@ public final class ProtocolModule {
      * @param protocol the protocol to install or associate
      * @param game the associated game
      * @param loginService the authentication coordinator
+     * @param outboundLimits the configured per-connection write and encoded-byte budgets
      * @return the web socket login handler instance
      */
     @Provides
     @Singleton
     static WebSocketLoginHandler provideWebSocketLoginHandler(WebSocketProtocol protocol,
                                                               Game game,
-                                                              LoginService loginService) {
-        return new WebSocketLoginHandler(protocol, game, loginService);
+                                                              LoginService loginService, OutboundLimits outboundLimits) {
+        return new WebSocketLoginHandler(protocol, game, loginService, outboundLimits);
     }
 }

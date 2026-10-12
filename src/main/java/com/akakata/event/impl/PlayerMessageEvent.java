@@ -36,6 +36,7 @@ public final class PlayerMessageEvent extends DefaultEvent {
         super.setType(event.getType());
         super.setSource(event.getSource());
         super.setTimeStamp(event.getTimeStamp());
+        setPayloadSize(event.getPayloadSize());
     }
 
     /**

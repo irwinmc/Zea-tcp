@@ -21,11 +21,7 @@ import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 
 import static com.akakata.event.impl.DispatcherTestSupport.*;
 import static org.junit.jupiter.api.Assertions.*;
@@ -203,8 +199,7 @@ class BackpressureAndBroadcastRegressionTest {
             release.countDown();
             drain(session.getEventDispatcher());
             drain(game.getEventDispatcher());
-            channel.advanceTimeBy(20, TimeUnit.MILLISECONDS);
-            channel.runScheduledPendingTasks();
+            channel.runPendingTasks();
             assertTrue(channel.config().isAutoRead());
         } finally {
             release.countDown();
@@ -394,8 +389,7 @@ class BackpressureAndBroadcastRegressionTest {
                 paused.resume();
                 drain(paused.dispatcher);
                 drain(game.getEventDispatcher());
-                channel.advanceTimeBy(20, TimeUnit.MILLISECONDS);
-                channel.runScheduledPendingTasks();
+                channel.runPendingTasks();
                 assertTrue(channel.config().isAutoRead());
                 assertTrue(channel.isActive());
                 assertEquals(List.of(1, 2), input);
@@ -481,9 +475,9 @@ class BackpressureAndBroadcastRegressionTest {
     /**
      * Creates one connected player with a recording sender and the selected dispatcher.
      *
-     * @param game the owning Game
+     * @param game       the owning Game
      * @param dispatcher the borrowed registration scope
-     * @param messages the captured outbound sources
+     * @param messages   the captured outbound sources
      * @return the connected player
      */
     private static PlayerSession player(DefaultGame game, EventDispatcher dispatcher, List<Object> messages) {
@@ -496,6 +490,7 @@ class BackpressureAndBroadcastRegressionTest {
                 messages.add(((Event) message).getSource());
                 return null;
             }
+
             @Override
             public void close() {
             }
@@ -509,7 +504,7 @@ class BackpressureAndBroadcastRegressionTest {
      * Adds unscoped work behind a paused executor without consuming session subscriptions.
      *
      * @param dispatcher the paused queue
-     * @param count the number of tasks to publish
+     * @param count      the number of tasks to publish
      */
     private static void fill(NettyEventDispatcher dispatcher, int count) {
         for (int i = 0; i < count; i++) {

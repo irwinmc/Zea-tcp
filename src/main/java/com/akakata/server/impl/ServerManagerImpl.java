@@ -52,10 +52,10 @@ public class ServerManagerImpl implements ServerManager {
     /**
      * Creates a server manager impl instance with the supplied dependencies.
      *
-     * @param tcpServer the TCP server instance
-     * @param httpServer the HTTP server instance
+     * @param tcpServer       the TCP server instance
+     * @param httpServer      the HTTP server instance
      * @param webSocketServer the WebSocket server instance
-     * @param configManager the loaded configuration manager
+     * @param configManager   the loaded configuration manager
      */
     @Inject
     public ServerManagerImpl(@Named(AppContext.TCP_SERVER) Server tcpServer,
@@ -74,9 +74,9 @@ public class ServerManagerImpl implements ServerManager {
      * <p>The explicit-port overload ignores enable switches and the legacy Flash port.
      * Repeated calls are skipped while the started-server set is nonempty.
      *
-     * @param flashPort the legacy Flash port, unused by the default manager
-     * @param tcpPort the TCP override port; nonpositive values skip the server
-     * @param httpPort the HTTP override port; nonpositive values skip the server
+     * @param flashPort     the legacy Flash port, unused by the default manager
+     * @param tcpPort       the TCP override port; nonpositive values skip the server
+     * @param httpPort      the HTTP override port; nonpositive values skip the server
      * @param webSocketPort the WebSocket override port; nonpositive values skip the server
      * @throws Exception if a selected server cannot start
      */

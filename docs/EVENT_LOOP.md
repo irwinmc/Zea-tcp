@@ -58,12 +58,14 @@ its application must establish their shutdown ownership.
 
 ## Session Sharding and Routing
 
-The process-wide factory chooses:
+Without an explicit `session.dispatcher.shards` setting, the process-wide factory chooses:
 
 ```text
 S = max(2, Integer.highestOneBit(Runtime.getRuntime().availableProcessors()))
 ```
 
+The bundled resource selects two session shards. `ServerContext.initialize()` fixes
+shared count/byte budgets before creating sessions; conflicting configurations fail.
 A separately constructed `ShardedEventDispatcher(count)` rounds a positive count
 up to a power of two. Session IDs must remain immutable.
 
@@ -150,16 +152,22 @@ Never wait synchronously for work submitted to the same executor.
 
 ## Bounded Queues and Rejection
 
-Each business executor accepts at most **32,768 pending tasks** by default.
-Standalone and sharded constructors accept a custom capacity of at least 16.
-`game.queue.capacity` configures the default Game's capacity. Shared session shards
-still use the default capacity; construct a custom sharded group to choose another.
-Sessions on the same shard share its budget. The Game has a separate bounded queue.
+Each business executor defaults to **32,768 pending tasks** and **64 MiB of
+estimated admitted payload storage**, including its running callback. Standalone
+and sharded constructors accept a capacity of at least 16 and a positive long byte
+budget. Properties `session.queue.capacity`, `session.queue.bytes`,
+`game.queue.capacity` and `game.queue.bytes` configure the default graph.
+Sessions on one shard share its budgets; the Game has its own budgets. Byte
+admission precedes native retention and byte credits return after resource cleanup.
+Decoded JSON captures its byte estimate once; custom Event implementations may
+override `getPayloadSize()`. Unknown objects default to 256 bytes, so applications
+must supply conservative estimates for larger custom payloads. These estimates
+bound admitted storage charges and do not claim an exact JVM heap ceiling.
 
 `NettyEventDispatcher.fireEvent()` and `execute()` return `true` when accepted
 and `false` when closed, saturated, or, for targeted delivery, the session is
 closing. Saturation uses Netty's rejecting policy: a callback never falls back to
-execution on the submitting thread. `getRejectedEventCount()` counts executor
+execution on the submitting thread. `getRejectedEventCount()` counts task/byte saturation and executor
 rejections; submissions ignored after dispatcher closure are excluded.
 
 `EventDispatcher.fireEvent()`, `Session.onEvent()` and `Game.send()` expose
@@ -186,11 +194,14 @@ A zero queue depth does not mean the running callback has completed. See
 ## Network Backpressure
 
 `DefaultToServerHandler` examines both the assigned session queue and the separate
-Game queue. It pauses an enabled `autoRead` flag at 75% pending-task capacity or
-when the Channel becomes unwritable. It probes recovery every 10 ms and resumes
-reads only below 50% capacity with a writable Channel. It preserves an auto-read
-flag that the application disabled before the bridge. Recovery tasks are cancelled
-on handler removal or channel closure.
+Game queue. It pauses an enabled `autoRead` flag when task count or retained bytes
+reach 75% of their budget, or when the Channel becomes unwritable. Low-water
+transition notifications and Channel writability events resume reads below 50% of
+both budgets, with a writable Channel. Recovery signals coalesce into one channel
+task; there is no per-channel polling timer. A registration-time low-water signal
+closes the subscription-versus-drain race. The bridge preserves an auto-read flag
+that the application disabled. Subscriptions and deadlines are removed on recovery,
+handler removal or channel closure.
 
 Already decoded input from the current read batch can still arrive while reads are
 paused. A full queue closes that connection rather than silently dropping input.
@@ -200,7 +211,8 @@ custom positive pause duration; there is no default properties key for that dura
 
 `SocketMessageSender` caps pending application writes before adding I/O tasks:
 `socket.maximum.pending.writes` defaults to 1,024. Every accepted write is scheduled
-on the Channel event loop in admission order. The transport-side buffer limiter
+on the Channel event loop in FIFO batches of at most 64, flushing once per batch.
+Submitting from an I/O callback cannot overtake earlier admitted writes. The transport-side buffer limiter
 also caps encoded pending bytes using `socket.maximum.pending.bytes`, defaulting
 to 1,048,576 bytes. Channel write-buffer water marks remain an additional limit.
 No retry queue is created. A budget violation, unwritable write or transport-write
@@ -211,7 +223,10 @@ while an encoder still uses it. Event sources are independently retained until
 completion. Raw Netty messages transfer ownership even when admission rejects
 them; rejected Event sources remain owned by their caller. Channel closure fails
 queued futures and releases their captured references. `pendingWrites()` exposes
-the admitted write count but is not exported by the HTTP metrics endpoints.
+the admitted write count. `/metrics/flow-control` and Prometheus additionally
+export aggregate socket pending writes/bytes, pause/timeout/rejection counters, and
+live Session/Game snapshots. Timing percentiles are power-of-two microsecond bucket
+upper bounds. The network load driver reports exact observed latency percentiles.
 
 ## Session and Application Lifecycle
 
@@ -256,7 +271,7 @@ reference and retains an additional reference for each accepted delivery.
 | Boundary | Ownership Rule |
 | --- | --- |
 | Session, dispatcher or Game submission | Caller keeps its original reference; each queued owner retains its own |
-| Game broadcast | Game task retains once; each accepted recipient delivery retains separately |
+| Game recipient send | Game task retains its source; one fan-out lease retains the source and cached frames; recipients and socket promises retain that lease |
 | Rejection, cancellation or queued shutdown | Release the abandoned delivery's retained reference |
 | Handler or queued action | Borrow the payload until the synchronous callback returns |
 | Running callback during close | Keep its retained reference until the callback finishes |
@@ -266,7 +281,13 @@ reference and retains an additional reference for each accepted delivery.
 | `MessageBufferEventEncoder` | Copy readable bytes without consuming the borrowed source reference |
 
 Events and payloads are not deep-copied. Do not mutate an event after publication.
-Payloads shared among broadcast recipients should be immutable or read-only.
+Each explicit Game send creates one `SharedNetworkEvent` lease and lazily caches
+one application frame per wire format. TCP and WebSocket JSON share that frame.
+Recipient buffers are retained read-only duplicates with independent indices.
+Failed or cancelled recipients cannot release another recipient's source or frame;
+the lease releases its original source and cached buffers after the last owner exits.
+Serialization failures fail the corresponding write without publishing a partial frame.
+Payloads shared among broadcast recipients must remain immutable or read-only.
 The dispatcher captures the retained native object separately, so cleanup still
 releases that original object if application code later changes the event source.
 
@@ -361,7 +382,9 @@ WebSocket login handlers to send their normal login-failure response.
 
 There is no cache-size eviction, access TTL or absolute TTL for online sessions.
 The registry remains populated until explicit removal, replacement, session closure
-or service shutdown. Applications may install transport idle handlers according to
+or service shutdown. The default graph installs configurable login deadlines and
+read-idle handlers that survive TCP login pipeline replacement. Applications may
+add application heartbeat handling according to
 their own activity policy. The default constructor still schedules cache maintenance
 every minute; the boolean constructor flag disables that scheduler.
 

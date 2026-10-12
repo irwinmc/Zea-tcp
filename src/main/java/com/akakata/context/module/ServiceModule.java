@@ -2,9 +2,12 @@ package com.akakata.context.module;
 
 import com.akakata.app.Game;
 import com.akakata.app.impl.DefaultGame;
-import com.akakata.context.ConfigurationManager;
 import com.akakata.communication.OutboundLimits;
+import com.akakata.context.ConfigurationManager;
+import com.akakata.event.impl.NettyEventDispatcher;
 import com.akakata.security.SimpleCredentialsVerifier;
+import com.akakata.server.ConnectionAdmission;
+import com.akakata.server.TransportLimits;
 import com.akakata.service.LoginService;
 import com.akakata.service.SecurityService;
 import com.akakata.service.SessionService;
@@ -70,6 +73,23 @@ public final class ServiceModule {
     }
 
     /**
+     * Provides one validated socket admission policy for TCP and WebSocket.
+     *
+     * @param configuration the application properties
+     * @return the shared connection owner
+     */
+    @Provides
+    @Singleton
+    static ConnectionAdmission provideConnectionAdmission(ConfigurationManager configuration) {
+        var defaults = TransportLimits.DEFAULT;
+        return new ConnectionAdmission(new TransportLimits(
+                configuration.getInt("socket.maximum.connections", defaults.maximumConnections()),
+                configuration.getInt("socket.login.timeout.millis", defaults.loginTimeoutMillis()),
+                configuration.getInt("socket.read.idle.millis", defaults.readIdleMillis()),
+                configuration.getInt("protocol.maximum.frame.bytes", defaults.maximumFrameBytes())));
+    }
+
+    /**
      * Provides the login service dependency for the application component.
      *
      * @param sessionService the session registry and resource owner
@@ -92,6 +112,7 @@ public final class ServiceModule {
     @Singleton
     static Game provideGame(ConfigurationManager configuration) {
         return new DefaultGame(configuration.getInt("game.queue.capacity",
-                com.akakata.event.impl.NettyEventDispatcher.DEFAULT_QUEUE_CAPACITY));
+                NettyEventDispatcher.DEFAULT_QUEUE_CAPACITY),
+                configuration.getInt("game.queue.bytes", (int) NettyEventDispatcher.DEFAULT_QUEUE_BYTES));
     }
 }

@@ -2,8 +2,8 @@ package com.akakata.handlers;
 
 import com.akakata.app.Game;
 import com.akakata.app.PlayerSession;
-import com.akakata.communication.impl.SocketMessageSender;
 import com.akakata.communication.OutboundLimits;
+import com.akakata.communication.impl.SocketMessageSender;
 import com.akakata.event.Event;
 import com.akakata.event.Events;
 import com.akakata.protocols.Protocol;
@@ -156,6 +156,7 @@ public class LoginHandler extends SimpleChannelInboundHandler<Event> {
                             }
                             protocol.applyProtocol(session, true);
                             game.onLogin(session);
+                            TransportLifecycleHandler.authenticated(channel);
                         }
 
                         LOG.info("Session initialized: sessionId={}", session.getId());

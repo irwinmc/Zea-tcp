@@ -46,7 +46,7 @@ public interface Session {
     /**
      * Stores an attribute value under the supplied key.
      *
-     * @param key key of attribute
+     * @param key   key of attribute
      * @param value value of attribute
      */
     void setAttribute(String key, Object value);

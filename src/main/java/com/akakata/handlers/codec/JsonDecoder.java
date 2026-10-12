@@ -1,16 +1,19 @@
 package com.akakata.handlers.codec;
 
 import com.akakata.event.Event;
+import com.akakata.event.EventResources;
 import com.akakata.event.Events;
-import com.akakata.util.NettyUtils;
+import com.akakata.event.impl.DefaultEvent;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufInputStream;
+import io.netty.channel.ChannelHandler.Sharable;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.handler.codec.CorruptedFrameException;
+import io.netty.handler.codec.MessageToMessageDecoder;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.SerializationFeature;
 import tools.jackson.databind.json.JsonMapper;
-import io.netty.buffer.ByteBuf;
-import io.netty.channel.ChannelHandler.Sharable;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.handler.codec.MessageToMessageDecoder;
 
 import java.io.IOException;
 import java.util.HashMap;
@@ -42,7 +45,7 @@ public class JsonDecoder extends MessageToMessageDecoder<ByteBuf> {
     /**
      * JSON mapper configured for this codec.
      */
-    private final ObjectMapper objectMapper = JsonMapper.builder().disable(SerializationFeature.FAIL_ON_EMPTY_BEANS).build();
+    private final ObjectMapper objectMapper = JsonMapper.builder().disable(SerializationFeature.FAIL_ON_EMPTY_BEANS).enable(tools.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS).build();
 
     /**
      * Parses an opcode and length-prefixed JSON map from a borrowed inbound frame.
@@ -73,12 +76,19 @@ public class JsonDecoder extends MessageToMessageDecoder<ByteBuf> {
      * @throws IOException if JSON deserialization fails
      */
     public Event decode(ChannelHandlerContext ctx, ByteBuf msg) throws IOException {
+        if (msg.readableBytes() < 5) {
+            throw new CorruptedFrameException("Truncated JSON event header");
+        }
         int opcode = msg.readUnsignedByte();
-
-        // Borrow the input slice; MessageToMessageDecoder releases the parent even on parse failure.
-        ByteBuf data = msg.readSlice(msg.readableBytes());
-        HashMap<String, Object> source = objectMapper.readValue(NettyUtils.readString(data), typeRef);
-
-        return Events.event(source, opcode);
+        int length = msg.readInt();
+        if (length <= 0 || length != msg.readableBytes()) {
+            throw new CorruptedFrameException("Invalid JSON payload length");
+        }
+        HashMap<String, Object> source = objectMapper.readValue(
+                (java.io.InputStream) new ByteBufInputStream(msg.readSlice(length)), typeRef);
+        if (source == null) throw new CorruptedFrameException("JSON object required");
+        DefaultEvent event = (DefaultEvent) Events.event(source, opcode);
+        event.setPayloadSize(Math.max(length, EventResources.estimateBytes(source)));
+        return event;
     }
 }

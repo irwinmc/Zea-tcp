@@ -4,9 +4,8 @@ import com.akakata.event.Events;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandler.Sharable;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.handler.codec.CorruptedFrameException;
 import io.netty.handler.codec.MessageToMessageDecoder;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.List;
 
@@ -15,8 +14,8 @@ import java.util.List;
  *
  * <p>The header contains block length, template identifier, schema identifier and
  * version as unsigned 16-bit values. The template identifier supplies the event
- * opcode. Short headers are discarded and oversized declared payloads are truncated
- * to the bytes available in the frame.
+ * opcode. Malformed lengths, unsupported schema versions and opcodes outside the
+ * unsigned byte range fail decoding; no partial payload is published.
  */
 @Sharable
 public class SbeEventDecoder extends MessageToMessageDecoder<ByteBuf> {
@@ -26,11 +25,6 @@ public class SbeEventDecoder extends MessageToMessageDecoder<ByteBuf> {
      */
     public SbeEventDecoder() {
     }
-
-    /**
-     * Logger for component lifecycle and diagnostic messages.
-     */
-    private static final Logger LOG = LoggerFactory.getLogger(SbeEventDecoder.class);
 
     /**
      * Size of the SBE-style message header in bytes.
@@ -53,26 +47,16 @@ public class SbeEventDecoder extends MessageToMessageDecoder<ByteBuf> {
     @Override
     protected void decode(ChannelHandlerContext ctx, ByteBuf msg, List<Object> out) {
         if (msg.readableBytes() < HEADER_SIZE) {
-            LOG.warn("Invalid SBE frame, expected header size {}, actual {}", HEADER_SIZE, msg.readableBytes());
-            return;
+            throw new CorruptedFrameException("Truncated SBE header");
         }
-
         int blockLength = msg.readUnsignedShortLE();
         int templateId = msg.readUnsignedShortLE();
         int schemaId = msg.readUnsignedShortLE();
         int version = msg.readUnsignedShortLE();
-
-        if (schemaId != SCHEMA_ID || version != VERSION) {
-            LOG.debug("Schema/version mismatch. expected {}/{}, actual {}/{}", SCHEMA_ID, VERSION, schemaId, version);
+        if (schemaId != SCHEMA_ID || version != VERSION || templateId > 255
+                || blockLength != msg.readableBytes()) {
+            throw new CorruptedFrameException("Invalid SBE length, opcode, schema or version");
         }
-
-        int available = msg.readableBytes();
-        if (blockLength > available) {
-            LOG.warn("Declared blockLength {} exceeds remaining bytes {}. Truncating.", blockLength, available);
-            blockLength = available;
-        }
-
-        ByteBuf payload = msg.readRetainedSlice(blockLength);
-        out.add(Events.event(payload, templateId & 0xFF));
+        out.add(Events.event(msg.readRetainedSlice(blockLength), templateId));
     }
 }

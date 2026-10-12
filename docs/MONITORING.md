@@ -80,7 +80,8 @@ examples' zero counters reflect an application without added instrumentation.
 
 ## Combined Metrics
 
-`GET /metrics` returns these groups. It does **not** include dispatcher queues.
+`GET /metrics` returns the legacy groups shown below plus a live `flow_control`
+group described in [Flow-Control Metrics](#flow-control-metrics).
 
 ```json
 {
@@ -218,12 +219,42 @@ per-shard depths are read separately, so their sums need not match during concur
 publication. Use `last_update_timestamp` to assess freshness. A growing maximum
 can identify a hot shard; a zero queue does not prove that all handlers have finished.
 
-Game sends provide per-operation `DeliveryReport` admission counts, and
-`SocketMessageSender.pendingWrites()` exposes a connection's pending application
-writes. These are not added to the current HTTP or Prometheus metric schemas.
-Queue rejection counts remain available directly from Netty dispatchers. Monitor
-write failures and connection closure alongside queue depth when diagnosing
-backpressure; a send report is not a client delivery acknowledgment.
+Game sends provide per-operation `DeliveryReport` recipient admission counts.
+A send report remains distinct from successful socket writes or client acknowledgment.
+Live flow-control snapshots supplement the older sampled session queue endpoint.
+
+## Flow-Control Metrics
+
+`GET /metrics/flow-control` returns `session`, `game` and `transport` groups. These
+are live readings independent of `metrics.event.interval.seconds`; the combined
+`/metrics` response includes the same groups under `flow_control`.
+
+Each session shard and the current Game exposes:
+
+| Field | Meaning |
+| --- | --- |
+| `queued` / `capacity` | Pending deliveries excluding the running callback / configured task budget |
+| `pendingBytes` / `byteBudget` | Estimated admitted payload bytes including running work / configured byte budget |
+| `accepted`, `completed`, `cancelled`, `rejected` | Cumulative admission, execution, pre-execution cancellation and saturation outcomes |
+| `waitP95Micros`, `waitP99Micros` | Queue wait percentile bucket upper bounds in microseconds |
+| `executionP95Micros`, `executionP99Micros` | Callback duration percentile bucket upper bounds in microseconds |
+
+Histograms use bounded power-of-two microsecond buckets. Values are approximate
+upper bounds, not exact request latency percentiles; no samples returns zero.
+Completed counts include executed callbacks whose application handler failed.
+Closed-scope submissions are excluded from saturation rejections. Queue bytes
+are conservative storage charges, not exact JVM memory readings.
+
+Transport fields `active_connections`, `paused_channels`, `pending_writes` and
+`pending_socket_bytes` are live gauges. `connection_rejections`, `login_timeouts`,
+`idle_timeouts`, `read_pauses`, `pause_timeouts`, `write_rejections`, `encoded_frames`
+and `encoding_reuses` are cumulative counters. Active connections count admitted
+TCP/WebSocket sockets including unauthenticated clients; HTTP monitoring sockets
+are excluded. Encoded byte gauges remain charged until the write promise settles.
+These counters are instrumented by the default pipelines and require no application
+`ServerMetrics.record*()` calls. They supplement the older explicit traffic counters.
+`game` is null when no context Game is registered. Readings across queues are not
+an atomic process snapshot.
 
 ## Prometheus Output
 
@@ -257,9 +288,14 @@ connections_total 0
 channels_active 3
 ```
 
-The output currently has no dispatcher queue metrics, protocol labels, latency
-histograms or per-session series. Resetting counters can cause decreases; the
-emitted types above reflect the current handler exactly.
+Flow transport fields also appear as `zea_flow_<field>` with their gauge/counter
+types. Executors use `zea_executor_queued_tasks`, `pending_bytes`, `task_capacity`,
+`byte_budget`, `accepted`, `completed`, `cancelled`, `rejected`, `wait_p95_micros`,
+`wait_p99_micros`, `execution_p95_micros` and `execution_p99_micros`, each with the
+`zea_executor_` prefix and labels `scope="session"|"game"` and `shard="<index>"`.
+Admission/execution outcomes are counters; budgets, occupancy and percentile
+readings are gauges. There are no per-player series or exported histogram buckets.
+Legacy counters can decrease when explicitly reset; flow counters are cumulative.
 
 Example Prometheus scrape configuration for a local server:
 
@@ -310,6 +346,7 @@ curl http://localhost:8081/metrics/connections
 curl http://localhost:8081/metrics/traffic
 curl http://localhost:8081/metrics/system
 curl http://localhost:8081/metrics/event-dispatcher
+curl http://localhost:8081/metrics/flow-control
 curl http://localhost:8081/metrics/prometheus
 ```
 

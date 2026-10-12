@@ -4,8 +4,8 @@ import com.akakata.event.Event;
 import com.akakata.event.EventDispatcher;
 import com.akakata.event.NetworkEvent;
 
-import java.util.Set;
 import java.util.Collection;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -119,7 +119,7 @@ public interface Game extends AutoCloseable {
      * Queues an explicit unicast alongside other Game events and broadcasts.
      *
      * @param networkEvent the outbound event borrowed by the delivery
-     * @param recipient the player belonging to this Game
+     * @param recipient    the player belonging to this Game
      * @return the asynchronous recipient admission report
      * @throws IllegalArgumentException if the recipient belongs to another Game
      */
@@ -132,12 +132,12 @@ public interface Game extends AutoCloseable {
      * and completion rules as {@link #sendBroadcast(NetworkEvent)} apply.
      *
      * @param networkEvent the outbound event borrowed by the delivery
-     * @param recipients the selected players, copied before returning
+     * @param recipients   the selected players, copied before returning
      * @return the asynchronous recipient admission report
      * @throws IllegalArgumentException if any recipient belongs to another Game
      */
     CompletableFuture<DeliveryReport> sendToPlayers(NetworkEvent networkEvent,
-                                                   Collection<? extends PlayerSession> recipients);
+                                                    Collection<? extends PlayerSession> recipients);
 
     /**
      * Stops accepting sessions, closes connected sessions and releases the game dispatcher.

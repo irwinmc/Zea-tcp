@@ -17,8 +17,8 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -52,7 +52,12 @@ class ServerContextShutdownTest {
         /**
          * Initialization failure used by this regression fixture.
          */
-        INITIALIZATION_FAILURE
+        INITIALIZATION_FAILURE,
+
+        /**
+         * Invalid Game budget fails after acquiring shared executor ownership.
+         */
+        INVALID_GAME_BUDGET
     }
 
     /**
@@ -142,6 +147,14 @@ class ServerContextShutdownTest {
                     assertThrows(IllegalStateException.class, context::initialize);
                     assertNull(context.getBean(Game.class));
                     assertNull(context.getBean(SessionService.class));
+                } else if (scenario == Scenario.INVALID_GAME_BUDGET) {
+                    context.getConfigManager().getProperties().setProperty("game.queue.capacity", "1");
+                    assertThrows(IllegalArgumentException.class, context::initialize);
+                    assertNull(context.getBean(Game.class));
+                    assertNull(context.getBean(SessionService.class));
+                    assertFalse(com.akakata.event.impl.EventDispatchers.sharedDispatcher().fireEvent(
+                            com.akakata.event.Events.event(null, com.akakata.event.Events.START)));
+                    assertThrows(IllegalStateException.class, context::initialize);
                 } else if (scenario == Scenario.INITIALIZATION_FAILURE) {
                     // A rejected metrics task fails initialization after Game and SessionService exist.
                     context.getConfigManager().getProperties().setProperty("metrics.event.interval.seconds", "1");

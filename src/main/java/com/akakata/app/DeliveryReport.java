@@ -9,7 +9,7 @@ package com.akakata.app;
  *
  * @param accepted the number of recipient queues that accepted the event
  * @param rejected the number of open recipients whose queues rejected the event
- * @param skipped the number of recipients no longer connected to this Game
+ * @param skipped  the number of recipients no longer connected to this Game
  */
 public record DeliveryReport(int accepted, int rejected, int skipped) {
 
@@ -18,7 +18,7 @@ public record DeliveryReport(int accepted, int rejected, int skipped) {
      *
      * @param accepted the accepted recipient count
      * @param rejected the rejected recipient count
-     * @param skipped the skipped recipient count
+     * @param skipped  the skipped recipient count
      * @throws IllegalArgumentException if any count is negative
      */
     public DeliveryReport {

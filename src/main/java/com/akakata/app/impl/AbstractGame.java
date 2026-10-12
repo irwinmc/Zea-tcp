@@ -1,27 +1,22 @@
 package com.akakata.app.impl;
 
-import com.akakata.app.Game;
 import com.akakata.app.DeliveryReport;
+import com.akakata.app.Game;
 import com.akakata.app.PlayerSession;
 import com.akakata.app.Session;
 import com.akakata.event.Event;
 import com.akakata.event.NetworkEvent;
-import com.akakata.event.impl.NettyEventDispatcher;
 import com.akakata.event.impl.EventDispatchers;
+import com.akakata.event.impl.NettyEventDispatcher;
+import com.akakata.event.impl.SharedNetworkEvent;
 import com.akakata.service.IdGeneratorService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Set;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.IdentityHashMap;
-import java.util.Objects;
-import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.RejectedExecutionException;
 
 /**
  * Provides application-wide session membership and ordered game-event processing.
@@ -97,15 +92,26 @@ public abstract class AbstractGame implements Game {
     /**
      * Creates a Game with a configurable bounded business queue.
      *
-     * @param gameName the diagnostic game name
+     * @param gameName      the diagnostic game name
      * @param queueCapacity the pending task capacity, at least 16
      */
     protected AbstractGame(String gameName, int queueCapacity) {
+        this(gameName, queueCapacity, NettyEventDispatcher.DEFAULT_QUEUE_BYTES);
+    }
+
+    /**
+     * Creates a Game with independent count and retained-payload budgets.
+     *
+     * @param gameName      the application Game name
+     * @param queueCapacity maximum pending tasks, at least 16
+     * @param queueBytes    positive payload budget including running work
+     */
+    protected AbstractGame(String gameName, int queueCapacity, long queueBytes) {
         this.id = String.valueOf(ID_GENERATOR.generateFor(AbstractGame.class));
         this.gameName = gameName;
         this.sessions = ConcurrentHashMap.newKeySet();
 
-        this.eventDispatcher = new NettyEventDispatcher(queueCapacity);
+        this.eventDispatcher = new NettyEventDispatcher(queueCapacity, queueBytes);
 
         this.isShuttingDown = false;
 
@@ -314,7 +320,7 @@ public abstract class AbstractGame implements Game {
      */
     @Override
     public CompletableFuture<DeliveryReport> sendToPlayers(NetworkEvent networkEvent,
-                                                          Collection<? extends PlayerSession> recipients) {
+                                                           Collection<? extends PlayerSession> recipients) {
         Set<PlayerSession> seen = Collections.newSetFromMap(new IdentityHashMap<>());
         List<PlayerSession> selected = new ArrayList<>();
         for (PlayerSession recipient : Objects.requireNonNull(recipients, "recipients")) {
@@ -332,7 +338,7 @@ public abstract class AbstractGame implements Game {
     /**
      * Publishes a retained recipient action on the same executor as Game events.
      *
-     * @param event the outbound event
+     * @param event    the outbound event
      * @param selected the explicit recipients, or null for current Game membership
      * @return completion of recipient admission, including scope cancellation
      */
@@ -351,28 +357,33 @@ public abstract class AbstractGame implements Game {
      * Publishes one Game-ordered send, closing recipients that cannot admit an update.
      *
      * @param networkEvent the borrowed outbound event
-     * @param recipients the selected session instances
+     * @param recipients   the selected session instances
      * @return recipient queue admission counts
      */
     private DeliveryReport deliverToSessions(NetworkEvent networkEvent, Collection<PlayerSession> recipients) {
         int accepted = 0;
         int rejected = 0;
         int skipped = 0;
-        for (PlayerSession session : recipients) {
-            if (isShuttingDown || session.getGame() != this || !session.isConnected() || session.isShuttingDown()) {
-                skipped++;
-            } else if (session.onEvent(networkEvent)) {
-                accepted++;
-            } else {
-                rejected++;
-                try {
-                    session.close();
-                } catch (Exception failure) {
-                    LOG.error("Failed to close overloaded recipient {}", session.getId(), failure);
+        SharedNetworkEvent shared = new SharedNetworkEvent(networkEvent);
+        try {
+            for (PlayerSession session : recipients) {
+                if (isShuttingDown || session.getGame() != this || !session.isConnected() || session.isShuttingDown()) {
+                    skipped++;
+                } else if (session.onEvent(shared)) {
+                    accepted++;
+                } else {
+                    rejected++;
+                    try {
+                        session.close();
+                    } catch (Exception failure) {
+                        LOG.error("Failed to close overloaded recipient {}", session.getId(), failure);
+                    }
                 }
             }
+            return new DeliveryReport(accepted, rejected, skipped);
+        } finally {
+            shared.releaseOwner();
         }
-        return new DeliveryReport(accepted, rejected, skipped);
     }
 
     // ==================== 生命周期 ====================

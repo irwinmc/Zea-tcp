@@ -19,7 +19,9 @@ checkout. Dependency versions below come from [pom.xml](pom.xml).
 - One application Game with a serial queue for shared events and broadcasts.
 - Session-targeted delivery that isolates player handlers on shared shards.
 - Explicit unicast, selected-recipient sends and broadcasts with admission reports.
-- Bounded business queues, socket write budgets and automatic read-pressure control.
+- Business task/byte budgets, bounded batched socket writes and event-driven read recovery.
+- Login deadlines, read-idle expiry and shared TCP/WebSocket socket admission.
+- Shared broadcast encoding and live Session/Game flow metrics with timing percentiles.
 - Configurable session admission that preserves existing players when full.
 - Coordinated session, game, cache, dispatcher and network shutdown.
 - Dagger compile-time dependency injection and Caffeine session caching.
@@ -155,10 +157,29 @@ tcp.nodelay=true
 reconnect.delay=300000
 protocol.type=JSON
 
+# Session Admission
 session.maximum=10000
+
+# Session Event Dispatch
+session.dispatcher.shards=2
+session.queue.capacity=32768
+session.queue.bytes=67108864
+
+# Game Event Dispatch
 game.queue.capacity=32768
+game.queue.bytes=67108864
+
+# Socket Connections and Timeouts
+socket.maximum.connections=20000
+socket.login.timeout.millis=30000
+socket.read.idle.millis=120000
+
+# Socket Outbound Backpressure
 socket.maximum.pending.writes=1024
 socket.maximum.pending.bytes=1048576
+
+# Protocol Frame Limits
+protocol.maximum.frame.bytes=65535
 ```
 
 `reconnect.delay` is present in the resource but is currently unused. Queue sampling
@@ -172,6 +193,12 @@ the WebSocket JSON codec, and HTTP routing is independent of this property.
 
 See the [configuration and wire-format guide](docs/CONFIGURATION.md) for every
 consumed property, loading rules, limits and login formats.
+
+For applications using `IdGeneratorService.generate()`, the optional JVM property
+`-DZeaNode=game-1` supplies an identifier prefix. Its key is declared by
+`IdGeneratorService.NODE_NAME`. Default Session and Game identifiers use
+`generateFor()` and retain their class-name prefixes; see
+[identifier node names](docs/CONFIGURATION.md#identifier-node-names).
 
 ## Lifecycle and Components
 
@@ -230,7 +257,10 @@ session handler forwards it to the Game queue as a `PlayerMessageEvent`, preserv
 the payload and authenticated sender identity. No automatic echo or broadcast occurs.
 Business handlers explicitly create `NETWORK_MESSAGE` (`0x34`) events for replies.
 The WebSocket decoder translates incoming `0x34` into `0x33`; TCP JSON and SBE
-decoders preserve the received opcode.
+decoders preserve the received opcode, and the authenticated bridge rejects internal
+server-only opcodes including TCP `0x34`. Inbound JSON lengths must exactly match
+the remaining object bytes; trailing values are rejected. SBE schema/version must
+both equal 1, template IDs must fit one byte and block length must match exactly.
 
 For an explicit reply to the authenticated sender, register a Game handler:
 
@@ -275,12 +305,17 @@ additional business executor for `send()`, `sendToPlayer()`, `sendToPlayers()` a
 `sendBroadcast()`. Explicit sends first run in the Game queue, then enter each
 recipient's session queue. Socket writes enter their I/O loop in admission order.
 Selected-recipient collections are snapshotted and deduplicated by session identity.
-Network I/O uses separate Netty event-loop groups.
+Network I/O uses separate Netty event-loop groups. One Game send lazily encodes
+once per wire format; TCP and WebSocket JSON recipients share the application
+frame. Each recipient receives an independently indexed read-only duplicate.
+Socket writes are consumed in FIFO batches of at most 64, with one flush per batch.
 
 Callbacks run synchronously on their business executor. Keep them short; move
 blocking work elsewhere and submit its completion back to the owning queue.
-There is no automatic callback timeout. Queues are bounded to 32,768 pending tasks
-per executor by default. Saturation rejects submissions without running callbacks
+There is no automatic callback timeout. Each executor defaults to 32,768 pending
+tasks and 64 MiB of estimated payload storage, including running work. Session
+shards and the Game have independently configurable budgets. Saturation rejects
+submissions without running callbacks
 on the publishing thread. `EventDispatcher.fireEvent()`, `Session.onEvent()`
 and `Game.send()` return `true` when accepted and `false` when full or closed;
 `PlayerSession.sendToGame()` forwards the Game's admission result. These methods
@@ -292,8 +327,10 @@ recipient is closed so later updates cannot silently follow a missing update.
 Session state belongs to its session executor; application-wide state belongs to
 the Game executor. Never block either queue waiting for work queued to itself.
 
-Network input pauses when a business queue reaches 75% capacity or the Channel
-becomes unwritable. Reads resume below 50% capacity when the Channel is writable.
+Network input pauses when either business count or byte usage reaches 75% of its
+budget, or the Channel becomes unwritable. Queue low-water notifications and Channel
+writability changes resume reads below 50% of both budgets; there is no per-channel
+recovery polling.
 A full input queue or a pause lasting five seconds closes the affected connection.
 Socket sends are bounded before I/O scheduling and again by encoded bytes; exceeding
 write limits or writing to an unwritable Channel fails the write and closes it.
@@ -302,7 +339,11 @@ There is no unbounded overflow queue or automatic retry.
 `session.maximum` controls registered credential slots, including pending logins.
 Full capacity rejects new credentials; reconnecting an existing credential reuses
 its slot. There is no cache-size eviction or cache TTL for online sessions. Explicit
-closure and application-configured transport idle handling determine their lifetime.
+closure and configured read-idle expiry determine their lifetime. TCP/WebSocket
+connections, including unauthenticated sockets, share `socket.maximum.connections`.
+Authentication must finish within `socket.login.timeout.millis`; read inactivity
+expires after `socket.read.idle.millis` (zero disables idle expiry). These guards
+survive the TCP login pipeline transition.
 See [flow control and ownership](docs/EVENT_LOOP.md) for failure and resource rules.
 
 For native `ByteBuf` or `MessageBuffer` payloads, asynchronous dispatch retains its
@@ -323,6 +364,7 @@ curl http://localhost:8081/metrics/connections
 curl http://localhost:8081/metrics/traffic
 curl http://localhost:8081/metrics/system
 curl http://localhost:8081/metrics/event-dispatcher
+curl http://localhost:8081/metrics/flow-control
 curl http://localhost:8081/metrics/prometheus
 ```
 
@@ -330,8 +372,11 @@ curl http://localhost:8081/metrics/prometheus
 The current default handlers do not call these methods, so applications must
 instrument their own paths to populate the counters. Heap, CPU, uptime and channel
 group readings are supplied directly; queue depths are sampled separately.
-`/metrics` excludes dispatcher queues, and Prometheus output currently excludes
-them too.
+`/metrics/flow-control` and the combined `/metrics` response additionally expose
+live Session/Game task and byte budgets, rejection/cancellation counters, queue-wait
+and callback-duration P95/P99 bucket bounds, socket gauges and lifetime counters.
+Prometheus includes these flow series. The older `/metrics/event-dispatcher` endpoint
+continues to return periodically sampled physical session queues.
 
 See the [endpoint reference](docs/MONITORING.md) for exact fields and health checks,
 and the [metrics architecture](docs/METRICS_ARCHITECTURE.md) for integration.
@@ -406,6 +451,30 @@ The helper uses four producers, counts accepted and rejected events separately,
 and waits for a queue barrier before reporting completed throughput and mean
 latency. It is a local diagnostic rather than a capacity guarantee or a tail-latency
 benchmark. `mvn test-compile exec:java` defaults to this helper.
+
+### Real TCP and WebSocket Load Tests
+
+```bash
+java -cp "target/test-classes:target/classes:target/dependency/*" \
+  com.akakata.benchmark.NetworkLoadTest \
+  --transport=tcp --clients=16 --messages=1000 --window=16 --payload-bytes=128
+java -cp "target/test-classes:target/classes:target/dependency/*" \
+  com.akakata.benchmark.NetworkLoadTest \
+  --transport=websocket --clients=8 --messages=500 --window=64 \
+  --payload-bytes=8192 --slow-read-millis=20
+```
+
+The driver starts the production context on an ephemeral port, authenticates real
+clients, installs an explicit ordered echo Game handler and verifies reply sequence.
+It reports completed/failed requests, throughput and exact observed P50/P95/P99.
+Use `--business-micros=100` to introduce a controlled callback delay,
+`--socket-bytes=16384` to constrain encoded output, and `--timeout-seconds=60`
+to bound the whole run. Client read delay is included in measured latency.
+Each invocation runs one transport and closes its owned context; use separate JVMs
+for repeated or multi-process runs. External-server mode uses `--host=... --port=...`
+and requires the same login format and sequence-preserving echo handler.
+These synthetic workloads provide evidence for tuning; production capacity still
+requires representative game logic and deployment-level multi-process tests.
 
 ## Documentation
 

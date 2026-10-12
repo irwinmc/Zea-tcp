@@ -1,7 +1,10 @@
 package com.akakata.server.initializer;
 
 import com.akakata.context.AppContext;
+import com.akakata.handlers.TransportLifecycleHandler;
 import com.akakata.handlers.WebSocketLoginHandler;
+import com.akakata.server.ConnectionAdmission;
+import com.akakata.server.TransportLimits;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.socket.SocketChannel;
@@ -30,12 +33,29 @@ public class WebSocketServerChannelInitializer extends ChannelInitializer<Socket
     private final WebSocketLoginHandler webSocketLoginHandler;
 
     /**
+     * Shared socket policy covering upgrade and authentication.
+     */
+    private final ConnectionAdmission admission;
+
+    /**
      * Creates a web socket server channel initializer instance with the supplied dependencies.
      *
      * @param webSocketLoginHandler the web socket login handler
      */
     @Inject
     public WebSocketServerChannelInitializer(WebSocketLoginHandler webSocketLoginHandler) {
+        this(webSocketLoginHandler, new ConnectionAdmission(TransportLimits.DEFAULT));
+    }
+
+    /**
+     * Creates WebSocket upgrade handling with a shared socket lifetime policy.
+     *
+     * @param webSocketLoginHandler the authentication handler
+     * @param admission             the TCP/WebSocket admission owner
+     */
+    public WebSocketServerChannelInitializer(WebSocketLoginHandler webSocketLoginHandler,
+                                             ConnectionAdmission admission) {
+        this.admission = admission;
         this.webSocketLoginHandler = webSocketLoginHandler;
     }
 
@@ -46,11 +66,14 @@ public class WebSocketServerChannelInitializer extends ChannelInitializer<Socket
     public void initChannel(SocketChannel ch) throws Exception {
         ChannelPipeline pipeline = ch.pipeline();
 
+        TransportLifecycleHandler.install(pipeline, admission);
         pipeline.addLast(new HttpServerCodec());
         pipeline.addLast(new HttpObjectAggregator(65536));
-        // A zero allocation limit keeps the existing decompression behavior.
-        pipeline.addLast(new WebSocketServerCompressionHandler(0));
-        pipeline.addLast(new WebSocketServerProtocolHandler(WEBSOCKET_PATH, null, true));
+        int maximum = admission.limits().maximumFrameBytes();
+        pipeline.addLast(new WebSocketServerCompressionHandler(maximum));
+        pipeline.addLast(new WebSocketServerProtocolHandler(
+                io.netty.handler.codec.http.websocketx.WebSocketServerProtocolConfig.newBuilder()
+                        .websocketPath(WEBSOCKET_PATH).allowExtensions(true).maxFramePayloadLength(maximum).build()));
         pipeline.addLast(AppContext.WEB_SOCKET_LOGIN_HANDLER, webSocketLoginHandler);
     }
 }

@@ -48,14 +48,14 @@ public class SbeProtocol extends AbstractNettyProtocol {
      * All dependencies are injected via Dagger 2 and configured in {@code ProtocolModule}.
      * </p>
      *
-     * @param sbeEventDecoder decodes incoming SBE binary messages to Event objects
-     * @param sbeEventEncoder encodes outgoing Event objects to SBE binary format
+     * @param sbeEventDecoder      decodes incoming SBE binary messages to Event objects
+     * @param sbeEventEncoder      encodes outgoing Event objects to SBE binary format
      * @param lengthFieldPrepender prepends 2-byte length header to outgoing messages
      */
     @Inject
     public SbeProtocol(SbeEventDecoder sbeEventDecoder,
-                      SbeEventEncoder sbeEventEncoder,
-                      LengthFieldPrepender lengthFieldPrepender) {
+                       SbeEventEncoder sbeEventEncoder,
+                       LengthFieldPrepender lengthFieldPrepender) {
         super("SBE_PROTOCOL");
         this.sbeEventDecoder = sbeEventDecoder;
         this.sbeEventEncoder = sbeEventEncoder;
@@ -70,7 +70,7 @@ public class SbeProtocol extends AbstractNettyProtocol {
         LOG.debug("Applying SBE protocol on session {}", playerSession);
 
         ChannelPipeline pipeline = NettyUtils.getPipeLineOfConnection(playerSession);
-        pipeline.addLast("lengthDecoder", createLengthBasedFrameDecoder());
+        pipeline.addLast("lengthDecoder", createLengthBasedFrameDecoder(pipeline));
         pipeline.addLast("sbeDecoder", sbeEventDecoder);
         pipeline.addLast("eventHandler", new DefaultToServerHandler(playerSession));
         pipeline.addLast("lengthFieldPrepender", lengthFieldPrepender);

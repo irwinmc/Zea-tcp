@@ -32,7 +32,7 @@ public class LoginService {
      * Returns an authenticated player session and its encrypted token.
      *
      * @param session the authenticated or targeted session
-     * @param token the encrypted credential token
+     * @param token   the encrypted credential token
      */
     public record LoginResult(PlayerSession session, String token) {
 
@@ -40,7 +40,7 @@ public class LoginService {
          * Validates that the authenticated session and token are both nonnull.
          *
          * @param session the session associated with the operation
-         * @param token the encrypted login token
+         * @param token   the encrypted login token
          * @throws NullPointerException if the session or token is null
          */
         public LoginResult {
@@ -62,7 +62,7 @@ public class LoginService {
     /**
      * Creates the authentication coordinator using the session and token services.
      *
-     * @param sessionService the session registry and resource owner
+     * @param sessionService  the session registry and resource owner
      * @param securityService the token generation and verification service
      */
     @Inject
@@ -80,7 +80,7 @@ public class LoginService {
      * Full registry capacity rejects new credentials without removing an existing player.
      *
      * @param buffer the source native buffer
-     * @param game the associated game
+     * @param game   the associated game
      * @return the authenticated session and token, or {@code null} if login fails
      */
     public LoginResult login(ByteBuf buffer, Game game) {
@@ -164,7 +164,7 @@ public class LoginService {
      * session on failure.
      *
      * @param credentials the verified credential identity
-     * @param game the associated game
+     * @param game        the associated game
      * @return the new session, or {@code null} if creation fails
      */
     private PlayerSession createSession(Credentials credentials, Game game) {

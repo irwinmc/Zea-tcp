@@ -1,6 +1,7 @@
 package com.akakata.event;
 
 import com.akakata.app.Session;
+import com.akakata.event.impl.NettyEventDispatcher;
 
 import java.util.List;
 
@@ -37,7 +38,7 @@ import java.util.List;
  * @author Kelvin
  * @see Event
  * @see EventHandler
- * @see com.akakata.event.impl.NettyEventDispatcher
+ * @see NettyEventDispatcher
  * @see com.akakata.event.impl.ShardedEventDispatcher
  */
 public interface EventDispatcher {

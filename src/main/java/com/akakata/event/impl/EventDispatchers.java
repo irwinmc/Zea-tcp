@@ -10,7 +10,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * Provides process-wide shared dispatchers, dedicated dispatchers and ownership-aware cleanup.
  *
- * <p>Shared dispatchers are created on first class initialization and are shut down
+ * <p>Shared dispatchers are created on first use and are shut down
  * once for the process. Closing an individual session removes only its handlers
  * from a shared dispatcher or shared shard.
  *
@@ -26,9 +26,9 @@ public final class EventDispatchers {
     // ==================== 静态字段 ====================
 
     /**
-     * Process-wide sharded dispatcher initialized when this class is first used.
+     * Process-wide sharded dispatcher created on configuration or the first shared access.
      */
-    private static final ShardedEventDispatcher SHARED_DISPATCHER = createSharedDispatcher();
+    private static volatile ShardedEventDispatcher shared;
 
     /**
      * Atomic guard ensuring shared-dispatcher shutdown runs once.
@@ -62,6 +62,40 @@ public final class EventDispatchers {
         return dispatcher;
     }
 
+    /**
+     * Initializes process-wide session budgets before the first session is created.
+     *
+     * <p>An existing group cannot be resized; conflicting configurations fail rather
+     * than silently changing live session ordering or resource ownership.
+     *
+     * @param shards positive fixed executor count, rounded up to a power of two
+     * @param capacity pending tasks per executor, at least 16
+     * @param bytes positive payload budget per executor
+     * @throws IllegalArgumentException if a count or byte budget is invalid
+     * @throws IllegalStateException if the live group has different budgets or is closed
+     */
+    public static synchronized void configure(int shards, int capacity, long bytes) {
+        if (shards <= 0 || shards > (1 << 30) || capacity < 16 || bytes <= 0)
+            throw new IllegalArgumentException("Invalid shared dispatcher budgets");
+        if (SHARED_CLOSED.get()) throw new IllegalStateException("Shared dispatchers have been closed");
+        int count = shards > 0 && Integer.bitCount(shards) == 1 ? shards : Integer.highestOneBit(shards - 1) << 1;
+        if (shared != null) {
+            var existing = shared.snapshots().getFirst();
+            if (shared.shardCount() != count || existing.capacity() != capacity || existing.byteBudget() != bytes)
+                throw new IllegalStateException("Shared dispatcher configuration already fixed");
+        } else shared = new ShardedEventDispatcher(shards, capacity, bytes);
+    }
+
+    /**
+     * Returns the lazily created process owner without replacing terminated resources.
+     *
+     * @return the shared session executor group
+     */
+    public static synchronized ShardedEventDispatcher sharedGroup() {
+        if (shared == null) shared = createSharedDispatcher();
+        return shared;
+    }
+
     // ==================== 获取调度器方法 ====================
 
     /**
@@ -70,7 +104,7 @@ public final class EventDispatchers {
      * @return the shared dispatcher
      */
     public static EventDispatcher sharedDispatcher() {
-        return SHARED_DISPATCHER;
+        return sharedGroup();
     }
 
     /**
@@ -80,7 +114,7 @@ public final class EventDispatchers {
      * @return the shard selected for the session
      */
     public static EventDispatcher getShardForSession(Session session) {
-        return SHARED_DISPATCHER.getShardForSession(session);
+        return sharedGroup().getShardForSession(session);
     }
 
     /**
@@ -109,7 +143,7 @@ public final class EventDispatchers {
             return;
         }
 
-        if (dispatcher == SHARED_DISPATCHER || SHARED_DISPATCHER.containsShard(dispatcher)
+        if (dispatcher == shared || (shared != null && shared.containsShard(dispatcher))
                 || (dispatcher instanceof NettyEventDispatcher netty && netty.borrowsExecutor())) {
             // 共享调度器及其分片：只移除该 session 的 handlers
             dispatcher.removeHandlersForSession(session);
@@ -127,8 +161,8 @@ public final class EventDispatchers {
     public static void shutdownSharedDispatcher() {
         if (SHARED_CLOSED.compareAndSet(false, true)) {
             LOG.info("Shutting down shared ShardedEventDispatcher with {} shards",
-                    SHARED_DISPATCHER.shardCount());
-            SHARED_DISPATCHER.close();
+                    sharedGroup().shardCount());
+            sharedGroup().close();
         }
     }
 
@@ -140,7 +174,7 @@ public final class EventDispatchers {
      * @return the approximate total queue depth
      */
     public static int sharedQueueSize() {
-        return SHARED_DISPATCHER.aggregateQueueSize();
+        return sharedGroup().aggregateQueueSize();
     }
 
     /**
@@ -149,7 +183,7 @@ public final class EventDispatchers {
      * @return the shared shard count
      */
     public static int sharedShardCount() {
-        return SHARED_DISPATCHER.shardCount();
+        return sharedGroup().shardCount();
     }
 
     /**
@@ -158,6 +192,6 @@ public final class EventDispatchers {
      * @return a new array of approximate per-shard queue depths
      */
     public static int[] sharedShardQueueSizes() {
-        return SHARED_DISPATCHER.shardQueueSizes();
+        return sharedGroup().shardQueueSizes();
     }
 }

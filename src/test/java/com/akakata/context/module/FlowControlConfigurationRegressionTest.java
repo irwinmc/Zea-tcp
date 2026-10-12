@@ -31,6 +31,9 @@ class FlowControlConfigurationRegressionTest {
         try (DefaultGame game = (DefaultGame) ServiceModule.provideGame(configuration)) {
             assertEquals(2, sessions.maximumSessions());
             assertEquals(16, game.getEventDispatcher().getQueueCapacity());
+            assertEquals(256, game.getEventDispatcher().getQueueBytes());
+            assertEquals(new com.akakata.server.TransportLimits(4, 100, 500, 1024),
+                    ServiceModule.provideConnectionAdmission(configuration).limits());
             assertEquals(new OutboundLimits(3, 128), ServiceModule.provideOutboundLimits(configuration));
         } finally {
             sessions.close();

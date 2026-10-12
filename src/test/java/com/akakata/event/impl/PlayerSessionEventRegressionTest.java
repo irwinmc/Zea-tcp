@@ -100,7 +100,7 @@ class PlayerSessionEventRegressionTest {
     }
 
     /**
-     * Verifies the regression scenario: broadcast delivers original event once per player.
+     * Verifies the regression scenario: broadcast preserves original metadata once per player.
      *
      * @throws InterruptedException if the operation is interrupted
      */
@@ -111,10 +111,13 @@ class PlayerSessionEventRegressionTest {
         game.sendBroadcast(event);
         drain(first.getEventDispatcher());
 
-        assertEquals(List.of(event), firstSender.messages);
-        assertEquals(List.of(event), secondSender.messages);
-        assertSame(event, firstSender.messages.getFirst());
-        assertSame(event, secondSender.messages.getFirst());
+        assertEquals(1, firstSender.messages.size());
+        assertEquals(1, secondSender.messages.size());
+        Event delivered = (Event) firstSender.messages.getFirst();
+        assertSame(event.getSource(), delivered.getSource());
+        assertEquals(event.getTimeStamp(), delivered.getTimeStamp());
+        assertEquals(event.getType(), delivered.getType());
+        assertSame(delivered, secondSender.messages.getFirst());
     }
 
     /**

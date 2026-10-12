@@ -42,6 +42,41 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
     public static final int DEFAULT_QUEUE_CAPACITY = 32_768;
 
     /**
+     * Default retained payload budget per business executor, including running work.
+     */
+    public static final long DEFAULT_QUEUE_BYTES = 64L * 1024 * 1024;
+
+    /**
+     * Maximum admitted payload storage; guarded counters include running callbacks.
+     */
+    private final long queueBytes;
+
+    /**
+     * Admitted payload charge released only after native cleanup.
+     */
+    private long pendingBytes;
+
+    /**
+     * Cumulative admitted, completed and cancelled delivery counts.
+     */
+    private long acceptedEvents, completedEvents, cancelledEvents;
+
+    /**
+     * Logarithmic microsecond buckets for queue wait and callback duration.
+     */
+    private final long[][] timings = new long[2][64];
+
+    /**
+     * Nonblocking subscribers interested in low-water recovery.
+     */
+    private final Set<Runnable> drainListeners = new LinkedHashSet<>();
+
+    /**
+     * Last low-water state used to emit recovery transitions once.
+     */
+    private boolean drainReady = true;
+
+    /**
      * Logger for failures in application callbacks.
      */
     private static final Logger LOG = LoggerFactory.getLogger(NettyEventDispatcher.class);
@@ -120,6 +155,19 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
      * @throws IllegalArgumentException if the capacity is less than 16
      */
     public NettyEventDispatcher(int queueCapacity) {
+        this(queueCapacity, DEFAULT_QUEUE_BYTES);
+    }
+
+    /**
+     * Creates an ordered executor bounded by task count and retained payload bytes.
+     *
+     * @param queueCapacity maximum pending tasks, at least 16
+     * @param queueBytes positive payload storage budget including running work
+     * @throws IllegalArgumentException if either budget is invalid
+     */
+    public NettyEventDispatcher(int queueCapacity, long queueBytes) {
+        if (queueBytes <= 0) throw new IllegalArgumentException("Positive payload budget required");
+        this.queueBytes = queueBytes;
         if (queueCapacity < 16) {
             throw new IllegalArgumentException("Queue capacity must be at least 16");
         }
@@ -137,12 +185,24 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
     }
 
     /**
+     * Creates a borrowed scope with the default retained-payload budget.
+     *
+     * @param executor the fixed business executor
+     * @param queueCapacity the owner's pending task budget
+     */
+    NettyEventDispatcher(EventExecutor executor, int queueCapacity) {
+        this(executor, queueCapacity, DEFAULT_QUEUE_BYTES);
+    }
+
+    /**
      * Creates an isolated registration scope borrowing an ordered executor.
      *
      * @param executor      the fixed business executor
      * @param queueCapacity the owner's maximum pending tasks per executor
+     * @param queueBytes the positive payload budget for this scope
      */
-    NettyEventDispatcher(EventExecutor executor, int queueCapacity) {
+    NettyEventDispatcher(EventExecutor executor, int queueCapacity, long queueBytes) {
+        this.queueBytes = queueBytes;
         this.executor = Objects.requireNonNull(executor, "executor");
         this.queueCapacity = queueCapacity;
         this.ownedGroup = null;
@@ -361,17 +421,29 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
         if (closed || (session != null && session.isShuttingDown())) {
             return false;
         }
-        Delivery delivery = new Delivery(event, session, action, EventResources.retainPayload(event), completion);
+        long bytes = event.getPayloadSize();
+        if (bytes < 0 || bytes > queueBytes - pendingBytes || queued >= queueCapacity) {
+            rejectedEvents++;
+            return false;
+        }
+        Delivery delivery = new Delivery(event, session, action, EventResources.retainPayload(event), completion, bytes);
         deliveries.add(delivery);
         queued++;
+        pendingBytes += bytes;
+        acceptedEvents++;
+        drainReady = belowLowWater();
         try {
             executor.execute(delivery);
             return true;
         } catch (RejectedExecutionException rejected) {
             rejectedEvents++;
+            acceptedEvents--;
+            delivery.admitted = false;
             delivery.cancel();
             return false;
         } catch (Throwable failure) {
+            acceptedEvents--;
+            delivery.admitted = false;
             delivery.cancel();
             throw failure;
         }
@@ -445,10 +517,12 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
         }
         try {
             pending.forEach(Delivery::cancel);
+            signalDrain();
         } finally {
             if (ownedGroup != null) {
                 ownedGroup.shutdownGracefully(0, 5, TimeUnit.SECONDS);
             } else {
+                signalDrain();
                 completeBorrowedClose();
             }
         }
@@ -504,6 +578,110 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
      */
     public synchronized long getRejectedEventCount() {
         return rejectedEvents;
+    }
+
+    /**
+     * Returns retained payload storage, including the running callback.
+     *
+     * @return the estimated admitted payload bytes
+     */
+    public synchronized long getPendingBytes() { return pendingBytes; }
+
+    /**
+     * Returns the retained payload admission budget.
+     *
+     * @return the maximum admitted payload bytes
+     */
+    public long getQueueBytes() { return queueBytes; }
+
+    /**
+     * Subscribes to low-water transitions without polling or changing task ordering.
+     *
+     * <p>The callback must be nonblocking. It may run on an admitting or business
+     * thread. An immediate notification closes the registration-versus-drain race.
+     * Closing the returned registration removes it idempotently.
+     *
+     * @param listener the nonblocking recovery signal
+     * @return a removable registration
+     */
+    public AutoCloseable addDrainListener(Runnable listener) {
+        Objects.requireNonNull(listener, "listener");
+        boolean ready;
+        synchronized (this) {
+            if (!closed) drainListeners.add(listener);
+            ready = belowLowWater() || closed;
+        }
+        if (ready) listener.run();
+        return () -> { synchronized (NettyEventDispatcher.this) { drainListeners.remove(listener); } };
+    }
+
+    /**
+     * Tests count and byte low-water thresholds under the admission monitor.
+     *
+     * @return whether both budgets are below half their configured capacity
+     */
+    private boolean belowLowWater() {
+        return queued < queueCapacity / 2 && pendingBytes < Math.max(1, queueBytes / 2);
+    }
+
+    /**
+     * Emits low-water transitions outside the monitor; listener failures remain isolated.
+     */
+    private void signalDrain() {
+        List<Runnable> listeners = List.of();
+        synchronized (this) {
+            boolean ready = belowLowWater() || closed;
+            if (ready && !drainReady) listeners = List.copyOf(drainListeners);
+            drainReady = ready;
+            if (closed) drainListeners.clear();
+        }
+        for (Runnable listener : listeners) {
+            try { listener.run(); } catch (RuntimeException failure) { LOG.warn("Drain listener failed", failure); }
+        }
+    }
+
+    /**
+     * Captures executor flow-control counters and bounded duration histograms.
+     *
+     * @return an immutable metrics snapshot; percentile values are bucket upper bounds
+     */
+    public synchronized DispatcherSnapshot snapshot() {
+        return new DispatcherSnapshot(queued, pendingBytes, queueCapacity, queueBytes,
+                acceptedEvents, completedEvents, cancelledEvents, rejectedEvents,
+                percentile(timings[0], 95), percentile(timings[0], 99),
+                percentile(timings[1], 95), percentile(timings[1], 99));
+    }
+
+    /**
+     * Finds an approximate percentile using power-of-two microsecond buckets.
+     *
+     * @param buckets the cumulative timing histogram
+     * @param percentile the requested integer percentile
+     * @return the bucket upper bound in microseconds, or zero without observations
+     */
+    private static long percentile(long[] buckets, int percentile) {
+        long total = 0;
+        for (long count : buckets) total += count;
+        if (total == 0) return 0;
+        long target = Math.max(1, total - total * (100 - percentile) / 100);
+        long count = 0;
+        for (int i = 0; i < buckets.length; i++) {
+            count += buckets[i];
+            if (count >= target) return i >= 62 ? Long.MAX_VALUE : 1L << i;
+        }
+        return 0;
+    }
+
+    /**
+     * Records elapsed time in a fixed-size microsecond histogram under the monitor.
+     *
+     * @param histogram the wait or execution histogram index
+     * @param nanos the nonnegative elapsed time
+     */
+    private void recordTiming(int histogram, long nanos) {
+        long micros = Math.max(1, TimeUnit.NANOSECONDS.toMicros(nanos));
+        int bucket = 64 - Long.numberOfLeadingZeros(micros - 1);
+        timings[histogram][bucket]++;
     }
 
     /**
@@ -570,6 +748,21 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
         private final CompletableFuture<Void> completion;
 
         /**
+         * Captured payload charge and admission timestamp.
+         */
+        private final long bytes, submittedNanos = System.nanoTime();
+
+        /**
+         * Execution start for callback duration sampling.
+         */
+        private long startedNanos;
+
+        /**
+         * Whether the underlying executor accepted this delivery.
+         */
+        private boolean admitted = true;
+
+        /**
          * Captures one accepted task and its retained payload.
          *
          * @param event   the event to deliver
@@ -577,14 +770,16 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
          * @param action  the optional queued action
          * @param payload the retained native reference
          * @param completion the optional action completion
+         * @param bytes the captured payload charge
          */
         private Delivery(Event event, Session session, Consumer<Event> action, Object payload,
-                         CompletableFuture<Void> completion) {
+                         CompletableFuture<Void> completion, long bytes) {
             this.event = event;
             this.session = session;
             this.action = action;
             this.payload = payload;
             this.completion = completion;
+            this.bytes = bytes;
         }
 
         /**
@@ -601,11 +796,14 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
             try {
                 synchronized (NettyEventDispatcher.this) {
                     queued--;
+                    startedNanos = System.nanoTime();
+                    recordTiming(0, startedNanos - submittedNanos);
                     if (closed || (session != null && session.isShuttingDown())) {
                         outcome = new RejectedExecutionException("Delivery scope closed before execution");
                         return;
                     }
                 }
+                signalDrain();
                 if (action != null) {
                     action.accept(event);
                 } else {
@@ -683,7 +881,16 @@ public class NettyEventDispatcher implements EventDispatcher, AutoCloseable {
                         queued--;
                     }
                     deliveries.remove(this);
+                    pendingBytes -= bytes;
+                    if (admitted) {
+                        if (cancelled) cancelledEvents++;
+                        else {
+                            completedEvents++;
+                            recordTiming(1, System.nanoTime() - startedNanos);
+                        }
+                    }
                 }
+                signalDrain();
                 completeBorrowedClose();
             }
         }

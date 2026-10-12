@@ -1,6 +1,6 @@
 # Monitoring Endpoints
 
-Zea TCP Transport 0.8.0 serves health and metrics endpoints through its HTTP
+Zea TCP Transport 0.8.1 serves health and metrics endpoints through its HTTP
 listener, whose bundled port is 8081. Enable `server.http.enabled` and use the
 configured `http.port`. The HTTP-only repository example uses port 18081 instead.
 See the [configuration guide](CONFIGURATION.md).

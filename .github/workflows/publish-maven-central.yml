@@ -29,9 +29,12 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: maven
-          server-id: central
+          server-id: central-publisher
           server-username: MAVEN_CENTRAL_USERNAME
           server-password: MAVEN_CENTRAL_PASSWORD
+
+      - name: Show the pinned Maven runtime
+        run: ./mvnw --version
 
       - name: Validate the release version
         env:
@@ -72,7 +75,10 @@ jobs:
           done
 
       - name: Run tests and validate English JavaDoc
-        run: mvn --batch-mode --no-transfer-progress clean verify javadoc:javadoc javadoc:test-javadoc
+        run: ./mvnw --batch-mode --no-transfer-progress clean verify javadoc:javadoc javadoc:test-javadoc
+
+      - name: Check the signed publication lifecycle locally
+        run: python3 .github/scripts/test-central-publishing.py
 
       - name: Sign and publish the release
         env:
@@ -81,5 +87,5 @@ jobs:
           MAVEN_GPG_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: >-
-          mvn --batch-mode --no-transfer-progress -Prelease deploy
+          ./mvnw --batch-mode --no-transfer-progress -Prelease deploy
           -DskipTests -Dgpg.signer=bc -Dgpg.bestPractices=true

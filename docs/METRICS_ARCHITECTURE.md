@@ -1,6 +1,6 @@
 # Metrics Architecture
 
-Zea TCP Transport 0.8.0 exposes three process-wide metric sources:
+Zea TCP Transport 0.8.1 exposes three process-wide metric sources:
 `ServerMetrics` for explicit counters and direct runtime readings, and
 `EventDispatcherMetrics` for sampled shared-dispatcher queue depths, and
 `FlowControlMetrics` for live Session/Game snapshots and instrumented transport flow.

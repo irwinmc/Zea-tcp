@@ -1,6 +1,6 @@
 # Event Loops, Dispatch and Lifecycle
 
-This guide describes Zea TCP Transport 0.8.0 with Netty 4.2.19.Final and Java 21.
+This guide describes Zea TCP Transport 0.8.1 with Netty 4.2.19.Final and Java 21.
 See [configuration](CONFIGURATION.md) for consumed properties and wire formats.
 
 ## Resource Layout
@@ -344,7 +344,7 @@ public final class DispatcherExample {
 }
 ```
 
-## Migrating to 0.8.0
+## Migrating to 0.8.x
 
 Use `NettyEventDispatcher` wherever a standalone business dispatcher is needed.
 There is no execution-mode parameter, callback worker per event, polling batch or

@@ -1,6 +1,6 @@
 # Configuration Guide
 
-This guide describes the configuration consumed by Zea TCP Transport 0.8.0.
+This guide describes the configuration consumed by Zea TCP Transport 0.8.1.
 Dependency versions and build commands are listed in the [README](../README.md).
 
 ## Loading Configuration

@@ -11,20 +11,39 @@ pushing a commit or pushing a tag alone does not publish a Maven artifact.
 Published regular releases and prereleases both trigger the workflow; their tags
 must match the POM version. Snapshot versions are rejected.
 
+The job uses the repository's Maven Wrapper 3.3.4 with a checksum-pinned Maven
+3.9.16 distribution. Both verification and deployment run through `./mvnw`, so a
+GitHub runner image update cannot silently change the Maven resolver used to
+assemble the bundle. The release profile uses Maven Enforcer 3.6.3 to reject other
+Maven versions early with a message directing callers to the wrapper.
+
 The job:
 
-1. Checks out the exact release tag and sets up Temurin Java 21.
+1. Checks out the exact release tag, sets up Temurin Java 21 and prints the pinned Maven version.
 2. Checks that the tag is the POM version, optionally prefixed with `v`.
 3. Checks that all four publishing secrets are populated without printing them.
 4. Runs the regression suite and strict main/test English JavaDoc checks.
-5. Builds sources and JavaDoc JARs, signs the artifacts, and publishes them to Central.
-6. Waits for the Central deployment to reach `PUBLISHED` before reporting success.
+5. Exercises the signed publication lifecycle against a local test server.
+6. Builds sources and JavaDoc JARs, signs the artifacts, and publishes them to Central.
+7. Waits for the Central deployment to reach `PUBLISHED` before reporting success.
 
 Checkout and Java setup actions are pinned to full commit identifiers. The workflow
 needs only `contents: read` GitHub permissions. Central authentication uses a Portal
 user token, rather than `GITHUB_TOKEN`. Runs for the same tag are serialized without
 cancelling an active publication. The job timeout is 60 minutes; the Central plugin
 waits up to its default 30-minute deployment deadline.
+
+Central Publishing 0.11.0 stages artifacts through Maven's legacy installer and
+removes `maven-metadata-central-staging.xml` before bundling. With Maven 3.10.0,
+the staged repository instead contains `maven-metadata-local.xml` and
+`_remote.repositories`; the plugin does not remove these files. The Portal rejects
+the extra metadata as content without a corresponding version POM. The pinned
+Maven 3.9.16 runtime produces the staging metadata expected by the plugin.
+
+The `release` profile also sets `maven.install.skip=true` to avoid redundant local
+installation before the publisher's own staging. This setting alone does not fix
+the Maven 3.10.0 compatibility issue. Normal `mvn install` builds still install
+artifacts locally.
 
 ## Required Repository Secrets
 
@@ -57,9 +76,12 @@ These values are token credentials, rather than your account email and login pas
 Track the token's expiry and replace the secrets when rotating it. Sonatype documents
 the process in [Generating a Portal Token](https://central.sonatype.org/publish/generate-portal-token/).
 
-`actions/setup-java` generates Maven settings for server ID `central`, referencing
+`actions/setup-java` generates Maven settings for server ID `central-publisher`, referencing
 the two Central environment variables. The release profile's publishing server ID
-matches that entry.
+and distribution repository ID match that entry. This dedicated ID keeps Portal
+credentials separate from Maven's default dependency repository named `central`
+and avoids credential-origin conflicts. Local publishing settings must use the
+same `central-publisher` server ID. The GitHub secret names remain unchanged.
 
 ### Signing Key Preparation
 
@@ -93,11 +115,11 @@ the [Maven GPG plugin](https://maven.apache.org/plugins/maven-gpg-plugin/sign-mo
 
 ## Create a Release
 
-1. Set the desired version in `pom.xml`. The current version is `0.8.0`.
+1. Set the desired version in `pom.xml`. The current version is `0.8.1`.
 2. Update version-specific documentation, commit the changes and push them with
    the publishing workflow to GitHub.
-3. In GitHub Releases, select or create a tag matching that POM, such as `v0.8.0`
-   or `0.8.0`, and publish the Release.
+3. In GitHub Releases, select or create a tag matching that POM, such as `v0.8.1`
+   or `0.8.1`, and publish the Release.
 4. Open the **Publish to Maven Central** Actions run and inspect its result.
 
 The tag points to the POM and sources being released. Changing the default branch
@@ -111,20 +133,48 @@ The workflow uses the `release` profile with automatic publishing enabled and
 Central's search interface can appear later. Re-running a successful publication
 of the same version is not a way to replace its artifacts.
 
+### Recover a Failed Release
+
+Check the deployment in the Central Portal before retrying. A bundle rejected
+during validation has not been published, while a workflow timeout may happen
+after a successful publication.
+
+The workflow checks out the release tag. Committing a fix to `main` and rerunning
+the old Actions run still builds the old tagged files. To release the corrected
+configuration without moving an existing tag, choose a new POM version, commit
+and push the fix, then publish a new Release with the matching new tag. For
+example, after a failed `v0.8.0` release, use POM version `0.8.1` and tag `v0.8.1`.
+
 ## Verify a Release Locally
 
 Normal development builds remain unsigned:
 
 ```bash
-mvn --batch-mode --no-transfer-progress clean verify javadoc:javadoc javadoc:test-javadoc
+./mvnw --batch-mode --no-transfer-progress clean verify javadoc:javadoc javadoc:test-javadoc
 ```
+
+Run the publishing regression checks separately:
+
+```bash
+python3 .github/scripts/test-central-publishing.py
+```
+
+The checks require Linux or macOS with Java 21, GnuPG and Python 3. The wrapper
+provides Maven 3.9.16. The checks copy the real release profile and wrapper into a
+minimal temporary project and execute the workflow's deployment command with a
+temporary signing key, synthetic credentials and a publisher bound to localhost.
+The test server verifies all four artifact signatures, all checksums,
+the absence of repository metadata, authentication and publication status polling.
+Additional cases reject a missing POM, missing signatures, incorrect checksums,
+local metadata and repository tracking files. No artifacts are sent to the Portal;
+the temporary signing key and its agent are cleaned up after the test.
 
 To build and sign the release artifacts without deploying them, provide your
 signing key and passphrase through `MAVEN_GPG_KEY` and `MAVEN_GPG_PASSPHRASE`
 in a local environment, then run:
 
 ```bash
-mvn --batch-mode --no-transfer-progress -Prelease clean verify \
+./mvnw --batch-mode --no-transfer-progress -Prelease clean verify \
   -Dgpg.signer=bc -Dgpg.bestPractices=true
 ```
 
@@ -135,13 +185,13 @@ To exercise the deploy lifecycle while disabling Central publication, the same
 signing environment can use:
 
 ```bash
-mvn --batch-mode --no-transfer-progress -Prelease deploy \
+./mvnw --batch-mode --no-transfer-progress -Prelease deploy \
   -Dgpg.signer=bc -Dgpg.bestPractices=true -Dcentral.skipPublishing=true
 ```
 
 With Central Publishing 0.11.0, this skips artifact staging and upload; it does not
 produce a deployment ZIP. The signed release artifacts remain under `target/`.
-The publisher still initializes its client from the `central` Maven server entry.
+The publisher still initializes its client from the `central-publisher` Maven server entry.
 Actual publication generates `target/central-publishing/central-bundle.zip` before
 uploading it. The `central.skipPublishing` property defaults to `false`; the GitHub
 release workflow uses actual deployment. The publisher plugin is enabled only by
@@ -155,12 +205,16 @@ the `release` profile. Its configuration follows the
 | Tag/POM mismatch | Use a tag matching the POM at that commit; the workflow does not rewrite versions |
 | Snapshot version | Choose a release version before publishing the GitHub Release |
 | Missing secret | Populate the named repository secret, then rerun the failed workflow |
+| Bundle content without a POM | Use `./mvnw` with the corrected release profile and a clean `target/` directory; Maven 3.10.0 adds metadata the publisher does not remove |
+| Unsupported release Maven version | Use `./mvnw`, which provides the verified Maven 3.9.16 runtime |
+| Credential-origin warning for `central` | Use `central-publisher` consistently in Maven settings, the publishing plugin and distribution management |
 | Central authentication or namespace failure | Verify the generated token pair, token expiry and publishing access to `com.akakata` |
 | Signing failure | Verify the full private-key export, its passphrase and signing capability |
 | Central cannot validate the signature | Check public-key availability and key expiry |
 | Sources or JavaDoc validation failure | Fix the build or English JavaDoc errors before releasing |
 | Version already published | Increment the POM version and create a new Release tag |
 | Publication wait timeout | Check the deployment in the Central Portal before retrying; publication may already have completed |
+| Retry still uses the old configuration | Publish a new matching version/tag that contains the fix; rerunning an old release still checks out its tag |
 
 This workflow deploys release artifacts to Maven Central. Snapshot deployment and
 GitHub Packages require separate workflows and repository configuration.

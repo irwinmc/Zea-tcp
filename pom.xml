@@ -6,7 +6,7 @@
 
     <groupId>com.akakata</groupId>
     <artifactId>zea-tcp</artifactId>
-    <version>0.8.0</version>
+    <version>0.8.1</version>
 
     <name>Zea TCP Transport</name>
     <description>High-performance Netty transport and protocol gateway for the Zea platform.</description>
@@ -129,7 +129,7 @@
 
     <distributionManagement>
         <repository>
-            <id>central</id>
+            <id>central-publisher</id>
             <url>https://central.sonatype.com/api/v1/publisher</url>
         </repository>
     </distributionManagement>
@@ -201,8 +201,36 @@
     <profiles>
         <profile>
             <id>release</id>
+            <properties>
+                <!--
+                    Avoid redundant local installation during publication.
+                -->
+                <maven.install.skip>true</maven.install.skip>
+            </properties>
             <build>
                 <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-enforcer-plugin</artifactId>
+                        <version>3.6.3</version>
+                        <executions>
+                            <execution>
+                                <id>require-release-maven</id>
+                                <phase>validate</phase>
+                                <goals>
+                                    <goal>enforce</goal>
+                                </goals>
+                                <configuration>
+                                    <rules>
+                                        <requireMavenVersion>
+                                            <version>[3.9.16]</version>
+                                            <message>Use ./mvnw for releases; Central Publishing 0.11.0 requires the verified Maven 3.9.16 runtime.</message>
+                                        </requireMavenVersion>
+                                    </rules>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-source-plugin</artifactId>
@@ -248,7 +276,7 @@
                         <version>0.11.0</version>
                         <extensions>true</extensions>
                         <configuration>
-                            <publishingServerId>central</publishingServerId>
+                            <publishingServerId>central-publisher</publishingServerId>
                             <autoPublish>true</autoPublish>
                             <waitUntil>published</waitUntil>
                             <skipPublishing>${central.skipPublishing}</skipPublishing>

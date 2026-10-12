@@ -8,7 +8,7 @@ Zea TCP Transport is a Java game-server foundation built on Netty. It provides T
 HTTP and WebSocket listeners, player sessions, asynchronous event dispatch, a
 credential-keyed session cache and HTTP monitoring endpoints.
 
-This documentation describes version **0.8.0** and the implementation in this
+This documentation describes version **0.8.1** and the implementation in this
 checkout. Dependency versions below come from [pom.xml](pom.xml).
 
 ## Features
@@ -42,7 +42,7 @@ reconnection and client connection pooling are not implemented.
 <dependency>
     <groupId>com.akakata</groupId>
     <artifactId>zea-tcp</artifactId>
-    <version>0.8.0</version>
+    <version>0.8.1</version>
 </dependency>
 ```
 
@@ -127,7 +127,7 @@ Other executable examples are `com.akakata.HttpOnlyServer` (HTTP port 18081),
 `com.akakata.AdvancedTestServer`. They live in
 [src/test/java/com/akakata](src/test/java/com/akakata).
 
-`mvn package` produces the library JAR `target/zea-tcp-0.8.0.jar`. It does not bundle
+`mvn package` produces the library JAR `target/zea-tcp-0.8.1.jar`. It does not bundle
 runtime dependencies or configure a `Main-Class`. The provided [run.sh](run.sh)
 expects an application-owned executable `server.jar` in the working directory;
 create that application artifact before using the script.
@@ -420,7 +420,7 @@ Examples with `main` methods are executable
 helpers rather than JUnit tests.
 
 The POM configures Maven Compiler 3.13.0, Surefire 3.2.5, JavaDoc 3.12.0 and
-Exec 3.6.1. Its `release` profile adds Sources 3.3.1, JavaDoc attachment,
+Exec 3.6.1. Its `release` profile adds Enforcer 3.6.3, Sources 3.3.1, JavaDoc attachment,
 GPG 3.2.8 signing and Central Publishing 0.11.0. Normal development builds do not
 require signing credentials.
 
@@ -431,6 +431,17 @@ GitHub Release is published. It checks out the release tag, checks that its vers
 matches the POM, runs tests and strict English JavaDoc checks with Java 21, then
 signs and automatically publishes the main JAR, sources, JavaDoc and POM.
 The job waits for Central to report the deployment as published.
+
+The workflow uses Maven Wrapper 3.3.4 with checksum-pinned Maven 3.9.16 for both
+verification and deployment. Use `./mvnw` for local releases as well; the release
+profile rejects other Maven versions. Maven 3.10.0 adds staging repository metadata
+that Central Publishing 0.11.0 does not remove, causing Portal validation to fail.
+
+Before publication, the workflow tests the real release profile against a local
+publisher using a temporary signing key and synthetic credentials. It verifies
+bundle contents, signatures, checksums and authentication. The release profile
+skips redundant local artifact installation before the publisher's own staging.
+Publishing uses the dedicated Maven server ID `central-publisher`.
 
 Configure these repository secrets under **Settings → Secrets and variables →
 Actions → New repository secret**:
@@ -443,8 +454,8 @@ Actions → New repository secret**:
 | `GPG_PASSPHRASE` | Passphrase protecting that private key |
 
 The Central account must have publishing access to `com.akakata`, and the signing
-public key must be available to Central. Use a release tag such as `v0.8.0` or
-`0.8.0` matching the POM at that tag. Already published versions cannot be replaced;
+public key must be available to Central. Use a release tag such as `v0.8.1` or
+`0.8.1` matching the POM at that tag. Already published versions cannot be replaced;
 choose a new version for subsequent releases. See the
 [publishing guide](docs/PUBLISHING.md) for token setup, key preparation, local
 verification and troubleshooting.
@@ -458,7 +469,7 @@ mvn compile javadoc:jar
 
 Open `target/reports/apidocs/index.html` for the framework API and
 `target/reports/testapidocs/index.html` for examples and regression-test helpers.
-The archive is `target/zea-tcp-0.8.0-javadoc.jar`. Compilation generates the Dagger
+The archive is `target/zea-tcp-0.8.1-javadoc.jar`. Compilation generates the Dagger
 component types needed by JavaDoc. Documentation uses English, UTF-8 and strict
 doclint checks; generated Dagger sources are excluded.
 

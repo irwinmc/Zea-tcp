@@ -10,6 +10,19 @@ import java.net.InetSocketAddress;
 public interface Server {
 
     /**
+     * Reports whether the bound listening channel is currently active.
+     *
+     * <p>Implementations must return promptly without waiting for bind or shutdown.
+     * Custom implementations must override this fail-closed default to participate
+     * in listener readiness checks.
+     *
+     * @return whether this server can accept new connections
+     */
+    default boolean isListening() {
+        return false;
+    }
+
+    /**
      * Binds and starts this server at its configured or supplied address.
      *
      * @throws Exception if the server lifecycle operation fails

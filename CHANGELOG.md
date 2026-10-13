@@ -4,12 +4,52 @@ Release changes and migration requirements for Zea TCP Transport, with the newes
 release first. See the [repository README](README.md) for the quick start and
 [application guides](README.md#documentation) for supported APIs and configuration.
 
+- [Unreleased](#unreleased): listener availability, actual worker termination,
+  HTTP file-transfer admission and continuous integration.
 - [0.8.4](#084): bounded shutdown, response ownership, operational health
   and static-resource boundaries.
 - [0.8.3](#083): bounded socket backpressure, unicast allocation reduction,
   streaming JSON and migration from 0.8.2.
 - [0.8.2](#082): component injection, authentication defaults, resource budgets
   and migration from 0.8.1.
+
+## Unreleased
+
+These changes follow the published 0.8.4 release and preserve ordered Session and
+Game delivery. The Maven version remains unchanged until the next release is prepared.
+
+- Require all selected listener channels to be active before publishing readiness.
+  Sample listener availability without acquiring the blocking startup monitor or
+  coupling HTTP health presentation to the server manager.
+- Expose actual blocking-executor termination through `closeAsync()`. Context shutdown
+  remains `STOPPING` until those workers exit, even after an observation timeout.
+  Running operations retain their task and byte reservations until they return.
+- Reserve static-file transfers before opening a file. Bound both per-connection and
+  context-wide reservations, and impose an absolute transfer deadline that subsequent
+  requests cannot renew. Close handles on completion, rejection, cancellation and
+  connection closure; return admission only after the handle closes.
+- Expose pending-file, rejection and timeout metrics and worker closed/terminated gauges.
+- Run Java 21 regression tests, strict main/test JavaDoc, signed-publication fixtures
+  and whitespace checks on branch pushes and pull requests with read-only CI permissions.
+- Add lifecycle, file-transfer, admission and configuration regressions and update
+  English API and application documentation.
+
+### Migration
+
+Custom `Server` implementations must override the nonblocking `isListening()`
+contract to report an active listener; its default is unavailable. Disabled listeners
+are excluded from readiness requirements.
+
+`BlockingTaskExecutor.close()` now throws `ShutdownTimeoutException` when a positive
+wait expires. A zero `business.blocking.shutdown.millis` requests shutdown without
+waiting. Use `closeAsync()` to observe actual exit in either case; cancelling its
+returned observation does not cancel cleanup.
+
+Static-file defaults are two pending transfers per connection, 128 across the
+context and a 30-second absolute transfer deadline. Configure the three
+`http.file.*` settings in [configuration](docs/CONFIGURATION.md). Admission failure
+closes the requesting connection without inserting a response into a pending
+pipelined body. No new dependencies or JVM module-access flags are required.
 
 ## 0.8.4
 

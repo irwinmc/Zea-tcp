@@ -29,6 +29,11 @@ public class NettyTCPServer extends AbstractNettyServer {
     private ServerBootstrap serverBootstrap;
 
     /**
+     * Actual listening channel, safely published for nonblocking availability checks.
+     */
+    private volatile Channel listeningChannel;
+
+    /**
      * Creates a netty tcp server instance with the supplied dependencies.
      *
      * @param nettyConfig        the server bind and channel settings
@@ -64,11 +69,21 @@ public class NettyTCPServer extends AbstractNettyServer {
                     .channel();
 
             ALL_CHANNELS.add(serverChannel);
+            listeningChannel = serverChannel;
         } catch (Exception e) {
             LOG.error("TCP Server start error {}, going to shut down", e.getMessage(), e);
             super.stopServer();
             throw e;
         }
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public boolean isListening() {
+        Channel channel = listeningChannel;
+        return channel != null && channel.isActive();
     }
 
     /**

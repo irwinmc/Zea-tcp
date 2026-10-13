@@ -1,7 +1,7 @@
 # Configuration Guide
 
-This guide describes the configuration consumed by Zea TCP Transport 0.8.4,
-including component, security, resource, lifecycle and health policies.
+This guide describes the current checkout's component, security, resource,
+lifecycle and health policies, including [unreleased changes after 0.8.4](../CHANGELOG.md#unreleased).
 Dependency versions and build commands are listed in the [README](../README.md).
 
 ## Loading Configuration
@@ -76,10 +76,13 @@ The **bundled value** is the value in this checkout's default resource.
 | `http.maximum.request.bytes` | `65536` | `65536` | Positive aggregated HTTP body limit |
 | `http.request.timeout.millis` | `10000` | `10000` | Absolute request deadline, renewed after each complete body |
 | `http.read.idle.millis` | `30000` | `30000` | HTTP read inactivity expiry; zero disables it |
+| `http.file.maximum.pending.transfers` | `2` | `2` | Positive pending static-file response allowance per connection |
+| `http.file.maximum.concurrent.transfers` | `128` | `128` | Positive aggregate static-file transfer allowance across context HTTP connections |
+| `http.file.transfer.timeout.millis` | `30000` | `30000` | Positive absolute transfer deadline, independent of new incoming requests |
 | `business.blocking.threads` | `2` | `2` | Positive worker count for detached blocking operations |
 | `business.blocking.queue.capacity` | `256` | `256` | Positive queued-operation allowance, excluding running workers |
 | `business.blocking.queue.bytes` | `67108864` | `67108864` | Positive declared retained bytes for queued and running operations |
-| `business.blocking.shutdown.millis` | `5000` | `5000` | Nonnegative maximum worker-pool close wait |
+| `business.blocking.shutdown.millis` | `5000` | `5000` | Standalone worker close wait; zero requests shutdown only, positive expiry throws |
 | `protocol.maximum.frame.bytes` | `65535` | `65535` | Inbound application frame bytes, between 8 and 65535; excludes transport headers |
 
 These values are read by
@@ -160,6 +163,11 @@ http.maximum.request.bytes=65536
 http.request.timeout.millis=10000
 http.read.idle.millis=30000
 
+# HTTP Static File Transfers
+http.file.maximum.pending.transfers=2
+http.file.maximum.concurrent.transfers=128
+http.file.transfer.timeout.millis=30000
+
 # Detached Blocking Operations
 business.blocking.threads=2
 business.blocking.queue.capacity=256
@@ -234,6 +242,7 @@ are checked by resource constructors before listeners open.
 | Socket sources | Per-connection pending count and estimated source bytes |
 | Encoded transport | Per-connection and shared aggregate bytes, including HTTP/login |
 | HTTP input | Per-request body size, absolute deadline and read inactivity |
+| HTTP static files | Per-connection and aggregate pending transfers, reserved before opening; absolute response-transfer deadline |
 | Blocking business work | Fixed workers, queued operations and running/queued declared bytes |
 
 A conservative planning allowance includes `shards * session.queue.bytes +
@@ -542,6 +551,26 @@ Traversal, hidden path segments, backslash separators and symbolic links, includ
 a linked root, are forbidden. URI query parameters do not become part of a filename.
 Missing files return 404, forbidden paths return 403 and malformed cache dates return
 400. File handles close after transfer, rejection or a conditional 304 response.
+
+`HttpFileTransfers` reserves capacity before opening a resource. The default limits
+are two pending file responses per connection and 128 across the context, including
+responses whose final content write is still pending. A reservation is returned only
+after its handle closes. Opening failures, conditional responses, failed or cancelled
+writes and channel closure all release ownership. Submitted file-region reference
+counts remain the outbound pipeline's responsibility; Netty discards them on closure.
+
+Each admitted response has a 30-second absolute transfer deadline starting at
+admission. Another incoming request does not extend it. The request and read-idle
+deadlines remain separate and may close a connection sooner. Timeout closes the
+connection and its owned file handles. Quota rejection also closes the requesting
+connection before opening another file; it does not insert an error response into
+an earlier pipelined body. Select the three positive `http.file.*` values explicitly
+when an application needs different transfer concurrency or duration.
+
+Zero-copy file sizes are not charged as resident encoded socket bytes. File-transfer
+counts bound their handles and queued responses; `socket.*` byte budgets continue
+to bound encoded native buffers. Static responses are submitted on the connection's
+event loop and preserve HTTP write order without using the Session or Game executor.
 
 Directory descriptors anchor traversal on filesystems supporting
 `SecureDirectoryStream`. Other filesystems use canonical containment, no-follow

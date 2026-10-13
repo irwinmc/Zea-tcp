@@ -97,6 +97,63 @@ class ServerManagerLifecycleRegressionTest {
     }
 
     /**
+     * Reads listener state promptly during a blocked bind and excludes disabled listeners.
+     *
+     * @throws Exception if a startup barrier fails
+     */
+    @Test
+    void listenerReadinessDoesNotAcquireTheBlockingStartupMonitor() throws Exception {
+        RecordingServer listener = new RecordingServer(false);
+        listener.entered = new CountDownLatch(1);
+        listener.release = new CountDownLatch(1);
+        ListenerRegistry registry = new ListenerRegistry();
+        ServerManagerImpl manager = new ServerManagerImpl(listener, new RecordingServer(false), new RecordingServer(false),
+                new ConfigurationManager("conf-lifecycle.properties"), new ServerLifecycle(), registry);
+        CompletableFuture<Void> startup = CompletableFuture.runAsync(() -> {
+            try {
+                manager.startServers(0, 1, 0, 0);
+            } catch (Exception failure) {
+                throw new IllegalStateException(failure);
+            }
+        });
+        try {
+            assertTrue(listener.entered.await(2, TimeUnit.SECONDS));
+            assertFalse(CompletableFuture.supplyAsync(registry::isReady).get(1, TimeUnit.SECONDS));
+            assertEquals(java.util.Map.of("tcp", false), registry.snapshot());
+            listener.release.countDown();
+            startup.get(2, TimeUnit.SECONDS);
+            assertTrue(registry.isReady());
+            listener.listening = false;
+            assertFalse(registry.isReady());
+        } finally {
+            listener.release.countDown();
+            startup.get(2, TimeUnit.SECONDS);
+            manager.stopServers();
+        }
+    }
+
+    /**
+     * Requires every expected listener and treats throwing status implementations as unavailable.
+     */
+    @Test
+    void readinessRequiresAllSelectedListenersAndFailsClosed() {
+        ListenerRegistry registry = new ListenerRegistry();
+        assertFalse(registry.isReady());
+        RecordingServer active = new RecordingServer(false);
+        active.listening = true;
+        RecordingServer unavailable = new RecordingServer(false);
+        registry.expect(java.util.Map.of("tcp", active, "http", unavailable));
+        assertFalse(registry.isReady());
+        unavailable.listening = true;
+        assertTrue(registry.isReady());
+        unavailable.statusFailure = true;
+        assertFalse(registry.isReady());
+        assertEquals(false, registry.snapshot().get("http"));
+        registry.expect(java.util.Map.of());
+        assertFalse(registry.isReady());
+    }
+
+    /**
      * Records listener operations without owning actual sockets.
      */
     private static final class RecordingServer implements Server {
@@ -122,6 +179,16 @@ class ServerManagerLifecycleRegressionTest {
         private CountDownLatch release;
 
         /**
+         * Actual synthetic bind availability, independent of startup's lock.
+         */
+        private volatile boolean listening;
+
+        /**
+         * Injected failure in the nonblocking status provider.
+         */
+        private boolean statusFailure;
+
+        /**
          * Selects the fixture's shutdown behavior.
          *
          * @param failStop whether shutdown throws
@@ -139,6 +206,18 @@ class ServerManagerLifecycleRegressionTest {
                 entered.countDown();
                 assertTrue(release.await(3, TimeUnit.SECONDS));
             }
+            listening = true;
+        }
+
+        /**
+         * {@inheritDoc}
+         */
+        @Override
+        public boolean isListening() {
+            if (statusFailure) {
+                throw new IllegalStateException("Injected listener status failure");
+            }
+            return listening;
         }
 
         /**
@@ -162,6 +241,7 @@ class ServerManagerLifecycleRegressionTest {
          */
         @Override
         public void stopServer() throws Exception {
+            listening = false;
             stops.incrementAndGet();
             if (failStop) {
                 throw new IOException("Injected listener close failure");

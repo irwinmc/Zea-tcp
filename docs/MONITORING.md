@@ -1,6 +1,7 @@
 # Monitoring Endpoints
 
-This guide describes lifecycle and instrumentation in Zea TCP Transport 0.8.4.
+This guide describes the current checkout, including
+[unreleased changes after 0.8.4](../CHANGELOG.md#unreleased).
 The bundled HTTP listener binds to loopback
 on port 8081. Enable `server.http.enabled` and use the configured `http.port`;
 the HTTP-only example uses 18081. See [configuration](CONFIGURATION.md).
@@ -30,6 +31,7 @@ Both successful and unavailable health responses contain JSON:
     "session_registry": true,
     "blocking_workers": true,
     "network": true,
+    "listeners": true,
     "heap": true
   },
   "timestamp": 1791820800000
@@ -48,6 +50,12 @@ session event has remained queued or running for
 `health.maximum.event.delay.millis`, default 5000, or used heap reaches 95% of
 maximum heap. A throwing check fails closed. Custom dispatchers implement
 `EventDispatcher.isHealthy(long)`; its default returns false.
+
+The `listeners` check requires every selected listener's actual bound channel to be
+active. Disabled listeners are excluded. Closing a listening channel withdraws
+readiness even if its event-loop groups remain open; `network` reports the separate
+group lifecycle. These checks do not acquire the server manager's blocking startup
+monitor. Custom servers implement the nonblocking `Server.isListening()` contract.
 
 Liveness no longer waits for a whole second of uptime. Draining remains live while
 readiness is down. A failed or terminated lifecycle is not live. No automatic
@@ -263,20 +271,34 @@ Completed counts include executed callbacks whose application handler failed.
 Closed-scope submissions are excluded from saturation rejections. Queue bytes
 are conservative storage charges, not exact JVM memory readings.
 
-Transport fields `active_connections`, `paused_channels`, `pending_writes` and
-`pending_socket_bytes` and `pending_payload_bytes` are live gauges. `connection_rejections`, `login_timeouts`,
-`idle_timeouts`, `http_timeouts`, `read_pauses`, `pause_timeouts`, `write_rejections`, `write_timeouts`, `encoded_frames`
+Transport fields `active_connections`, `paused_channels`, `pending_writes`,
+`pending_socket_bytes`, `pending_payload_bytes` and `pending_http_file_transfers`
+are live gauges. `connection_rejections`, `login_timeouts`, `idle_timeouts`,
+`http_timeouts`, `read_pauses`, `pause_timeouts`, `write_rejections`, `write_timeouts`,
+`encoded_frames`, `http_file_transfer_rejections`, `http_file_transfer_timeouts`
 and `encoding_reuses` are cumulative counters. Active connections count admitted
 TCP/WebSocket/HTTP sockets including unauthenticated clients. HTTP additionally
 has its own connection sublimit and absolute request deadline. Encoded byte gauges remain charged until the write promise settles.
 The `outbound` group reports the context's `byte_budget` and `pending_bytes`,
 including source estimates and encoded buffers. The `blocking` group reports
 `threads`, `queue_capacity`, `byte_budget`, `pending_tasks`, `pending_bytes` and
-`active_workers`; cancelled running operations retain their charges until exit.
+`active_workers`, `closed` and `terminated`; cancelled running operations retain their charges until exit.
+The final two are 0/1 flags distinguishing a shutdown request from actual executor
+termination. A worker that ignores interruption keeps `terminated` at zero and the
+context's actual cleanup future pending, even after a synchronous wait expires.
 Prometheus exposes these scalar values as `zea_flow_outbound_<field>` and
 `zea_flow_blocking_<field>` gauges. Source and encoded charges coexist while both
 resources are retained. `outbound` and `blocking` are null outside an initialized
 context; a custom non-Netty Game dispatcher has no default Game timing snapshot.
+
+File-transfer admission and deadlines are independent of encoded byte gauges.
+`pending_http_file_transfers` includes opening files and responses awaiting either
+their file write or final content write. Rejections happen before opening another
+file. Transfer timeouts close the connection and its owned handles. Prometheus
+exports `zea_flow_pending_http_file_transfers` as a gauge and
+`zea_flow_http_file_transfer_rejections` / `zea_flow_http_file_transfer_timeouts`
+as cumulative counters. See [configuration](CONFIGURATION.md#shutdown-health-and-static-resources)
+for quotas and completion deadlines.
 
 Flow-control counters are instrumented by the default pipelines and require no application
 `ServerMetrics.record*()` calls. They supplement the automatically populated traffic counters.

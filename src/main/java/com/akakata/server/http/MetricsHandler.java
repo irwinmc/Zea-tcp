@@ -272,7 +272,8 @@ public class MetricsHandler extends AbstractHttpHandler {
         addPrometheusMetric(prom, "errors_total", "counter", "Total errors", metrics.getTotalErrors());
 
         FlowControlMetrics.transportSnapshot().forEach((name, value) -> {
-            String type = java.util.Set.of("active_connections", "paused_channels", "pending_writes", "pending_socket_bytes", "pending_payload_bytes")
+            String type = java.util.Set.of("active_connections", "paused_channels", "pending_writes", "pending_socket_bytes",
+                            "pending_payload_bytes", "pending_http_file_transfers")
                     .contains(name) ? "gauge" : "counter";
             addPrometheusMetric(prom, "zea_flow_" + name, type, "Transport flow " + name, value);
         });

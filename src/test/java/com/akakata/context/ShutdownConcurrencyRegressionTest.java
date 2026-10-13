@@ -10,6 +10,8 @@ import com.akakata.lifecycle.ServerLifecycle;
 import com.akakata.lifecycle.ShutdownTimeoutException;
 import com.akakata.metrics.ServerHealth;
 import com.akakata.server.ServerManager;
+import com.akakata.server.impl.AbstractNettyServer;
+import io.netty.channel.ServerChannel;
 import com.akakata.service.task.BlockingTaskExecutor;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -87,7 +89,17 @@ class ShutdownConcurrencyRegressionTest {
         /**
          * The default composition reports actual Game and lifecycle availability.
          */
-        HEALTH_GRAPH
+        HEALTH_GRAPH,
+
+        /**
+         * Withdraws readiness when a bound listener disappears without closing its event loops.
+         */
+        LISTENER_LOSS,
+
+        /**
+         * Observes real worker termination after a bounded context shutdown wait expires.
+         */
+        WORKER_TERMINATION
     }
 
     /**
@@ -194,13 +206,16 @@ class ShutdownConcurrencyRegressionTest {
                     super.close();
                 }
             }).build();
-            ServerContext context = new ServerContext(scenario == Scenario.CONTEXT_TIMEOUT
+            ServerContext context = new ServerContext(scenario == Scenario.CONTEXT_TIMEOUT || scenario == Scenario.WORKER_TERMINATION
                     ? "conf-shutdown-fast.properties" : "conf-lifecycle.properties", components);
             owner.set(context);
             try {
-                if (scenario == Scenario.HEALTH_GRAPH) {
+                if (scenario == Scenario.HEALTH_GRAPH || scenario == Scenario.LISTENER_LOSS) {
                     context.getConfigManager().getProperties().setProperty("server.http.enabled", "true");
                     context.getConfigManager().getProperties().setProperty("http.port", "0");
+                }
+                if (scenario == Scenario.WORKER_TERMINATION) {
+                    context.getConfigManager().getProperties().setProperty("business.blocking.shutdown.millis", "0");
                 }
                 context.initialize();
                 Game game = context.getBean(Game.class);
@@ -257,6 +272,50 @@ class ShutdownConcurrencyRegressionTest {
                     assertTrue(game.connectSession(session));
                     ((DefaultSession) session).addCloseListener(context::close);
                     session.close();
+                } else if (scenario == Scenario.LISTENER_LOSS) {
+                    ServerHealth health = context.getBean(ServerHealth.class);
+                    context.getBean(ServerManager.class).startServers();
+                    assertTrue(health.snapshot().ready());
+                    int listeners = 0;
+                    for (var channel : AbstractNettyServer.ALL_CHANNELS) {
+                        if (channel instanceof ServerChannel) {
+                            channel.close().sync();
+                            listeners++;
+                        }
+                    }
+                    assertEquals(1, listeners);
+                    assertFalse(health.snapshot().ready());
+                    assertTrue(health.snapshot().checks().get("network"));
+                    assertEquals(ServerLifecycle.Phase.RUNNING, context.getLifecycle().phase());
+                } else if (scenario == Scenario.WORKER_TERMINATION) {
+                    BlockingTaskExecutor worker = context.getBean(BlockingTaskExecutor.class);
+                    worker.submit(64, () -> {
+                        entered.countDown();
+                        boolean released = false;
+                        while (!released) {
+                            try {
+                                released = release.await(5, TimeUnit.SECONDS);
+                            } catch (InterruptedException ignored) {
+                                // Model a dependency that ignores cancellation.
+                            }
+                        }
+                        return null;
+                    });
+                    assertTrue(entered.await(2, TimeUnit.SECONDS));
+                    CompletableFuture<Void> cleanup = context.closeAsync();
+                    context.getBean(NetworkBootstrap.class).getWorkerGroup().terminationFuture().get(2, TimeUnit.SECONDS);
+                    assertThrows(java.util.concurrent.TimeoutException.class,
+                            () -> cleanup.get(150, TimeUnit.MILLISECONDS));
+                    assertThrows(ShutdownTimeoutException.class, context::close);
+                    assertFalse(cleanup.isDone());
+                    assertFalse(worker.isTerminated());
+                    assertEquals(64, worker.pendingBytes());
+                    assertEquals(ServerLifecycle.Phase.STOPPING, context.getLifecycle().phase());
+                    release.countDown();
+                    context.closeAsync().get(3, TimeUnit.SECONDS);
+                    assertTrue(worker.isTerminated());
+                    assertEquals(0, worker.pendingTasks());
+                    assertEquals(0, worker.pendingBytes());
                 } else if (scenario == Scenario.HEALTH_GRAPH) {
                     ServerHealth health = context.getBean(ServerHealth.class);
                     assertFalse(health.snapshot().ready());

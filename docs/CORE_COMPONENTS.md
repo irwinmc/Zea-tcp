@@ -150,7 +150,15 @@ run separately so a stalled application hook cannot suppress later network clean
 
 `ServerHealth` separates HTTP presentation from availability policy.
 `DefaultServerHealth` accepts named nonblocking checks; the Dagger composition root
-supplies Game, session registry, worker, network and heap checks through their public
+supplies Game, session registry, worker, network, listener and heap checks through their public
 interfaces. Custom dispatchers implement `EventDispatcher.isHealthy(long)` and custom
 Games expose `isShuttingDown()`. Health checks must not perform remote I/O or wait for
 an executor. An unbound HTTP health presenter fails readiness.
+
+In the [unreleased checkout](../CHANGELOG.md#unreleased), the shared `ListenerRegistry`
+publishes the selected listener set before startup. Health checks sample
+`Server.isListening()` without depending on `ServerManager` or taking its startup
+lock. Custom servers must provide this nonblocking status; inactive selected listeners
+withdraw readiness. `HttpFileTransfers` similarly owns file admission and deadlines
+independently of static-resource resolution and HTTP response construction. It is
+shared across the context's HTTP connections and starts no extra executors.

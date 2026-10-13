@@ -5,6 +5,7 @@ import com.akakata.context.ConfigurationManager;
 import com.akakata.lifecycle.ServerLifecycle;
 import com.akakata.server.Server;
 import com.akakata.server.ServerManager;
+import com.akakata.server.ListenerRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -12,6 +13,8 @@ import javax.inject.Inject;
 import javax.inject.Named;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * Controls enabled server instances using classpath configuration switches and ports.
@@ -56,6 +59,11 @@ public class ServerManagerImpl implements ServerManager {
     private final ServerLifecycle lifecycle;
 
     /**
+     * Listener state shared with health checks independently of this manager's lock.
+     */
+    private final ListenerRegistry listeners;
+
+    /**
      * Creates a server manager impl instance with the supplied dependencies.
      *
      * @param tcpServer       the TCP server instance
@@ -79,12 +87,30 @@ public class ServerManagerImpl implements ServerManager {
      * @param configManager   loaded configuration
      * @param lifecycle       shared application lifecycle
      */
-    @Inject
     public ServerManagerImpl(@Named(AppContext.TCP_SERVER) Server tcpServer,
                              @Named(AppContext.HTTP_SERVER) Server httpServer,
                              @Named(AppContext.WEB_SOCKET_SERVER) Server webSocketServer,
                              ConfigurationManager configManager, ServerLifecycle lifecycle) {
+        this(tcpServer, httpServer, webSocketServer, configManager, lifecycle, new ListenerRegistry());
+    }
+
+    /**
+     * Shares startup selection with the nonblocking listener readiness registry.
+     *
+     * @param tcpServer TCP listener
+     * @param httpServer HTTP listener
+     * @param webSocketServer WebSocket listener
+     * @param configManager application configuration
+     * @param lifecycle context lifecycle
+     * @param listeners listener availability registry
+     */
+    @Inject
+    public ServerManagerImpl(@Named(AppContext.TCP_SERVER) Server tcpServer,
+                             @Named(AppContext.HTTP_SERVER) Server httpServer,
+                             @Named(AppContext.WEB_SOCKET_SERVER) Server webSocketServer,
+                             ConfigurationManager configManager, ServerLifecycle lifecycle, ListenerRegistry listeners) {
         this.lifecycle = java.util.Objects.requireNonNull(lifecycle);
+        this.listeners = java.util.Objects.requireNonNull(listeners);
         this.tcpServer = tcpServer;
         this.httpServer = httpServer;
         this.webSocketServer = webSocketServer;
@@ -111,6 +137,7 @@ public class ServerManagerImpl implements ServerManager {
         }
         lifecycle.starting();
         try {
+            publishListeners(tcpPort > 0, httpPort > 0, webSocketPort > 0);
             if (tcpPort > 0) {
                 tcpServer.startServer(tcpPort);
                 servers.add(tcpServer);
@@ -152,10 +179,14 @@ public class ServerManagerImpl implements ServerManager {
         }
         lifecycle.starting();
         try {
+            boolean tcpEnabled = isServerEnabled("server.tcp.enabled");
+            boolean httpEnabled = isServerEnabled("server.http.enabled");
+            boolean webSocketEnabled = isServerEnabled("server.websocket.enabled");
+            publishListeners(tcpEnabled, httpEnabled, webSocketEnabled);
             LOG.info("Starting servers based on configuration...");
 
             // Check TCP server
-            if (isServerEnabled("server.tcp.enabled")) {
+            if (tcpEnabled) {
                 LOG.info("Starting TCP server on port {}...", configManager.getRequiredInt("tcp.port"));
                 tcpServer.startServer();
                 servers.add(tcpServer);
@@ -165,7 +196,7 @@ public class ServerManagerImpl implements ServerManager {
             }
 
             // Check HTTP server
-            if (isServerEnabled("server.http.enabled")) {
+            if (httpEnabled) {
                 LOG.info("Starting HTTP server on port {}...", configManager.getRequiredInt("http.port"));
                 httpServer.startServer();
                 servers.add(httpServer);
@@ -175,7 +206,7 @@ public class ServerManagerImpl implements ServerManager {
             }
 
             // Check WebSocket server
-            if (isServerEnabled("server.websocket.enabled")) {
+            if (webSocketEnabled) {
                 LOG.info("Starting WebSocket server on port {}...", configManager.getRequiredInt("web.socket.port"));
                 webSocketServer.startServer();
                 servers.add(webSocketServer);
@@ -208,6 +239,27 @@ public class ServerManagerImpl implements ServerManager {
      */
     private boolean isServerEnabled(String configKey) {
         return configManager.getBoolean(configKey, true);
+    }
+
+    /**
+     * Publishes the entire expected set before any selected server begins binding.
+     *
+     * @param tcp whether TCP is selected
+     * @param http whether HTTP is selected
+     * @param webSocket whether WebSocket is selected
+     */
+    private void publishListeners(boolean tcp, boolean http, boolean webSocket) {
+        Map<String, Server> selected = new LinkedHashMap<>();
+        if (tcp) {
+            selected.put("tcp", tcpServer);
+        }
+        if (http) {
+            selected.put("http", httpServer);
+        }
+        if (webSocket) {
+            selected.put("websocket", webSocketServer);
+        }
+        listeners.expect(selected);
     }
 
     /**

@@ -1,5 +1,6 @@
 package com.akakata.server.http;
 
+import com.akakata.server.HttpFileTransferLimits;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
@@ -32,6 +33,9 @@ import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
  * <p>The resolver controls path policy independently of HTTP response generation.
  * Every acquired handle is closed after transfer or on validation, cache and write
  * failures. Static directories and their trusted parents must be application-controlled.
+ * Transfer admission happens before opening a file. Pending responses have independent
+ * absolute deadlines; quota rejection closes the connection without interleaving an
+ * error response into a pending body.
  */
 public class StaticFileHandler extends AbstractHttpHandler {
 
@@ -72,6 +76,11 @@ public class StaticFileHandler extends AbstractHttpHandler {
     private final StaticResourceResolver resolver;
 
     /**
+     * Shared file-handle admission and response-completion policy.
+     */
+    private final HttpFileTransfers transfers;
+
+    /**
      * Serves the application's working-directory html subtree.
      */
     public StaticFileHandler() {
@@ -84,13 +93,36 @@ public class StaticFileHandler extends AbstractHttpHandler {
      * @param resolver trusted-root resource resolver
      */
     public StaticFileHandler(StaticResourceResolver resolver) {
-        this.resolver = Objects.requireNonNull(resolver, "resolver");
+        this(resolver, new HttpFileTransfers(HttpFileTransferLimits.DEFAULT));
     }
 
     /**
-     * Validates a request and transfers a safely opened file.
+     * Uses the standard static directory with a context-wide transfer owner.
      *
-     * @param ctx     channel context
+     * @param transfers shared file admission and deadline owner
+     */
+    public StaticFileHandler(HttpFileTransfers transfers) {
+        this(new StaticResourceResolver(Path.of(System.getProperty("user.dir")).resolve(HTML_FILE_DIR)), transfers);
+    }
+
+    /**
+     * Selects static resources and an independently configured transfer policy.
+     *
+     * @param resolver trusted directory resolver
+     * @param transfers file-handle owner shared across all routed connections
+     */
+    public StaticFileHandler(StaticResourceResolver resolver, HttpFileTransfers transfers) {
+        this.resolver = Objects.requireNonNull(resolver, "resolver");
+        this.transfers = Objects.requireNonNull(transfers, "transfers");
+    }
+
+    /**
+     * Validates and admits a request, then transfers a safely opened file in write order.
+     *
+     * <p>Admission failure closes the connection before opening a file. The transfer
+     * owner bounds handles and observes response completion independently of requests.
+     *
+     * @param ctx     connection's event-loop context
      * @param request borrowed HTTP request
      * @throws Exception if HTTP presentation fails unexpectedly
      */
@@ -113,30 +145,58 @@ public class StaticFileHandler extends AbstractHttpHandler {
                 return;
             }
         }
-        StaticResourceResolver.Resource resource;
-        try {
-            resource = resolver.open(request.uri());
-        } catch (AccessDeniedException forbidden) {
-            sendError(ctx, FORBIDDEN);
-            return;
-        } catch (NoSuchFileException missing) {
-            sendError(ctx, NOT_FOUND);
-            return;
-        } catch (FileSystemException rejected) {
-            sendError(ctx, FORBIDDEN);
-            return;
-        } catch (IOException failure) {
-            LOG.warn("Unable to open static resource", failure);
-            sendError(ctx, INTERNAL_SERVER_ERROR);
+        HttpFileTransfers.Lease lease = transfers.tryAcquire(ctx.channel());
+        if (lease == null) {
+            // Close without inserting an error response into a pending pipelined body.
+            ctx.close();
             return;
         }
-        boolean transferred = false;
-        DefaultFileRegion region = null;
+        boolean monitored = false;
         try {
+            StaticResourceResolver.Resource resource;
+            try {
+                resource = resolver.open(request.uri());
+            } catch (AccessDeniedException forbidden) {
+                sendError(ctx, FORBIDDEN);
+                return;
+            } catch (NoSuchFileException missing) {
+                sendError(ctx, NOT_FOUND);
+                return;
+            } catch (FileSystemException rejected) {
+                sendError(ctx, FORBIDDEN);
+                return;
+            } catch (IOException failure) {
+                LOG.warn("Unable to open static resource", failure);
+                sendError(ctx, INTERNAL_SERVER_ERROR);
+                return;
+            }
+            lease.attach(resource.channel());
             if (modifiedSince != null && resource.modified().toInstant().getEpochSecond() <= modifiedSince.getEpochSecond()) {
                 sendNotModified(ctx);
                 return;
             }
+            writeResource(ctx, request, resource, lease);
+            monitored = true;
+        } finally {
+            if (!monitored) {
+                lease.close();
+            }
+        }
+    }
+
+    /**
+     * Submits one ordered HTTP response while transferring region ownership to Netty.
+     *
+     * @param ctx connection's event-loop context
+     * @param request request providing keep-alive policy
+     * @param resource admitted opened resource
+     * @param lease file-handle owner observing both response writes
+     */
+    private static void writeResource(ChannelHandlerContext ctx, FullHttpRequest request,
+                                      StaticResourceResolver.Resource resource, HttpFileTransfers.Lease lease) {
+        boolean transferred = false;
+        DefaultFileRegion region = null;
+        try {
             HttpResponse response = new DefaultHttpResponse(HTTP_1_1, OK);
             HttpUtil.setContentLength(response, resource.length());
             String type = URLConnection.guessContentTypeFromName(resource.name());
@@ -149,9 +209,9 @@ public class StaticFileHandler extends AbstractHttpHandler {
             region = new DefaultFileRegion(resource.channel(), 0, resource.length());
             ChannelFuture transfer = ctx.write(region, ctx.newProgressivePromise());
             transferred = true;
-            transfer.addListener(ignored -> closeResource(resource));
             transfer.addListener(ChannelFutureListener.CLOSE_ON_FAILURE);
             ChannelFuture finish = ctx.writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT);
+            lease.watch(transfer, finish);
             finish.addListener(ChannelFutureListener.CLOSE_ON_FAILURE);
             if (!HttpUtil.isKeepAlive(request)) {
                 finish.addListener(ChannelFutureListener.CLOSE);
@@ -161,7 +221,6 @@ public class StaticFileHandler extends AbstractHttpHandler {
                 if (region != null) {
                     region.release();
                 }
-                closeResource(resource);
             }
         }
     }
@@ -183,24 +242,11 @@ public class StaticFileHandler extends AbstractHttpHandler {
     /**
      * Completes a conditional request without transferring file content.
      *
-     * @param ctx channel context
+     * @param ctx connection's event-loop context
      */
     private static void sendNotModified(ChannelHandlerContext ctx) {
         var response = new DefaultFullHttpResponse(HTTP_1_1, NOT_MODIFIED);
         response.headers().set(DATE, DATES.format(Instant.now()));
         ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
-    }
-
-    /**
-     * Releases a file handle while preserving the transport's completion outcome.
-     *
-     * @param resource owned opened file
-     */
-    private static void closeResource(StaticResourceResolver.Resource resource) {
-        try {
-            resource.close();
-        } catch (IOException failure) {
-            LOG.warn("Failed to close static resource", failure);
-        }
     }
 }

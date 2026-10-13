@@ -9,6 +9,8 @@ import com.akakata.lifecycle.ServerLifecycle;
 import com.akakata.security.CredentialsVerifier;
 import com.akakata.server.ConnectionAdmission;
 import com.akakata.server.HttpLimits;
+import com.akakata.server.HttpFileTransferLimits;
+import com.akakata.server.http.HttpFileTransfers;
 import com.akakata.server.TransportLimits;
 import com.akakata.service.LoginService;
 import com.akakata.service.SecurityService;
@@ -156,6 +158,31 @@ public final class ServiceModule {
                 configuration.getInt("http.request.timeout.millis", HttpLimits.DEFAULT.requestTimeoutMillis()),
                 configuration.getInt("http.read.idle.millis", HttpLimits.DEFAULT.readIdleMillis()),
                 configuration.getInt("http.maximum.connections", HttpLimits.DEFAULT.maximumConnections()));
+    }
+
+    /**
+     * Provides one static-file admission owner shared by all context HTTP connections.
+     *
+     * @param configuration application properties
+     * @return validated file-handle admission and deadline owner
+     */
+    @Provides
+    @Singleton
+    static HttpFileTransfers provideHttpFileTransfers(ConfigurationManager configuration) {
+        HttpFileTransferLimits defaults = HttpFileTransferLimits.DEFAULT;
+        int pending = configuration.getInt("http.file.maximum.pending.transfers", defaults.maximumPendingPerConnection());
+        int concurrent = configuration.getInt("http.file.maximum.concurrent.transfers", defaults.maximumConcurrentTransfers());
+        long timeout = configuration.getLong("http.file.transfer.timeout.millis", defaults.timeoutMillis());
+        if (pending <= 0) {
+            throw new IllegalArgumentException("http.file.maximum.pending.transfers must be positive");
+        }
+        if (concurrent <= 0) {
+            throw new IllegalArgumentException("http.file.maximum.concurrent.transfers must be positive");
+        }
+        if (timeout <= 0) {
+            throw new IllegalArgumentException("http.file.transfer.timeout.millis must be positive");
+        }
+        return new HttpFileTransfers(new HttpFileTransferLimits(pending, concurrent, timeout));
     }
 
     /**

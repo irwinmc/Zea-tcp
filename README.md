@@ -8,10 +8,11 @@ Zea TCP Transport is a Java game-server foundation built on Netty. It provides T
 HTTP and WebSocket listeners, player sessions, asynchronous event dispatch, a
 credential-keyed session cache and HTTP monitoring endpoints.
 
-This documentation describes **0.8.4**, including bounded shutdown, HTTP resource
-ownership, lifecycle-based readiness and transport instrumentation. Dependency
-versions below come from [pom.xml](pom.xml). See the
-[0.8.4 changelog](CHANGELOG.md#084) for changes and migration requirements.
+The published dependency below is **0.8.4**. This checkout also contains
+[unreleased changes](CHANGELOG.md#unreleased) for listener readiness, actual blocking-worker
+termination and bounded HTTP file transfers. Those changes require building this
+checkout until the next release. Dependency versions come from [pom.xml](pom.xml).
+See the [0.8.4 changelog](CHANGELOG.md#084) for the published release.
 
 ## Features
 
@@ -30,6 +31,7 @@ versions below come from [pom.xml](pom.xml). See the
 - Dagger assembly with application-selected Game, authentication and service providers.
 - Fail-closed login defaults, externally provisioned token keys and authenticated token expiry.
 - Bounded detached blocking operations with cancellation-safe resource accounting.
+- Nonblocking listener availability, observable worker termination and independent static-file transfer quotas and deadlines.
 - Caffeine session caching.
 - Health checks, JSON metrics, Prometheus text output and structured logging.
 
@@ -464,12 +466,29 @@ native-buffer ownership, recipient snapshots and reports, read pause/recovery,
 TCP/WebSocket write order, socket source/encoded/aggregate byte budgets, HTTP
 connection/request deadlines, custom core providers, secure token validation,
 bounded slow-operation cancellation and concurrent capacity admission.
+It also checks listener loss after startup, nonblocking readiness during bind,
+actual worker exit after shutdown timeout, and HTTP file admission, write failure,
+cancellation and absolute transfer deadlines.
 Examples with `main` methods are executable
 helpers rather than JUnit tests.
 
 The POM configures Maven Compiler 3.13.0, Surefire 3.2.5, JavaDoc 3.12.0 and
 Exec 3.6.1. Normal development builds do not require publishing credentials.
 Use the bundled Maven wrapper for reproducible repository builds.
+
+The [CI workflow](.github/workflows/ci.yml) runs on every branch push and pull request
+using Java 21 and the Maven wrapper. It runs full regression tests, strict production
+and test JavaDoc, a local signed-publication fixture and whitespace checks. CI uses
+read-only repository permissions and needs no publishing secrets. The separate
+release workflow remains responsible for Maven Central publication.
+
+Run the same validation locally:
+
+```bash
+./mvnw --batch-mode --no-transfer-progress clean verify javadoc:javadoc javadoc:test-javadoc
+python3 .github/scripts/test-central-publishing.py
+git diff --check
+```
 
 ### Generate API Documentation
 

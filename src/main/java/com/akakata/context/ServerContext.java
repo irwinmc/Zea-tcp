@@ -287,7 +287,8 @@ public final class ServerContext implements AsyncCloseable {
         requireOpen();
         sessionService = ownership.own(component.sessionService(), "sessions", 40, SessionService::close);
         requireOpen();
-        blockingTasks = ownership.own(component.blockingTaskExecutor(), "blocking", 20, BlockingTaskExecutor::close);
+        blockingTasks = ownership.own(component.blockingTaskExecutor(), "blocking", 20,
+                resource -> resource.closeAsync().join());
         requireOpen();
         login = component.loginService();
 

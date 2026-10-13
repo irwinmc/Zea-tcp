@@ -27,7 +27,8 @@ class FlowMetricsRegressionTest {
     /**
      * Creates the flow metrics fixture.
      */
-    FlowMetricsRegressionTest() {}
+    FlowMetricsRegressionTest() {
+    }
 
     /**
      * Exports separate Session/Game budgets and execution statistics through JSON and Prometheus.
@@ -40,7 +41,8 @@ class FlowMetricsRegressionTest {
              var blocking = new com.akakata.service.task.BlockingTaskExecutor(1, 2, 128, 1000)) {
             FlowControlMetrics.gameDispatcher(game.getEventDispatcher());
             FlowControlMetrics.resources(new com.akakata.communication.OutboundBudget(4096), blocking);
-            game.getEventDispatcher().submit(Events.event(new byte[16], 1), ignored -> {}).get(3, TimeUnit.SECONDS);
+            game.getEventDispatcher().submit(Events.event(new byte[16], 1), ignored -> {
+            }).get(3, TimeUnit.SECONDS);
             var flow = FlowControlMetrics.snapshot();
             DispatcherSnapshot snapshot = (DispatcherSnapshot) flow.get("game");
             assertEquals(1024, snapshot.byteBudget());
@@ -63,8 +65,13 @@ class FlowMetricsRegressionTest {
                             assertTrue(body.contains("zea_executor_byte_budget{scope=\"game\",shard=\"0\"} 1024"));
                             assertTrue(body.contains("zea_flow_pending_writes"));
                             assertTrue(body.contains("# TYPE zea_flow_pending_payload_bytes gauge"));
+                            assertTrue(body.contains("# TYPE zea_flow_pending_http_file_transfers gauge"));
+                            assertTrue(body.contains("# TYPE zea_flow_http_file_transfer_rejections counter"));
+                            assertTrue(body.contains("# TYPE zea_flow_http_file_transfer_timeouts counter"));
                             assertTrue(body.contains("zea_flow_outbound_byte_budget 4096"));
                             assertTrue(body.contains("zea_flow_blocking_byte_budget 128"));
+                            assertTrue(body.contains("zea_flow_blocking_closed 0"));
+                            assertTrue(body.contains("zea_flow_blocking_terminated 0"));
                         } else {
                             Map<?, ?> document = new ObjectMapper().readValue(body, Map.class);
                             Map<?, ?> exported = route.equals("/metrics") ? (Map<?, ?>) document.get("flow_control") : document;
@@ -73,6 +80,7 @@ class FlowMetricsRegressionTest {
                             assertNotNull(exported.get("transport"));
                             assertNotNull(exported.get("outbound"));
                             assertNotNull(exported.get("blocking"));
+                            assertTrue(((Map<?, ?>) exported.get("transport")).containsKey("pending_http_file_transfers"));
                         }
                     } finally {
                         response.release();
@@ -121,7 +129,8 @@ class FlowMetricsRegressionTest {
         /**
          * Creates the temporary-buffer ownership observer.
          */
-        private CapturingMetricsHandler() {}
+        private CapturingMetricsHandler() {
+        }
 
         /**
          * Last temporary native source copied into the response.

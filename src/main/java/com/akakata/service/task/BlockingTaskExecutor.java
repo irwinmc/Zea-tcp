@@ -1,6 +1,7 @@
 package com.akakata.service.task;
 
 import com.akakata.lifecycle.ShutdownSupport;
+import com.akakata.lifecycle.AsyncCloseable;
 
 import java.util.HashSet;
 import java.util.Objects;
@@ -23,7 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * interrupts running work and waits for a bounded interval. Workers are daemon
  * threads so an uncooperative external library cannot prevent JVM exit.
  */
-public final class BlockingTaskExecutor implements AutoCloseable {
+public final class BlockingTaskExecutor implements AsyncCloseable {
 
     /**
      * Default count of independent blocking workers.
@@ -44,11 +45,6 @@ public final class BlockingTaskExecutor implements AutoCloseable {
      * Default maximum shutdown wait in milliseconds.
      */
     public static final long DEFAULT_SHUTDOWN_MILLIS = 5_000;
-
-    /**
-     * Identifies owned workers to avoid waiting for the closing thread itself.
-     */
-    private static final ThreadLocal<BlockingTaskExecutor> WORKER_OWNER = new ThreadLocal<>();
 
     /**
      * Fixed worker pool with an explicitly bounded queue and rejection policy.
@@ -86,6 +82,11 @@ public final class BlockingTaskExecutor implements AutoCloseable {
     private boolean closed;
 
     /**
+     * Successful completion confirms that the executor has actually terminated.
+     */
+    private final CompletableFuture<Void> closeCompletion = new CompletableFuture<>();
+
+    /**
      * Creates a bounded worker pool; threads start lazily on the first submission.
      *
      * @param threads        the positive worker count
@@ -104,14 +105,7 @@ public final class BlockingTaskExecutor implements AutoCloseable {
         AtomicInteger sequence = new AtomicInteger();
         executor = new ThreadPoolExecutor(threads, threads, 0, TimeUnit.MILLISECONDS,
                 new ArrayBlockingQueue<>(queueCapacity), ShutdownSupport.workerFactory(runnable -> {
-            Thread thread = new Thread(() -> {
-                WORKER_OWNER.set(this);
-                try {
-                    runnable.run();
-                } finally {
-                    WORKER_OWNER.remove();
-                }
-            }, "zea-blocking-" + sequence.incrementAndGet());
+            Thread thread = new Thread(runnable, "zea-blocking-" + sequence.incrementAndGet());
             thread.setDaemon(true);
             return thread;
         }), new ThreadPoolExecutor.AbortPolicy());
@@ -198,35 +192,69 @@ public final class BlockingTaskExecutor implements AutoCloseable {
         return java.util.Map.of("threads", (long) executor.getCorePoolSize(),
                 "queue_capacity", maximumTasks - executor.getCorePoolSize(),
                 "byte_budget", maximumBytes, "pending_tasks", (long) tasks.size(),
-                "pending_bytes", pendingBytes, "active_workers", (long) executor.getActiveCount());
+                "pending_bytes", pendingBytes, "active_workers", (long) executor.getActiveCount(),
+                "closed", closed ? 1L : 0L, "terminated", executor.isTerminated() ? 1L : 0L);
     }
 
     /**
      * Stops admission, cancels queued work and requests interruption of running work.
-     * Running operations retain their charges until they actually return.
+     *
+     * <p>Running operations retain their charges until they actually return. A zero
+     * waiting interval requests shutdown only. Other external callers observe actual
+     * termination for the configured interval; managed workers never wait.
+     *
+     * @throws com.akakata.lifecycle.ShutdownTimeoutException if the positive wait expires
+     * @throws IllegalStateException if shutdown coordination fails
      */
     @Override
     public void close() {
+        CompletableFuture<Void> completion = closeAsync();
+        if (shutdownMillis > 0) {
+            ShutdownSupport.await(completion, shutdownMillis, "blocking workers");
+        }
+    }
+
+    /**
+     * Stops admission and requests interruption, then observes actual executor exit.
+     *
+     * <p>Running operations retain their reservations until they leave. Observation
+     * cancellation cannot cancel cleanup or publish a false termination signal.
+     * Cancellation continuations use nonblocking reentrant shutdown semantics.
+     * The termination wait runs on a dedicated cleanup thread.
+     *
+     * @return an independent future completed only after actual termination
+     */
+    @Override
+    public CompletableFuture<Void> closeAsync() {
         Task<?>[] outstanding;
         synchronized (this) {
             if (closed) {
-                return;
+                return closeCompletion.copy();
             }
             closed = true;
             outstanding = tasks.toArray(Task<?>[]::new);
             executor.shutdownNow();
         }
         for (Task<?> task : outstanding) {
-            task.result.cancel(true);
+            ShutdownSupport.runNonBlocking(() -> task.result.cancel(true));
         }
-        if (WORKER_OWNER.get() == this || ShutdownSupport.isManagedWorker()) {
-            return;
-        }
-        try {
-            executor.awaitTermination(shutdownMillis, TimeUnit.MILLISECONDS);
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-        }
+        ShutdownSupport.runAsync("zea-blocking-shutdown", () -> {
+            boolean interrupted = false;
+            try {
+                while (!executor.isTerminated()) {
+                    try {
+                        executor.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+                    } catch (InterruptedException interruption) {
+                        interrupted = true;
+                    }
+                }
+            } finally {
+                if (interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }).whenComplete((ignored, failure) -> ShutdownSupport.complete(closeCompletion, failure));
+        return closeCompletion.copy();
     }
 
     /**

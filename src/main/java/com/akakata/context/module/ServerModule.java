@@ -75,12 +75,13 @@ public abstract class ServerModule {
     /**
      * Provides the static file handler dependency for the application component.
      *
+     * @param transfers context-wide file admission and deadline owner
      * @return the static file handler instance
      */
     @Provides
     @Singleton
-    static StaticFileHandler provideStaticFileHandler() {
-        return new StaticFileHandler();
+    static StaticFileHandler provideStaticFileHandler(HttpFileTransfers transfers) {
+        return new StaticFileHandler(transfers);
     }
 
     /**
@@ -137,13 +138,14 @@ public abstract class ServerModule {
      * @param sessions      session registry
      * @param blocking      detached worker pool
      * @param network       network owner
+     * @param listeners     nonblocking availability of all selected listeners
      * @return nonblocking health provider
      */
     @Provides
     @Singleton
     static ServerHealth provideServerHealth(ConfigurationManager configuration, ServerLifecycle lifecycle,
                                             Game game, SessionService sessions, BlockingTaskExecutor blocking,
-                                            NetworkBootstrap network) {
+                                            NetworkBootstrap network, ListenerRegistry listeners) {
         long maximumDelay = configuration.getLong("health.maximum.event.delay.millis", 5_000);
         if (maximumDelay <= 0) {
             throw new IllegalArgumentException("health.maximum.event.delay.millis must be positive");
@@ -156,6 +158,7 @@ public abstract class ServerModule {
         checks.put("session_registry", () -> !sessions.isClosed());
         checks.put("blocking_workers", () -> !blocking.isClosed());
         checks.put("network", () -> !network.isClosing());
+        checks.put("listeners", listeners::isReady);
         checks.put("heap", () -> metrics.getMaxMemoryMB() > 0
                 && metrics.getUsedMemoryMB() < metrics.getMaxMemoryMB() * 0.95);
         return new DefaultServerHealth(lifecycle, checks);

@@ -71,6 +71,21 @@ public final class FlowControlMetrics {
     public static final LongAdder HTTP_TIMEOUTS = new LongAdder();
 
     /**
+     * Reserved HTTP file transfers, including opening files and active responses.
+     */
+    public static final LongAdder PENDING_HTTP_FILE_TRANSFERS = new LongAdder();
+
+    /**
+     * HTTP file requests rejected before opening a handle because admission failed.
+     */
+    public static final LongAdder HTTP_FILE_TRANSFER_REJECTIONS = new LongAdder();
+
+    /**
+     * Connections closed by an independent absolute file-response deadline.
+     */
+    public static final LongAdder HTTP_FILE_TRANSFER_TIMEOUTS = new LongAdder();
+
+    /**
      * Socket writes rejected by count or byte admission.
      */
     public static final LongAdder WRITE_REJECTIONS = new LongAdder();
@@ -170,6 +185,9 @@ public final class FlowControlMetrics {
         result.put("pending_socket_bytes", PENDING_SOCKET_BYTES.sum());
         result.put("pending_payload_bytes", PENDING_PAYLOAD_BYTES.sum());
         result.put("http_timeouts", HTTP_TIMEOUTS.sum());
+        result.put("pending_http_file_transfers", PENDING_HTTP_FILE_TRANSFERS.sum());
+        result.put("http_file_transfer_rejections", HTTP_FILE_TRANSFER_REJECTIONS.sum());
+        result.put("http_file_transfer_timeouts", HTTP_FILE_TRANSFER_TIMEOUTS.sum());
         result.put("write_rejections", WRITE_REJECTIONS.sum());
         result.put("write_timeouts", WRITE_TIMEOUTS.sum());
         result.put("encoded_frames", ENCODED_FRAMES.sum());

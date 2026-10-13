@@ -1,6 +1,7 @@
 # Lifecycle and Shutdown
 
-This guide describes lifecycle and shutdown contracts in Zea TCP Transport 0.8.4.
+This guide describes the current checkout, including
+[unreleased changes after 0.8.4](../CHANGELOG.md#unreleased).
 
 ## Requesting Shutdown
 
@@ -64,10 +65,18 @@ supplies bounded waiting and execution-context rules shared by resource owners.
 
 ## Executor and Payload Ownership
 
-`NetworkBootstrap`, `NettyEventDispatcher` and `ShardedEventDispatcher` expose
+`NetworkBootstrap`, `NettyEventDispatcher`, `ShardedEventDispatcher` and `BlockingTaskExecutor` expose
 `closeAsync()` through `AsyncCloseable`. Their futures observe actual termination.
 External synchronous waits default to five seconds; a standalone network owner
 or dispatcher can select another positive interval with its constructor.
+
+The blocking executor's synchronous wait uses `business.blocking.shutdown.millis`.
+A positive expired wait throws `ShutdownTimeoutException`; zero requests shutdown
+only. Its asynchronous signal completes after the executor has actually terminated,
+with no running task or retained task reservation. Cancelling one returned observation
+does not cancel this signal. The context registers this actual completion with its
+ownership registry, so an uncooperative worker keeps the context `STOPPING` and the
+aggregate cleanup pending while later cleanup stages can still run.
 
 Queued deliveries are cancelled and released. Running callbacks retain their
 native payload and byte reservation until they actually exit. Netty's graceful
@@ -86,6 +95,14 @@ in [slow business operations](SLOW_BUSINESS.md).
 `STOPPING`, `TERMINATED` or `FAILED`. A late startup completion cannot restore
 `RUNNING` after shutdown has begun. Readiness requires `RUNNING` and successful
 named resource checks. Initializing a context alone does not publish readiness.
+
+`ListenerRegistry` records the complete selected set before bind begins and samples
+`Server.isListening()` without taking the startup monitor. All selected listeners
+must be active; disabled listeners are excluded. An unexpectedly closed listening
+channel withdraws readiness even while the lifecycle remains `RUNNING` and the
+event-loop groups remain open. Custom servers must implement this fast status method;
+the interface default is unavailable. The registry keeps startup selection separate
+from the HTTP health presenter and avoids a dependency cycle in the component graph.
 
 The HTTP presenter consumes `ServerHealth` snapshots rather than inspecting a
 context or casting its Game implementation. The composition root supplies checks

@@ -126,9 +126,17 @@ Uncooperative work may continue after that deadline and retains its reservation
 until it returns. Workers are daemon threads, so such work cannot prevent JVM exit.
 Set external dependency timeouts so operations normally finish before shutdown.
 
+A positive expired standalone `close()` wait throws `ShutdownTimeoutException`.
+Zero requests shutdown without waiting. `closeAsync()` always returns an independent
+observation of actual executor termination. Cancelling that observation cannot cancel
+cleanup. Context cleanup uses the actual termination signal: a still-running worker
+keeps the context `STOPPING` and its aggregate future pending, while cleanup of other
+resources continues after the shared observation budget expires.
+
 `/metrics/flow-control` includes a `blocking` group with `threads`,
 `queue_capacity`, `byte_budget`, `pending_tasks`, `pending_bytes` and
-`active_workers`. Prometheus emits `zea_flow_blocking_<field>` gauges.
+`active_workers`, `closed` and `terminated`. The last two are 0/1 gauges distinguishing
+requested shutdown from actual executor exit. Prometheus emits `zea_flow_blocking_<field>` gauges.
 Inspect these alongside Session/Game queue waits and callback durations. A low
 ordered-queue depth does not establish that external operations are fast or that
 there is no running work.

@@ -4,6 +4,7 @@ import com.akakata.app.impl.DefaultGame;
 import com.akakata.event.Event;
 import com.akakata.event.EventHandler;
 import com.akakata.event.Events;
+import com.akakata.lifecycle.ShutdownTimeoutException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -132,21 +133,70 @@ class BlockingTaskExecutorRegressionTest {
             });
             assertTrue(started.await(2, TimeUnit.SECONDS));
             long start = System.nanoTime();
-            executor.close();
+            assertThrows(ShutdownTimeoutException.class, executor::close);
             assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start) < 1_000);
             assertTrue(running.isCancelled());
             assertFalse(executor.isTerminated());
             assertEquals(64, executor.pendingBytes());
         } finally {
             release.countDown();
-            executor.close();
-        }
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-        while (!executor.isTerminated() && System.nanoTime() < deadline) {
-            Thread.onSpinWait();
+            executor.closeAsync().get(2, TimeUnit.SECONDS);
         }
         assertTrue(executor.isTerminated());
         assertEquals(0, executor.pendingBytes());
+    }
+
+    /**
+     * Separates request-only closure and cancelled observations from actual worker termination.
+     *
+     * @throws Exception if the worker or cleanup barrier fails
+     */
+    @Test
+    void zeroWaitAndCancelledObservationCannotPublishPrematureTermination() throws Exception {
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        BlockingTaskExecutor executor = new BlockingTaskExecutor(1, 1, 64, 0);
+        try {
+            executor.submit(64, () -> {
+                started.countDown();
+                awaitIgnoringInterrupt(release, new CountDownLatch(0));
+                return null;
+            });
+            assertTrue(started.await(2, TimeUnit.SECONDS));
+            executor.close();
+            assertTrue(executor.isClosed());
+            CompletableFuture<Void> observation = executor.closeAsync();
+            assertFalse(observation.isDone());
+            assertTrue(observation.cancel(false));
+            assertFalse(executor.closeAsync().isDone());
+            assertEquals(1L, executor.snapshot().get("closed"));
+            assertEquals(0L, executor.snapshot().get("terminated"));
+            assertEquals(64, executor.pendingBytes());
+            release.countDown();
+            executor.closeAsync().thenRun(executor::close).get(2, TimeUnit.SECONDS);
+            assertTrue(executor.isTerminated());
+            assertEquals(1L, executor.snapshot().get("terminated"));
+            assertEquals(0, executor.pendingTasks());
+            assertEquals(0, executor.pendingBytes());
+        } finally {
+            release.countDown();
+            executor.closeAsync().get(2, TimeUnit.SECONDS);
+        }
+    }
+
+    /**
+     * Completes shutdown correctly even when no worker thread was ever started.
+     *
+     * @throws Exception if cleanup does not complete
+     */
+    @Test
+    void unusedExecutorHasAnActualTerminationSignal() throws Exception {
+        BlockingTaskExecutor executor = new BlockingTaskExecutor(1, 1, 64, 1_000);
+        executor.closeAsync().get(2, TimeUnit.SECONDS);
+        assertTrue(executor.isTerminated());
+        assertTrue(executor.submit(0, () -> 1).isCompletedExceptionally());
+        executor.close();
+        assertEquals(0, executor.pendingTasks());
     }
 
     /**

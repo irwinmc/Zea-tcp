@@ -12,6 +12,8 @@ import java.util.Objects;
  * <p>The manager publishes the complete expected set before binding. Health providers
  * can then observe the same set without depending on the manager or HTTP pipeline.
  * Lifecycle phase remains a separate readiness requirement.
+ *
+ * @since 0.8.5
  */
 @Singleton
 public final class ListenerRegistry {

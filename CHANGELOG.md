@@ -4,7 +4,7 @@ Release changes and migration requirements for Zea TCP Transport, with the newes
 release first. See the [repository README](README.md) for the quick start and
 [application guides](README.md#documentation) for supported APIs and configuration.
 
-- [Unreleased](#unreleased): listener availability, actual worker termination,
+- [0.8.5](#085): listener availability, actual worker termination,
   HTTP file-transfer admission and continuous integration.
 - [0.8.4](#084): bounded shutdown, response ownership, operational health
   and static-resource boundaries.
@@ -13,10 +13,12 @@ release first. See the [repository README](README.md) for the quick start and
 - [0.8.2](#082): component injection, authentication defaults, resource budgets
   and migration from 0.8.1.
 
-## Unreleased
+## 0.8.5
 
-These changes follow the published 0.8.4 release and preserve ordered Session and
-Game delivery. The Maven version remains unchanged until the next release is prepared.
+Version 0.8.5 improves listener readiness, blocking-worker shutdown and HTTP file
+transfers while preserving ordered Session and Game delivery.
+
+### Changes
 
 - Require all selected listener channels to be active before publishing readiness.
   Sample listener availability without acquiring the blocking startup monitor or
@@ -34,7 +36,10 @@ Game delivery. The Maven version remains unchanged until the next release is pre
 - Add lifecycle, file-transfer, admission and configuration regressions and update
   English API and application documentation.
 
-### Migration
+### Migration from 0.8.4
+
+Update the dependency to `com.akakata:zea-tcp:0.8.5`. Java 21, dependency versions,
+event API names and network frame formats remain unchanged.
 
 Custom `Server` implementations must override the nonblocking `isListening()`
 contract to report an active listener; its default is unavailable. Disabled listeners
@@ -50,6 +55,16 @@ context and a 30-second absolute transfer deadline. Configure the three
 `http.file.*` settings in [configuration](docs/CONFIGURATION.md). Admission failure
 closes the requesting connection without inserting a response into a pending
 pipelined body. No new dependencies or JVM module-access flags are required.
+
+### Validation
+
+The release checks include 320 regression cases, with 19 new cases for listener
+availability, actual worker exit, HTTP file-transfer admission and deadlines, and
+configuration validation. Strict production and test JavaDoc and seven local
+signed-publication fixtures also pass. Branch pushes and pull requests run the
+same validation in CI; release publication runs through the separate Central workflow.
+
+Maven coordinates: `com.akakata:zea-tcp:0.8.5`.
 
 ## 0.8.4
 

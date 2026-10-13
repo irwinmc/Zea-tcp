@@ -8,11 +8,10 @@ Zea TCP Transport is a Java game-server foundation built on Netty. It provides T
 HTTP and WebSocket listeners, player sessions, asynchronous event dispatch, a
 credential-keyed session cache and HTTP monitoring endpoints.
 
-The published dependency below is **0.8.4**. This checkout also contains
-[unreleased changes](CHANGELOG.md#unreleased) for listener readiness, actual blocking-worker
-termination and bounded HTTP file transfers. Those changes require building this
-checkout until the next release. Dependency versions come from [pom.xml](pom.xml).
-See the [0.8.4 changelog](CHANGELOG.md#084) for the published release.
+This documentation describes **0.8.5**, including listener readiness, actual
+blocking-worker termination and bounded HTTP file transfers. Dependency versions
+come from [pom.xml](pom.xml). See the [0.8.5 changelog](CHANGELOG.md#085) for release
+changes and migration requirements.
 
 ## Features
 
@@ -51,7 +50,7 @@ reconnection and client connection pooling are not implemented.
 <dependency>
     <groupId>com.akakata</groupId>
     <artifactId>zea-tcp</artifactId>
-    <version>0.8.4</version>
+    <version>0.8.5</version>
 </dependency>
 ```
 
@@ -137,7 +136,7 @@ Other executable examples are `com.akakata.HttpOnlyServer` (HTTP port 18081),
 `com.akakata.AdvancedTestServer`. They live in
 [src/test/java/com/akakata](src/test/java/com/akakata).
 
-`mvn package` produces the library JAR `target/zea-tcp-0.8.4.jar`. It does not bundle
+`mvn package` produces the library JAR `target/zea-tcp-0.8.5.jar`. It does not bundle
 runtime dependencies or configure a `Main-Class`. The provided [run.sh](run.sh)
 expects an application-owned executable `server.jar` in the working directory;
 create that application artifact before using the script.
@@ -499,7 +498,7 @@ git diff --check
 
 Open `target/reports/apidocs/index.html` for the framework API and
 `target/reports/testapidocs/index.html` for examples and regression-test helpers.
-The archive is `target/zea-tcp-0.8.4-javadoc.jar`. Compilation generates the Dagger
+The archive is `target/zea-tcp-0.8.5-javadoc.jar`. Compilation generates the Dagger
 component types needed by JavaDoc. Documentation uses English, UTF-8 and strict
 doclint checks; generated Dagger sources are excluded.
 

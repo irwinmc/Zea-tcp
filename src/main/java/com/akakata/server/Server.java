@@ -17,6 +17,7 @@ public interface Server {
      * in listener readiness checks.
      *
      * @return whether this server can accept new connections
+     * @since 0.8.5
      */
     default boolean isListening() {
         return false;

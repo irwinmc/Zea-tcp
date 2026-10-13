@@ -1,7 +1,7 @@
 # Configuration Guide
 
-This guide describes the current checkout's component, security, resource,
-lifecycle and health policies, including [unreleased changes after 0.8.4](../CHANGELOG.md#unreleased).
+This guide describes the component, security, resource, lifecycle and health
+policies in [Zea TCP Transport 0.8.5](../CHANGELOG.md#085).
 Dependency versions and build commands are listed in the [README](../README.md).
 
 ## Loading Configuration

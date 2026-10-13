@@ -6,6 +6,7 @@ package com.akakata.server;
  * @param maximumPendingPerConnection positive file-transfer allowance per connection
  * @param maximumConcurrentTransfers positive aggregate allowance per handler owner
  * @param timeoutMillis positive absolute response-transfer deadline in milliseconds
+ * @since 0.8.5
  */
 public record HttpFileTransferLimits(int maximumPendingPerConnection, int maximumConcurrentTransfers,
                                      long timeoutMillis) {

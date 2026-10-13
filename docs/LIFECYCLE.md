@@ -1,7 +1,7 @@
 # Lifecycle and Shutdown
 
-This guide describes the current checkout, including
-[unreleased changes after 0.8.4](../CHANGELOG.md#unreleased).
+This guide describes lifecycle and shutdown contracts in
+[Zea TCP Transport 0.8.5](../CHANGELOG.md#085).
 
 ## Requesting Shutdown
 

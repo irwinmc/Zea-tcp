@@ -1,7 +1,7 @@
 # Monitoring Endpoints
 
-This guide describes the current checkout, including
-[unreleased changes after 0.8.4](../CHANGELOG.md#unreleased).
+This guide describes lifecycle and instrumentation in
+[Zea TCP Transport 0.8.5](../CHANGELOG.md#085).
 The bundled HTTP listener binds to loopback
 on port 8081. Enable `server.http.enabled` and use the configured `http.port`;
 the HTTP-only example uses 18081. See [configuration](CONFIGURATION.md).

@@ -23,6 +23,8 @@ import java.util.concurrent.TimeUnit;
  * loop and owns the opened handle until both file and response writes finish, fail
  * or the channel closes. Netty retains ownership of submitted file-region references.
  * Disk file sizes are not charged as resident encoded socket buffers.
+ *
+ * @since 0.8.5
  */
 public final class HttpFileTransfers {
 

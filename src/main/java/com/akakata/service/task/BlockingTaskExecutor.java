@@ -223,6 +223,7 @@ public final class BlockingTaskExecutor implements AsyncCloseable {
      * The termination wait runs on a dedicated cleanup thread.
      *
      * @return an independent future completed only after actual termination
+     * @since 0.8.5
      */
     @Override
     public CompletableFuture<Void> closeAsync() {

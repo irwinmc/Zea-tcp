@@ -155,7 +155,7 @@ interfaces. Custom dispatchers implement `EventDispatcher.isHealthy(long)` and c
 Games expose `isShuttingDown()`. Health checks must not perform remote I/O or wait for
 an executor. An unbound HTTP health presenter fails readiness.
 
-In the [unreleased checkout](../CHANGELOG.md#unreleased), the shared `ListenerRegistry`
+In [0.8.5](../CHANGELOG.md#085), the shared `ListenerRegistry`
 publishes the selected listener set before startup. Health checks sample
 `Server.isListening()` without depending on `ServerManager` or taking its startup
 lock. Custom servers must provide this nonblocking status; inactive selected listeners

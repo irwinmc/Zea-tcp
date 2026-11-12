@@ -34,16 +34,14 @@ public class RandomStringGenerator {
     /**
      * Generates an alphanumeric string using SHA1PRNG.
      *
-     * <p>A nonpositive requested length selects eight characters. If the random
-     * provider is unavailable, the implementation prints the failure and returns its
-     * fallback string.
+     * <p>A nonpositive requested length selects eight characters. An unavailable
+     * provider fails generation instead of returning a predictable identity.
      *
      * @param length the number of bytes or characters requested
-     * @return the generated string, or the fallback value if the provider is unavailable
+     * @return the generated string
+     * @throws IllegalStateException if the secure random provider is unavailable
      */
     public static String generateRandomString(int length) {
-        String random = "ACK";
-
         int len = DEFAULT_LENGTH;
         if (length > 0) {
             len = length;
@@ -56,11 +54,9 @@ public class RandomStringGenerator {
                 int nextChar = wheel.nextInt(alphaNumeric.length);
                 randomChars[i] = alphaNumeric[nextChar];
             }
-            random = new String(randomChars);
+            return new String(randomChars);
         } catch (NoSuchAlgorithmException e) {
-            e.printStackTrace();
+            throw new IllegalStateException("Secure random provider is unavailable", e);
         }
-
-        return random;
     }
 }

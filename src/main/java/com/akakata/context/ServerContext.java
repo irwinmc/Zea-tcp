@@ -290,6 +290,9 @@ public final class ServerContext implements AsyncCloseable {
         blockingTasks = ownership.own(component.blockingTaskExecutor(), "blocking", 20,
                 resource -> resource.closeAsync().join());
         requireOpen();
+        ownership.own(component.httpFileTransfers(), "http-files", 25,
+                resource -> resource.closeAsync().join());
+        requireOpen();
         login = component.loginService();
 
         serverManager = ownership.own(component.serverManager(), "servers", 10, resource -> {

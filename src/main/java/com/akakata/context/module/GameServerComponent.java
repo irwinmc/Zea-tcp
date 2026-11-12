@@ -7,6 +7,7 @@ import com.akakata.context.NetworkBootstrap;
 import com.akakata.metrics.ServerHealth;
 import com.akakata.security.CredentialsVerifier;
 import com.akakata.server.ServerManager;
+import com.akakata.server.http.HttpFileTransfers;
 import com.akakata.service.LoginService;
 import com.akakata.service.SecurityService;
 import com.akakata.service.SessionService;
@@ -82,6 +83,13 @@ public interface GameServerComponent {
      * @return the bounded task executor
      */
     BlockingTaskExecutor blockingTaskExecutor();
+
+    /**
+     * Returns the context-owned filesystem workers and file reservations.
+     *
+     * @return the static-file resource owner
+     */
+    HttpFileTransfers httpFileTransfers();
 
     /**
      * Returns the composed nonblocking health provider.

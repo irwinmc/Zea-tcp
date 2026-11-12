@@ -166,6 +166,12 @@ requests; sequence dependent work explicitly. There is no automatic callback
 deadline or interruption.
 Never wait synchronously for work submitted to the same executor.
 
+Static-file path resolution, metadata, opening and closure use the separate bounded
+`HttpFileTransfers` workers. HTTP routing and response writes stay on the original
+I/O loop; a per-connection FIFO prevents later routes from overtaking a pending open.
+File reservations remain charged until actual cleanup, including late results after
+connection closure. See [static resources](CONFIGURATION.md).
+
 ## Bounded Queues and Rejection
 
 Each business executor defaults to **32,768 pending tasks** and **64 MiB of

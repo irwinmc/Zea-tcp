@@ -23,6 +23,12 @@ slow work to a bounded executor and return promptly. For CPU-heavy work, create 
 separately bounded application pool appropriate to that workload; do not consume
 all blocking-I/O workers with an unlimited computation.
 
+Static-file path resolution, metadata, opening and closure use the separate bounded
+`HttpFileTransfers` workers. HTTP routing and response writes stay on the original
+I/O loop; a per-connection FIFO prevents later routes from overtaking a pending open.
+File reservations remain charged until actual cleanup, including late results after
+connection closure. See [static resources](CONFIGURATION.md).
+
 ## Bounded Blocking Executor
 
 The context exposes `getBean(BlockingTaskExecutor.class)`. Its threads start lazily.

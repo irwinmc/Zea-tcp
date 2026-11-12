@@ -5,6 +5,8 @@ import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.http.*;
 import io.netty.util.ReferenceCountUtil;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.AfterEach;
+import com.akakata.server.HttpFileTransferLimits;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -18,8 +20,11 @@ import java.nio.file.Path;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static com.akakata.server.http.HttpFileTestSupport.await;
 
 /**
  * Verifies static path boundaries and file-handle cleanup independently of application state.
@@ -31,6 +36,33 @@ class StaticResourceRegressionTest {
      */
     @TempDir
     Path directory;
+
+    /**
+     * Owners of lazily started fixture workers.
+     */
+    private final List<HttpFileTransfers> owners = new ArrayList<>();
+
+    /**
+     * Terminates file workers after each fixture.
+     */
+    @AfterEach
+    void closeOwners() {
+        for (HttpFileTransfers owner : owners) {
+            owner.close();
+        }
+    }
+
+    /**
+     * Creates a presenter whose workers belong to this test fixture.
+     *
+     * @param root trusted static root
+     * @return configured static presenter
+     */
+    private StaticFileHandler handler(Path root) {
+        HttpFileTransfers owner = new HttpFileTransfers(HttpFileTransferLimits.DEFAULT);
+        owners.add(owner);
+        return new StaticFileHandler(new StaticResourceResolver(root), owner);
+    }
 
     /**
      * Creates the static resource fixture.
@@ -116,7 +148,7 @@ class StaticResourceRegressionTest {
     void rejectedTransferReleasesFileRegionAndHandle() throws Exception {
         Path root = Files.createDirectory(directory.resolve("html"));
         Files.writeString(root.resolve("fixture.txt"), "owned static data");
-        StaticFileHandler handler = new StaticFileHandler(new StaticResourceResolver(root));
+        StaticFileHandler handler = handler(root);
         AtomicReference<DefaultFileRegion> captured = new AtomicReference<>();
         EmbeddedChannel channel = new EmbeddedChannel(new ChannelOutboundHandlerAdapter() {
             @Override
@@ -132,6 +164,7 @@ class StaticResourceRegressionTest {
         }, route(handler));
         try {
             channel.writeInbound(new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/fixture.txt"));
+            await(channel, () -> captured.get() != null && !channel.isOpen());
             assertNotNull(captured.get());
             assertEquals(0, captured.get().refCnt());
             assertFalse(channel.isOpen());
@@ -149,13 +182,14 @@ class StaticResourceRegressionTest {
     void conditionalRequestsAndInvalidDatesHaveDeterministicStatus() throws Exception {
         Path root = Files.createDirectory(directory.resolve("html"));
         Files.writeString(root.resolve("fixture.txt"), "owned static data");
-        StaticFileHandler handler = new StaticFileHandler(new StaticResourceResolver(root));
+        StaticFileHandler handler = handler(root);
         EmbeddedChannel cached = new EmbeddedChannel(route(handler));
         EmbeddedChannel invalid = new EmbeddedChannel(route(handler));
         try {
             var request = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/fixture.txt?cache=1");
             request.headers().set("If-Modified-Since", DateTimeFormatter.RFC_1123_DATE_TIME.format(ZonedDateTime.now().plusDays(1)));
             cached.writeInbound(request);
+            await(cached, () -> !cached.outboundMessages().isEmpty());
             FullHttpResponse response = cached.readOutbound();
             try {
                 assertEquals(304, response.status().code());
@@ -187,9 +221,10 @@ class StaticResourceRegressionTest {
         Path root = Files.createDirectory(directory.resolve("html"));
         Path outside = Files.writeString(directory.resolve("outside.txt"), "synthetic outside data");
         Files.createSymbolicLink(root.resolve("link.txt"), outside);
-        EmbeddedChannel channel = new EmbeddedChannel(route(new StaticFileHandler(new StaticResourceResolver(root))));
+        EmbeddedChannel channel = new EmbeddedChannel(route(handler(root)));
         try {
             channel.writeInbound(new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/link.txt"));
+            await(channel, () -> !channel.outboundMessages().isEmpty());
             FullHttpResponse response = channel.readOutbound();
             try {
                 assertEquals(403, response.status().code());

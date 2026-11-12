@@ -28,6 +28,8 @@ public class SimpleCredentials implements Credentials {
 
     /**
      * Generates a credential key and creates an empty attribute map.
+     *
+     * @throws IllegalStateException if secure credential-key generation is unavailable
      */
     public SimpleCredentials() {
         this.randomKey = RandomStringGenerator.generateRandomString(8);

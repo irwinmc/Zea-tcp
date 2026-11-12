@@ -4,6 +4,7 @@ Release changes and migration requirements for Zea TCP Transport, with the newes
 release first. See the [repository README](README.md) for the quick start and
 [application guides](README.md#documentation) for supported APIs and configuration.
 
+- [0.8.6](#086): string framing, secure-random failure and static filesystem offloading.
 - [0.8.5](#085): listener availability, actual worker termination,
   HTTP file-transfer admission and continuous integration.
 - [0.8.4](#084): bounded shutdown, response ownership, operational health
@@ -12,6 +13,42 @@ release first. See the [repository README](README.md) for the quick start and
   streaming JSON and migration from 0.8.2.
 - [0.8.2](#082): component injection, authentication defaults, resource budgets
   and migration from 0.8.1.
+
+## 0.8.6
+
+Version 0.8.6 fixes string framing and credential identity generation, and moves
+static-file filesystem work off network I/O loops.
+
+### Changes
+
+- Decode a four-byte zero-length string frame as an empty string and consume its
+  prefix. Preserve the reader position of a lone nonzero length header.
+- Fail credential identity generation with `IllegalStateException` and the provider
+  cause when SHA1PRNG is unavailable; never return the predictable `ACK` fallback.
+- Resolve paths, query metadata, open files and close handles on at most two lazy,
+  bounded filesystem workers. Keep HTTP response writes on the original I/O loop.
+- Preserve response order across static and dynamic routes with a bounded FIFO and
+  read backpressure. Retain file admission until actual cleanup after timeouts,
+  disconnection, write failure and context shutdown.
+- Publish Maven artifacts only from a published GitHub Release's matching `v0.8.6`
+  tag. Branch pushes run verification. Preserve individual test reports in Actions.
+
+### Migration from 0.8.5
+
+Update the dependency to `com.akakata:zea-tcp:0.8.6`. Java 21, dependency versions,
+public event API names, string wire bytes and configuration defaults are unchanged.
+Empty strings now decode as `""`. An unavailable secure-random provider explicitly
+fails credential construction. Standalone integrations must close their
+`HttpFileTransfers` owner; the default context owns this cleanup automatically.
+
+### Validation
+
+All 334 regression cases, strict production/private and test JavaDoc, and local
+signed-publication checks pass. The 14 added regressions cover framing, isolated
+random-provider failure, HTTP ordering, pressure, late cleanup, worker termination
+and real pipelined HTTP response bodies on a loopback NIO socket.
+
+Maven coordinates: `com.akakata:zea-tcp:0.8.6`.
 
 ## 0.8.5
 

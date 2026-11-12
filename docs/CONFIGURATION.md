@@ -76,7 +76,7 @@ The **bundled value** is the value in this checkout's default resource.
 | `http.maximum.request.bytes` | `65536` | `65536` | Positive aggregated HTTP body limit |
 | `http.request.timeout.millis` | `10000` | `10000` | Absolute request deadline, renewed after each complete body |
 | `http.read.idle.millis` | `30000` | `30000` | HTTP read inactivity expiry; zero disables it |
-| `http.file.maximum.pending.transfers` | `2` | `2` | Positive pending static-file response allowance per connection |
+| `http.file.maximum.pending.transfers` | `2` | `2` | Positive file-transfer and waiting-route allowance per connection |
 | `http.file.maximum.concurrent.transfers` | `128` | `128` | Positive aggregate static-file transfer allowance across context HTTP connections |
 | `http.file.transfer.timeout.millis` | `30000` | `30000` | Positive absolute transfer deadline, independent of new incoming requests |
 | `business.blocking.threads` | `2` | `2` | Positive worker count for detached blocking operations |
@@ -249,9 +249,9 @@ A conservative planning allowance includes `shards * session.queue.bytes +
 game.queue.bytes + socket.total.pending.bytes + business.blocking.queue.bytes`,
 plus HTTP aggregation, decoding, application state, caches, thread stacks and JVM
 baseline storage. Charges can overlap for shared payloads, and estimates are not
-an exact memory ceiling. HTTP aggregated bodies alone may approach
-`http.maximum.connections * http.maximum.request.bytes`; header and codec storage
-are additional. Set deployment heap/container budgets separately and measure your
+an exact memory ceiling. HTTP aggregation and routes waiting behind file opens may
+retain up to `http.maximum.connections * http.file.maximum.pending.transfers *
+http.maximum.request.bytes` body bytes; header and codec storage are additional. Set deployment heap/container budgets separately and measure your
 workload. See [slow operations](SLOW_BUSINESS.md) for safe offloading and cancellation.
 
 ### Queue Sampling
@@ -552,12 +552,20 @@ a linked root, are forbidden. URI query parameters do not become part of a filen
 Missing files return 404, forbidden paths return 403 and malformed cache dates return
 400. File handles close after transfer, rejection or a conditional 304 response.
 
+Static path resolution, directory/metadata operations, file opening and handle
+closure run on the context-owned `HttpFileTransfers` workers. At most two daemon
+workers start lazily and retire after 30 idle seconds. Their queue is bounded by
+admitted file reservations, including reserved cleanup capacity; no rejected work
+runs on the I/O loop. These workers are separate from the business blocking pool.
+Standalone integrations own and close their `HttpFileTransfers` instance.
+
 `HttpFileTransfers` reserves capacity before opening a resource. The default limits
 are two pending file responses per connection and 128 across the context, including
 responses whose final content write is still pending. A reservation is returned only
-after its handle closes. Opening failures, conditional responses, failed or cancelled
-writes and channel closure all release ownership. Submitted file-region reference
-counts remain the outbound pipeline's responsibility; Netty discards them on closure.
+after its handle closes. A timeout or disconnect during opening keeps the reservation
+until the worker returns and closes any late handle. Opening failures, conditional
+responses, failed or cancelled writes and channel closure all request cleanup.
+Submitted file-region reference counts remain the outbound pipeline's responsibility; Netty discards them on closure.
 
 Each admitted response has a 30-second absolute transfer deadline starting at
 admission. Another incoming request does not extend it. The request and read-idle
@@ -571,6 +579,12 @@ Zero-copy file sizes are not charged as resident encoded socket bytes. File-tran
 counts bound their handles and queued responses; `socket.*` byte budgets continue
 to bound encoded native buffers. Static responses are submitted on the connection's
 event loop and preserve HTTP write order without using the Session or Game executor.
+While a file opens, later requests on that connection wait in a FIFO bounded by
+`http.file.maximum.pending.transfers`, including the current opener. Each queued
+body remains bounded by `http.maximum.request.bytes`; HTTP codec limits bound
+request lines and headers. Reads paused by this barrier resume after ordered routing,
+while an application-disabled auto-read flag remains disabled. Current-batch overflow
+closes the connection and releases queued requests rather than overtaking a response.
 
 Directory descriptors anchor traversal on filesystems supporting
 `SecureDirectoryStream`. Other filesystems use canonical containment, no-follow

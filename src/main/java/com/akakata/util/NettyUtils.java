@@ -137,7 +137,7 @@ public class NettyUtils {
      * Reads a string at the current reader position.
      *
      * <p>Overloads without an explicit length first read a four-byte length prefix and
-     * return null when no buffer is supplied or at most four bytes remain. Overloads
+     * return null when no buffer is supplied or fewer than four bytes remain. Overloads
      * with a length decode exactly that many bytes. UTF-8 is used unless a charset is
      * supplied; null charsets also select UTF-8. Slice conversion failures are logged.
      *
@@ -152,7 +152,7 @@ public class NettyUtils {
      * Reads a string at the current reader position.
      *
      * <p>Overloads without an explicit length first read a four-byte length prefix and
-     * return null when no buffer is supplied or at most four bytes remain. Overloads
+     * return null when no buffer is supplied or fewer than four bytes remain. Overloads
      * with a length decode exactly that many bytes. UTF-8 is used unless a charset is
      * supplied; null charsets also select UTF-8. Slice conversion failures are logged.
      *
@@ -161,19 +161,22 @@ public class NettyUtils {
      * @return the decoded string, or {@code null} if no framed string can be decoded
      */
     public static String readString(ByteBuf buffer, Charset charset) {
-        String readString = null;
-        if (buffer != null && buffer.readableBytes() > 4) {
-            int length = buffer.readInt();
-            readString = readString(buffer, length, charset);
+        if (buffer == null) {
+            return null;
         }
-        return readString;
+        int available = buffer.readableBytes();
+        if (available < 4 || (available == 4 && buffer.getInt(buffer.readerIndex()) != 0)) {
+            return null;
+        }
+        int length = buffer.readInt();
+        return readString(buffer, length, charset);
     }
 
     /**
      * Reads a string at the current reader position.
      *
      * <p>Overloads without an explicit length first read a four-byte length prefix and
-     * return null when no buffer is supplied or at most four bytes remain. Overloads
+     * return null when no buffer is supplied or fewer than four bytes remain. Overloads
      * with a length decode exactly that many bytes. UTF-8 is used unless a charset is
      * supplied; null charsets also select UTF-8. Slice conversion failures are logged.
      *
@@ -195,7 +198,7 @@ public class NettyUtils {
      * Reads a string at the current reader position.
      *
      * <p>Overloads without an explicit length first read a four-byte length prefix and
-     * return null when no buffer is supplied or at most four bytes remain. Overloads
+     * return null when no buffer is supplied or fewer than four bytes remain. Overloads
      * with a length decode exactly that many bytes. UTF-8 is used unless a charset is
      * supplied; null charsets also select UTF-8. Slice conversion failures are logged.
      *

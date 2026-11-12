@@ -161,4 +161,6 @@ publishes the selected listener set before startup. Health checks sample
 lock. Custom servers must provide this nonblocking status; inactive selected listeners
 withdraw readiness. `HttpFileTransfers` similarly owns file admission and deadlines
 independently of static-resource resolution and HTTP response construction. It is
-shared across the context's HTTP connections and starts no extra executors.
+shared across the context's HTTP connections and owns at most two lazy filesystem
+workers. The context closes this owner and observes actual worker termination.
+File reservations include opening and cleanup, even after a timeout or disconnect.

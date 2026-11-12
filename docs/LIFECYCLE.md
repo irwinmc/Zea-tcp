@@ -39,11 +39,12 @@ The context registers named resource cleanup actions as assembly progresses:
 
 1. Stop listeners and close their channels.
 2. Stop detached blocking operations.
-3. Close the Game and its sessions.
-4. Close the session registry and its scheduler.
-5. Stop metric sampling and detach metric resource references.
-6. Close shared session executors.
-7. Terminate network event loops.
+3. Close static-file reservations and wait for filesystem workers, including late opens.
+4. Close the Game and its sessions.
+5. Close the session registry and its scheduler.
+6. Stop metric sampling and detach metric resource references.
+7. Close shared session executors.
+8. Terminate network event loops.
 
 `ShutdownSequence` invokes each action on its own virtual thread. It normally waits
 for an action before beginning the next one, within one shared observation budget.

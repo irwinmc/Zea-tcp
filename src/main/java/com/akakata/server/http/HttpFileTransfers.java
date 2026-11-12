@@ -1,5 +1,7 @@
 package com.akakata.server.http;
 
+import com.akakata.lifecycle.AsyncCloseable;
+import com.akakata.lifecycle.ShutdownSupport;
 import com.akakata.metrics.FlowControlMetrics;
 import com.akakata.server.HttpFileTransferLimits;
 import io.netty.channel.Channel;
@@ -9,27 +11,34 @@ import io.netty.util.concurrent.ScheduledFuture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
 import java.nio.channels.FileChannel;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiConsumer;
 
 /**
- * Owns static-file admission and absolute completion deadlines across HTTP connections.
+ * Bounds static-file admission and owns filesystem workers and transfer deadlines.
  *
- * <p>Acquire before opening a file. Each lease is confined to its connection's event
- * loop and owns the opened handle until both file and response writes finish, fail
- * or the channel closes. Netty retains ownership of submitted file-region references.
- * Disk file sizes are not charged as resident encoded socket buffers.
- *
- * @since 0.8.5
+ * <p>Reservations cover queued opening, filesystem work, transport writes and actual
+ * handle closure. Opening and closing run on at most two lazy daemon workers. Each
+ * reservation supplies its own cleanup capacity, so closing never falls back to an
+ * I/O thread. Netty owns submitted file-region references, but leases own their files.
  */
-public final class HttpFileTransfers {
+public final class HttpFileTransfers implements AsyncCloseable {
 
     /**
-     * Logger for native file-handle closure failures.
+     * Logger for file-operation failures.
      */
     private static final Logger LOG = LoggerFactory.getLogger(HttpFileTransfers.class);
 
@@ -44,53 +53,85 @@ public final class HttpFileTransfers {
     private final Map<Channel, Integer> connections = new IdentityHashMap<>();
 
     /**
-     * Aggregate reservations, including files being opened and active writes.
+     * All unreleased reservations, including running filesystem operations.
      */
-    private int pending;
+    private final Set<Lease> leases = new HashSet<>();
 
     /**
-     * Creates a shared file-transfer owner without starting additional executors.
+     * Actual worker termination, independent of observation cancellation.
+     */
+    private final CompletableFuture<Void> closeCompletion = new CompletableFuture<>();
+
+    /**
+     * Bounded filesystem executor; each live lease has at most one queued operation.
+     */
+    private final ThreadPoolExecutor workers;
+
+    /**
+     * Rejects new reservations after shutdown begins.
+     */
+    private boolean closed;
+
+    /**
+     * Creates a file-transfer owner whose workers start only on filesystem work.
      *
      * @param limits positive admission limits and transfer deadline
      */
     public HttpFileTransfers(HttpFileTransferLimits limits) {
         this.limits = Objects.requireNonNull(limits, "limits");
+        int threads = Math.min(2, limits.maximumConcurrentTransfers());
+        AtomicInteger sequence = new AtomicInteger();
+        workers = new ThreadPoolExecutor(threads, threads, 30, TimeUnit.SECONDS,
+                new ArrayBlockingQueue<>(limits.maximumConcurrentTransfers()),
+                ShutdownSupport.workerFactory(task -> {
+                    Thread thread = new Thread(task, "zea-http-file-" + sequence.incrementAndGet());
+                    thread.setDaemon(true);
+                    return thread;
+                }), new ThreadPoolExecutor.AbortPolicy()) {
+            @Override
+            protected void terminated() {
+                ShutdownSupport.complete(closeCompletion, null);
+            }
+        };
+        workers.allowCoreThreadTimeOut(true);
     }
 
     /**
-     * Reserves one handle before the file is opened.
+     * Reserves capacity and starts a deadline before any filesystem work.
      *
-     * <p>The caller must close the lease after an open failure or a bodyless response.
-     * An attached lease automatically closes on transfer failure or channel closure.
-     *
-     * @param channel active connection, called from its event loop
-     * @return a lease, or null when the connection is closed or either quota is full
+     * @param channel active connection, normally called from its event loop
+     * @return a lease, or null when closed or either quota is full
      */
-    public synchronized Lease tryAcquire(Channel channel) {
+    public Lease tryAcquire(Channel channel) {
         Objects.requireNonNull(channel, "channel");
-        int count = connections.getOrDefault(channel, 0);
-        if (!channel.isActive() || pending >= limits.maximumConcurrentTransfers()
-                || count >= limits.maximumPendingPerConnection()) {
-            FlowControlMetrics.HTTP_FILE_TRANSFER_REJECTIONS.increment();
-            return null;
+        Lease lease;
+        synchronized (this) {
+            int count = connections.getOrDefault(channel, 0);
+            if (closed || !channel.isActive() || leases.size() >= limits.maximumConcurrentTransfers()
+                    || count >= limits.maximumPendingPerConnection()) {
+                FlowControlMetrics.HTTP_FILE_TRANSFER_REJECTIONS.increment();
+                return null;
+            }
+            lease = new Lease(channel);
+            leases.add(lease);
+            connections.put(channel, count + 1);
+            FlowControlMetrics.PENDING_HTTP_FILE_TRANSFERS.increment();
         }
-        connections.put(channel, count + 1);
-        pending++;
-        FlowControlMetrics.PENDING_HTTP_FILE_TRANSFERS.increment();
-        return new Lease(channel);
+        lease.arm();
+        return lease;
     }
 
     /**
-     * Reports active reservations including the current response.
+     * Reports reservations through actual filesystem cleanup.
      *
      * @return total reserved transfers
      */
     public synchronized int pendingTransfers() {
-        return pending;
+        return leases.size();
     }
 
     /**
-     * Returns the validated policy for this shared owner.
+     * Returns this owner's admission and deadline policy.
      *
      * @return file-transfer policy
      */
@@ -99,97 +140,225 @@ public final class HttpFileTransfers {
     }
 
     /**
-     * Returns one reservation after its owned handle has closed.
+     * Stops admission, requests connection cleanup and observes worker termination.
+     * Running opens retain their reservation and close late results before release.
      *
-     * @param channel connection owning the reservation
+     * @return a cancellation-independent termination observation
      */
-    private synchronized void release(Channel channel) {
-        int count = connections.get(channel);
-        if (count == 1) {
-            connections.remove(channel);
-        } else {
-            connections.put(channel, count - 1);
+    @Override
+    public CompletableFuture<Void> closeAsync() {
+        ArrayList<Lease> outstanding;
+        synchronized (this) {
+            closed = true;
+            outstanding = new ArrayList<>(leases);
+            if (outstanding.isEmpty()) {
+                workers.shutdown();
+            }
         }
-        pending--;
-        FlowControlMetrics.PENDING_HTTP_FILE_TRANSFERS.decrement();
+        for (Lease lease : outstanding) {
+            lease.channel.close();
+            lease.close();
+        }
+        return closeCompletion.thenApply(ignored -> null);
     }
 
     /**
-     * Owns one file handle and its deadline on the connection's event loop.
+     * Requests cleanup and waits outside framework workers for bounded termination.
+     *
+     * @throws com.akakata.lifecycle.ShutdownTimeoutException if actual cleanup stalls
+     */
+    @Override
+    public void close() {
+        ShutdownSupport.await(closeAsync(), ShutdownSupport.DEFAULT_TIMEOUT_MILLIS, "HTTP file workers");
+    }
+
+    /**
+     * Returns capacity only after the lease has finished filesystem work.
+     *
+     * @param lease completed reservation
+     */
+    private synchronized void release(Lease lease) {
+        if (!leases.remove(lease)) {
+            return;
+        }
+        int count = connections.get(lease.channel);
+        if (count == 1) {
+            connections.remove(lease.channel);
+        } else {
+            connections.put(lease.channel, count - 1);
+        }
+        FlowControlMetrics.PENDING_HTTP_FILE_TRANSFERS.decrement();
+        if (closed && leases.isEmpty()) {
+            workers.shutdown();
+        }
+    }
+
+    /**
+     * Owns one admitted operation and its handle through actual cleanup.
      */
     public final class Lease implements AutoCloseable {
 
         /**
-         * Connection used for cancellation and monotonic deadline scheduling.
+         * Connection used for response application and monotonic deadlines.
          */
         private final Channel channel;
 
         /**
-         * Admission time, so new incoming requests cannot renew this transfer.
-         */
-        private final long started = System.nanoTime();
-
-        /**
-         * Channel-close listener removed when this lease completes.
+         * Listener requesting cleanup after disconnection.
          */
         private final ChannelFutureListener channelClosed = ignored -> close();
 
         /**
-         * Attached handle, or null before file opening has completed.
+         * Owned handle, published under this lease's monitor.
          */
         private FileChannel file;
 
         /**
-         * Absolute response-transfer deadline, cancelled after actual cleanup.
+         * Admission-to-completion timer, cancelled when cleanup is requested.
          */
         private ScheduledFuture<?> deadline;
 
         /**
-         * Completed write count; both the file and response terminator must finish.
+         * Opening is queued or executing and must keep its reservation.
+         */
+        private boolean opening;
+
+        /**
+         * Terminal cleanup request, including disconnection and timeout.
+         */
+        private boolean closing;
+
+        /**
+         * Number of successful file and terminator writes.
          */
         private int completedWrites;
 
         /**
-         * Idempotent reservation-release flag.
-         */
-        private boolean released;
-
-        /**
-         * Captures the admitted connection without opening the resource.
+         * Captures the connection without touching the filesystem.
          *
-         * @param channel active admitted connection
+         * @param channel admitted connection
          */
         private Lease(Channel channel) {
             this.channel = channel;
         }
 
         /**
-         * Takes ownership of an opened file and arms its absolute transfer deadline.
-         *
-         * @param file opened handle whose ownership is transferred to this lease
-         * @throws IllegalStateException if the lease is closed or already owns a file
+         * Starts cancellation observation before an open can be queued.
          */
-        public void attach(FileChannel file) {
-            if (released || this.file != null) {
-                throw new IllegalStateException("File-transfer lease is closed or already attached");
+        private synchronized void arm() {
+            if (closing) {
+                return;
             }
-            this.file = Objects.requireNonNull(file, "file");
             channel.closeFuture().addListener(channelClosed);
-            if (!released) {
-                long elapsed = System.nanoTime() - started;
-                long remaining = Math.max(0, TimeUnit.MILLISECONDS.toNanos(limits.timeoutMillis()) - elapsed);
-                deadline = channel.eventLoop().schedule(() -> {
-                    if (!released) {
-                        FlowControlMetrics.HTTP_FILE_TRANSFER_TIMEOUTS.increment();
+            if (!closing) {
+                try {
+                    deadline = channel.eventLoop().schedule(() -> {
+                        synchronized (Lease.this) {
+                            if (closing) {
+                                return;
+                            }
+                            FlowControlMetrics.HTTP_FILE_TRANSFER_TIMEOUTS.increment();
+                        }
                         channel.close();
                         close();
-                    }
-                }, remaining, TimeUnit.NANOSECONDS);
+                    }, limits.timeoutMillis(), TimeUnit.MILLISECONDS);
+                } catch (RejectedExecutionException rejected) {
+                    close();
+                }
             }
         }
 
         /**
-         * Watches both accepted writes while preserving their submission order.
+         * Opens on a reserved worker and applies the result on the original I/O loop.
+         *
+         * @param opener detached operation returning an owned resource
+         * @param completion response application; not invoked after closure
+         */
+        void open(Callable<StaticResourceResolver.Resource> opener,
+                  BiConsumer<StaticResourceResolver.Resource, Throwable> completion) {
+            synchronized (this) {
+                if (closing) {
+                    return;
+                }
+                if (opening || file != null) {
+                    throw new IllegalStateException("File-transfer lease already owns an operation");
+                }
+                opening = true;
+            }
+            workers.execute(() -> openOnWorker(opener, completion));
+        }
+
+        /**
+         * Captures late results for cleanup even when the connection has disappeared.
+         *
+         * @param opener owned file-opening operation
+         * @param completion response application on the I/O loop
+         */
+        private void openOnWorker(Callable<StaticResourceResolver.Resource> opener,
+                                  BiConsumer<StaticResourceResolver.Resource, Throwable> completion) {
+            StaticResourceResolver.Resource resource = null;
+            Throwable failure = null;
+            try {
+                synchronized (this) {
+                    if (closing) {
+                        opening = false;
+                        release(this);
+                        return;
+                    }
+                }
+                resource = Objects.requireNonNull(opener.call(), "Resource opener returned null");
+            } catch (Throwable thrown) {
+                failure = thrown;
+            }
+            boolean discard;
+            synchronized (this) {
+                opening = false;
+                file = resource == null ? null : resource.channel();
+                discard = closing;
+            }
+            if (discard) {
+                closeOnWorker();
+                return;
+            }
+            StaticResourceResolver.Resource opened = resource;
+            Throwable outcome = failure;
+            try {
+                channel.eventLoop().execute(() -> {
+                    if (isClosing() || !channel.isActive()) {
+                        close();
+                        return;
+                    }
+                    completion.accept(opened, outcome);
+                });
+            } catch (RejectedExecutionException rejected) {
+                close();
+            }
+        }
+
+        /**
+         * Tests whether response application is still permitted.
+         *
+         * @return whether cleanup has been requested
+         */
+        synchronized boolean isClosing() {
+            return closing;
+        }
+
+        /**
+         * Takes ownership of an externally opened handle; its deadline already runs.
+         *
+         * @param file handle transferred on success and caller-owned on rejection
+         * @throws IllegalStateException if closed or already owning an operation
+         */
+        public synchronized void attach(FileChannel file) {
+            if (closing || opening || this.file != null) {
+                throw new IllegalStateException("File-transfer lease is closed or already attached");
+            }
+            this.file = Objects.requireNonNull(file, "file");
+        }
+
+        /**
+         * Watches both writes; the lease keeps the file until both complete.
          *
          * @param transfer file-region write completion
          * @param finish final HTTP content write completion
@@ -200,11 +369,11 @@ public final class HttpFileTransfers {
         }
 
         /**
-         * Keeps ownership until both writes finish and aborts the connection on failure.
+         * Requests cleanup on write failure or after both successful writes.
          *
          * @param write observed response write
          */
-        private void writeCompleted(io.netty.util.concurrent.Future<? super Void> write) {
+        private synchronized void writeCompleted(io.netty.util.concurrent.Future<? super Void> write) {
             if (!write.isSuccess()) {
                 channel.close();
                 close();
@@ -214,32 +383,45 @@ public final class HttpFileTransfers {
         }
 
         /**
-         * Closes the handle before returning its reservation, exactly once.
-         *
-         * <p>Submitted file-region reference counts remain the outbound pipeline's
-         * responsibility. Closing a channel discards those writes through Netty.
+         * Requests idempotent worker cleanup without releasing a running open early.
          */
         @Override
         public void close() {
-            if (released) {
-                return;
-            }
-            if (file != null) {
-                try {
-                    file.close();
-                } catch (IOException failure) {
-                    LOG.warn("Failed to close HTTP file-transfer handle", failure);
-                    if (file.isOpen()) {
-                        return;
-                    }
+            boolean cleanup;
+            synchronized (this) {
+                if (closing) {
+                    return;
                 }
+                closing = true;
+                if (deadline != null) {
+                    deadline.cancel(false);
+                }
+                channel.closeFuture().removeListener(channelClosed);
+                if (opening) {
+                    return;
+                }
+                cleanup = file != null;
             }
-            released = true;
-            if (deadline != null) {
-                deadline.cancel(false);
+            if (cleanup) {
+                workers.execute(this::closeOnWorker);
+            } else {
+                release(this);
             }
-            channel.closeFuture().removeListener(channelClosed);
-            release(channel);
+        }
+
+        /**
+         * Closes the owned handle before returning the reservation and metrics.
+         */
+        private void closeOnWorker() {
+            try {
+                if (file != null) {
+                    file.close();
+                }
+            } catch (Exception failure) {
+                LOG.warn("Failed to close HTTP file-transfer handle", failure);
+            } finally {
+                release(this);
+            }
         }
     }
 }

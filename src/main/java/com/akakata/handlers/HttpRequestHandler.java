@@ -122,6 +122,27 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
      */
     @Override
     public void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) throws Exception {
+        if (staticFileHandler.deferRequest(ctx, request, () -> {
+            try {
+                routeRequest(ctx, request);
+            } catch (Exception failure) {
+                ctx.fireExceptionCaught(failure);
+                ctx.close();
+            }
+        })) {
+            return;
+        }
+        routeRequest(ctx, request);
+    }
+
+    /**
+     * Routes in connection request order after earlier file opens have completed.
+     *
+     * @param ctx connection's I/O context
+     * @param request borrowed request
+     * @throws Exception if synchronous routing fails
+     */
+    private void routeRequest(ChannelHandlerContext ctx, FullHttpRequest request) throws Exception {
         // Handle OPTIONS preflight requests for CORS
         if (request.method() == OPTIONS) {
             handleOptionsRequest(ctx, request);

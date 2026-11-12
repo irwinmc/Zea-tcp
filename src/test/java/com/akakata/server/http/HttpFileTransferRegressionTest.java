@@ -7,6 +7,7 @@ import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.http.*;
 import io.netty.util.ReferenceCountUtil;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
@@ -23,6 +24,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static com.akakata.server.http.HttpFileTestSupport.await;
 
 /**
  * Exercises real static-file routing with delayed outbound writes and virtual deadlines.
@@ -34,6 +36,21 @@ class HttpFileTransferRegressionTest {
      */
     @TempDir
     Path directory;
+
+    /**
+     * File worker owners terminated after each fixture.
+     */
+    private final List<HttpFileTransfers> owners = new ArrayList<>();
+
+    /**
+     * Terminates all fixture file workers after channel cleanup.
+     */
+    @AfterEach
+    void closeOwners() {
+        for (HttpFileTransfers owner : owners) {
+            owner.close();
+        }
+    }
 
     /**
      * Creates the file-transfer regression fixture.
@@ -61,6 +78,7 @@ class HttpFileTransferRegressionTest {
             assertEquals(0, third.refCnt());
             assertFalse(channel.isOpen());
             assertEquals(2, transport.regions.size());
+            await(null, () -> owner.pendingTransfers() == 0);
             assertEquals(0, owner.pendingTransfers());
             assertEquals(rejected + 1, FlowControlMetrics.HTTP_FILE_TRANSFER_REJECTIONS.sum());
             for (DefaultFileRegion region : transport.regions) {
@@ -103,6 +121,7 @@ class HttpFileTransferRegressionTest {
             assertEquals(0, secondTransport.regions.size());
             assertEquals(1, owner.pendingTransfers());
             first.close();
+            await(null, () -> owner.pendingTransfers() == 0);
             assertEquals(0, owner.pendingTransfers());
             request(replacement);
             assertEquals(1, owner.pendingTransfers());
@@ -112,6 +131,7 @@ class HttpFileTransferRegressionTest {
             second.finishAndReleaseAll();
             replacement.finishAndReleaseAll();
         }
+        await(null, () -> owner.pendingTransfers() == 0);
         assertEquals(0, owner.pendingTransfers());
     }
 
@@ -136,6 +156,7 @@ class HttpFileTransferRegressionTest {
             channel.runScheduledPendingTasks();
             channel.runPendingTasks();
             assertFalse(channel.isOpen());
+            await(null, () -> owner.pendingTransfers() == 0);
             assertEquals(0, owner.pendingTransfers());
             assertEquals(timedOut + 1, FlowControlMetrics.HTTP_FILE_TRANSFER_TIMEOUTS.sum());
             for (DefaultFileRegion region : transport.regions) {
@@ -162,6 +183,7 @@ class HttpFileTransferRegressionTest {
             transport.complete(0);
             assertEquals(1, owner.pendingTransfers());
             transport.complete(1);
+            await(null, () -> owner.pendingTransfers() == 0);
             assertEquals(0, owner.pendingTransfers());
             channel.advanceTimeBy(61, TimeUnit.SECONDS);
             channel.runScheduledPendingTasks();
@@ -172,6 +194,7 @@ class HttpFileTransferRegressionTest {
         } finally {
             channel.finishAndReleaseAll();
         }
+        await(null, () -> owner.pendingTransfers() == 0);
         assertEquals(0, owner.pendingTransfers());
     }
 
@@ -189,6 +212,7 @@ class HttpFileTransferRegressionTest {
             request(channel);
             transport.fail(1);
             assertFalse(channel.isOpen());
+            await(null, () -> owner.pendingTransfers() == 0);
             assertEquals(0, owner.pendingTransfers());
             assertEquals(0, transport.regions.getFirst().refCnt());
         } finally {
@@ -210,6 +234,7 @@ class HttpFileTransferRegressionTest {
             request(channel);
             assertTrue(transport.pending.getFirst().promise().cancel(false));
             assertFalse(channel.isOpen());
+            await(null, () -> owner.pendingTransfers() == 0);
             assertEquals(0, owner.pendingTransfers());
             assertEquals(0, transport.regions.getFirst().refCnt());
         } finally {
@@ -229,11 +254,13 @@ class HttpFileTransferRegressionTest {
         EmbeddedChannel unmodified = channel(owner, new HeldTransport());
         try {
             missing.writeInbound(new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/missing.txt"));
+            await(missing, () -> owner.pendingTransfers() == 0);
             assertEquals(0, owner.pendingTransfers());
             FullHttpRequest conditional = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/fixture.txt");
             conditional.headers().set(HttpHeaderNames.IF_MODIFIED_SINCE,
                     DateTimeFormatter.RFC_1123_DATE_TIME.format(ZonedDateTime.now().plusDays(1)));
             unmodified.writeInbound(conditional);
+            await(unmodified, () -> owner.pendingTransfers() == 0);
             assertEquals(0, owner.pendingTransfers());
             FullHttpResponse response = unmodified.readOutbound();
             try {
@@ -266,9 +293,12 @@ class HttpFileTransferRegressionTest {
             assertTrue(file.isOpen());
             channel.advanceTimeBy(61, TimeUnit.SECONDS);
             channel.runScheduledPendingTasks();
+            await(null, () -> !file.isOpen() && owner.pendingTransfers() == 0);
             assertFalse(file.isOpen());
+            await(null, () -> owner.pendingTransfers() == 0);
             assertEquals(0, owner.pendingTransfers());
             lease.close();
+            await(null, () -> owner.pendingTransfers() == 0);
             assertEquals(0, owner.pendingTransfers());
         } finally {
             file.close();
@@ -311,6 +341,7 @@ class HttpFileTransferRegressionTest {
                 channel.finishAndReleaseAll();
             }
         }
+        await(null, () -> owner.pendingTransfers() == 0);
         assertEquals(0, owner.pendingTransfers());
     }
 
@@ -321,8 +352,10 @@ class HttpFileTransferRegressionTest {
      * @param total aggregate transfer allowance
      * @return a bounded file-transfer owner
      */
-    private static HttpFileTransfers owner(int perConnection, int total) {
-        return new HttpFileTransfers(new HttpFileTransferLimits(perConnection, total, 60_000));
+    private HttpFileTransfers owner(int perConnection, int total) {
+        HttpFileTransfers owner = new HttpFileTransfers(new HttpFileTransferLimits(perConnection, total, 60_000));
+        owners.add(owner);
+        return owner;
     }
 
     /**
@@ -352,7 +385,10 @@ class HttpFileTransferRegressionTest {
      */
     private static FullHttpRequest request(EmbeddedChannel channel) {
         FullHttpRequest request = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/fixture.txt");
+        HeldTransport transport = channel.pipeline().get(HeldTransport.class);
+        int before = transport.regions.size();
         channel.writeInbound(request);
+        await(channel, () -> !channel.isOpen() || transport.regions.size() > before);
         return request;
     }
 

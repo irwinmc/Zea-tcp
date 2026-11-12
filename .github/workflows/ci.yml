@@ -35,10 +35,19 @@ jobs:
         run: ./mvnw --version
 
       - name: Run regression tests and strict JavaDoc checks
-        run: ./mvnw --batch-mode --no-transfer-progress clean verify javadoc:javadoc javadoc:test-javadoc
+        run: >-
+          python3 scripts/test_report.py
+          --report-dir .internal-docs/release-reports/ci
+          --name java21-verification --
+          ./mvnw --batch-mode --no-transfer-progress clean verify javadoc:javadoc javadoc:test-javadoc
 
       - name: Check the signed publication lifecycle locally
-        run: python3 .github/scripts/test-central-publishing.py
+        run: >-
+          python3 scripts/test_report.py
+          --report-dir .internal-docs/release-reports/ci
+          --name publication-regressions --
+          python3 .github/scripts/test-central-publishing.py
+          --report-dir .internal-docs/release-reports/ci/publication-cases
 
       - name: Check whitespace
         env:
@@ -50,3 +59,13 @@ jobs:
           else
             git show --format= --check HEAD
           fi
+
+      - name: Preserve verification reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: java21-verification-${{ github.sha }}
+          path: .internal-docs/release-reports/ci/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14

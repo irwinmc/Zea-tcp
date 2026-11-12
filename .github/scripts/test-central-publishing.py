@@ -1,5 +1,8 @@
 """Check the real release profile with synthetic credentials and a local publisher."""
 
+import argparse
+import sys
+import time
 import base64
 import hashlib
 import io
@@ -253,5 +256,71 @@ class PublishingLifecycleTest(unittest.TestCase):
             thread.join(timeout=5)
 
 
+class ReleaseWorkflowPolicyTest(unittest.TestCase):
+    """Keep Central publication tied to a published immutable release tag."""
+
+    def test_only_published_releases_can_trigger_publication(self):
+        workflow = (ROOT / ".github/workflows/publish-maven-central.yml").read_text()
+        triggers = workflow.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
+        event_names = re.findall(r"^  ([a-z_]+):", triggers, re.MULTILINE)
+        self.assertEqual(event_names, ["release"])
+        self.assertIn("types: [published]", triggers)
+
+    def test_checkout_and_job_use_the_release_tag_without_branch_fallback(self):
+        workflow = (ROOT / ".github/workflows/publish-maven-central.yml").read_text()
+        self.assertIn("ref: ${{ github.event.release.tag_name }}", workflow)
+        self.assertIn("if: github.event_name == 'release' && startsWith(github.event.release.tag_name, 'v')", workflow)
+        self.assertNotIn("inputs.version", workflow)
+        self.assertNotIn("|| github.ref", workflow)
+
+    def test_verification_reports_are_preserved_after_failures(self):
+        workflow = (ROOT / ".github/workflows/publish-maven-central.yml").read_text()
+        reporting = workflow.split("- name: Preserve every verification and publication report\n", 1)[1]
+        self.assertIn("if: always()", reporting)
+        self.assertIn("include-hidden-files: true", reporting)
+        self.assertIn("python3 scripts/test_report.py", workflow)
+        self.assertNotIn("central-publishing.local.json", reporting)
+
+
+def save_report(directory, name, record):
+    """Persist one independent publication-regression result."""
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / (name + ".json")).write_text(json.dumps(record, indent=2) + "\n")
+    (directory / (name + ".txt")).write_text("\n".join(f"{key}: {value}" for key, value in record.items()) + "\n")
+
+
+class ReportingResult(unittest.TextTestResult):
+    """Preserve a report for every passing or failing publishing case."""
+
+    def startTest(self, test):
+        self.started = time.monotonic()
+        super().startTest(test)
+
+    def record(self, test, status):
+        save_report(REPORTS / "cases", test.id(), {"test": test.id(), "status": status,
+                    "seconds": round(time.monotonic() - getattr(self, "started", time.monotonic()), 3)})
+
+    def addSuccess(self, test):
+        self.record(test, "PASS")
+        super().addSuccess(test)
+
+    def addFailure(self, test, error):
+        self.record(test, "FAIL")
+        super().addFailure(test, error)
+
+    def addError(self, test, error):
+        self.record(test, "ERROR")
+        super().addError(test, error)
+
+
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--report-dir", type=Path, default=ROOT / ".internal-docs/release-reports/publication-regressions")
+    options = parser.parse_args()
+    REPORTS = options.report_dir
+    suite = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])
+    result = unittest.TextTestRunner(verbosity=2, resultclass=ReportingResult).run(suite)
+    save_report(REPORTS, "summary", {"status": "PASS" if result.wasSuccessful() else "FAIL",
+                "tests": result.testsRun, "failures": len(result.failures), "errors": len(result.errors),
+                "network_scope": "Loopback only; temporary signing key; no Central upload"})
+    raise SystemExit(0 if result.wasSuccessful() else 1)

@@ -13,6 +13,7 @@ concurrency:
 
 jobs:
   publish:
+    if: github.event_name == 'release' && startsWith(github.event.release.tag_name, 'v')
     name: Validate, sign and publish
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -75,10 +76,19 @@ jobs:
           done
 
       - name: Run tests and validate English JavaDoc
-        run: ./mvnw --batch-mode --no-transfer-progress clean verify javadoc:javadoc javadoc:test-javadoc
+        run: >-
+          python3 scripts/test_report.py
+          --report-dir .internal-docs/release-reports/ci
+          --name java21-verification --
+          ./mvnw --batch-mode --no-transfer-progress clean verify javadoc:javadoc javadoc:test-javadoc
 
       - name: Check the signed publication lifecycle locally
-        run: python3 .github/scripts/test-central-publishing.py
+        run: >-
+          python3 scripts/test_report.py
+          --report-dir .internal-docs/release-reports/ci
+          --name publication-regressions --
+          python3 .github/scripts/test-central-publishing.py
+          --report-dir .internal-docs/release-reports/ci/publication-cases
 
       - name: Sign and publish the release
         env:
@@ -89,3 +99,21 @@ jobs:
         run: >-
           ./mvnw --batch-mode --no-transfer-progress -Prelease deploy
           -DskipTests -Dgpg.signer=bc -Dgpg.bestPractices=true
+
+      - name: Preserve every verification and publication report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: java21-publication-reports-${{ github.event.release.tag_name }}
+          path: .internal-docs/release-reports/ci/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Preserve the published signed bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: java21-central-bundle-${{ github.event.release.tag_name }}
+          path: target/central-publishing/central-bundle.zip
+          if-no-files-found: error
+          retention-days: 14

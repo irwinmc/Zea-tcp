@@ -4,6 +4,7 @@ Release changes and migration requirements for Zea TCP Transport, with the newes
 release first. See the [repository README](README.md) for the quick start and
 [application guides](README.md#documentation) for supported APIs and configuration.
 
+- [0.8.7](#087): Netty, Jackson, logging, caching and test dependency updates.
 - [0.8.6](#086): string framing, secure-random failure and static filesystem offloading.
 - [0.8.5](#085): listener availability, actual worker termination,
   HTTP file-transfer admission and continuous integration.
@@ -13,6 +14,20 @@ release first. See the [repository README](README.md) for the quick start and
   streaming JSON and migration from 0.8.2.
 - [0.8.2](#082): component injection, authentication defaults, resource budgets
   and migration from 0.8.1.
+
+## 0.8.7
+
+Version 0.8.7 refreshes the transport and supporting dependencies.
+
+### Changes
+
+- Update Netty to 4.2.21.Final, Jackson to 3.3.0, Logback to 1.6.8, and Caffeine
+  to 3.3.1. Update the regression suite to JUnit Jupiter 6.1.3.
+
+### Migration from 0.8.6
+
+Update the dependency to `com.akakata:zea-tcp:0.8.7`. Align any application
+overrides of Netty and Jackson with the versions above.
 
 ## 0.8.6
 

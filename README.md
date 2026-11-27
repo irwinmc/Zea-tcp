@@ -8,10 +8,9 @@ Zea TCP Transport is a Java game-server foundation built on Netty. It provides T
 HTTP and WebSocket listeners, player sessions, asynchronous event dispatch, a
 credential-keyed session cache and HTTP monitoring endpoints.
 
-This documentation describes **0.8.6**, including correct empty-string decoding, fail-closed
-random credential generation and bounded filesystem offloading for HTTP files. Dependency versions
-come from [pom.xml](pom.xml). See the [0.8.6 changelog](CHANGELOG.md#086) for release
-changes and migration requirements.
+This documentation describes **0.8.7**, which updates Netty, Jackson, Logback and Caffeine.
+Dependency versions come from [pom.xml](pom.xml). See the [0.8.7 changelog](CHANGELOG.md#087)
+for release changes and migration requirements.
 
 ## Features
 
@@ -50,7 +49,7 @@ reconnection and client connection pooling are not implemented.
 <dependency>
     <groupId>com.akakata</groupId>
     <artifactId>zea-tcp</artifactId>
-    <version>0.8.6</version>
+    <version>0.8.7</version>
 </dependency>
 ```
 
@@ -136,7 +135,7 @@ Other executable examples are `com.akakata.HttpOnlyServer` (HTTP port 18081),
 `com.akakata.AdvancedTestServer`. They live in
 [src/test/java/com/akakata](src/test/java/com/akakata).
 
-`mvn package` produces the library JAR `target/zea-tcp-0.8.6.jar`. It does not bundle
+`mvn package` produces the library JAR `target/zea-tcp-0.8.7.jar`. It does not bundle
 runtime dependencies or configure a `Main-Class`. The provided [run.sh](run.sh)
 expects an application-owned executable `server.jar` in the working directory;
 create that application artifact before using the script.
@@ -434,16 +433,16 @@ Direct dependencies declared by the current POM:
 
 | Dependency | Version | Role |
 | --- | --- | --- |
-| `io.netty:netty-all` | 4.2.19.Final | Network I/O, codecs and business executors |
+| `io.netty:netty-all` | 4.2.21.Final | Network I/O, codecs and business executors |
 | `com.google.dagger:dagger` | 2.60.1 | Compile-time injection |
 | `javax.inject:javax.inject` | 1 | Injection annotations |
-| `tools.jackson.core:jackson-databind` | 3.2.3 | JSON serialization |
-| `tools.jackson.dataformat:jackson-dataformat-yaml` | 3.2.3 | YAML dependency; configuration loading uses properties |
-| `com.github.ben-manes.caffeine:caffeine` | 3.3.0 | Session cache |
+| `tools.jackson.core:jackson-databind` | 3.3.0 | JSON serialization |
+| `tools.jackson.dataformat:jackson-dataformat-yaml` | 3.3.0 | YAML support. Zea configuration uses properties. |
+| `com.github.ben-manes.caffeine:caffeine` | 3.3.1 | Session cache |
 | `org.slf4j:slf4j-api` | 2.0.20 | Logging API |
-| `ch.qos.logback:logback-classic` | 1.6.5 | Logging implementation |
+| `ch.qos.logback:logback-classic` | 1.6.8 | Logging implementation |
 | `net.logstash.logback:logstash-logback-encoder` | 9.0 | Structured log encoding |
-| `org.junit.jupiter:junit-jupiter` | 5.12.2 | Regression tests; test scope |
+| `org.junit.jupiter:junit-jupiter` | 6.1.3 | Regression tests (test scope) |
 
 Jackson code uses the `tools.jackson.*` packages from Jackson 3. Dagger's annotation
 processor is `dagger-compiler` 2.60.1. Netty groups use
@@ -498,7 +497,7 @@ git diff --check
 
 Open `target/reports/apidocs/index.html` for the framework API and
 `target/reports/testapidocs/index.html` for examples and regression-test helpers.
-The archive is `target/zea-tcp-0.8.6-javadoc.jar`. Compilation generates the Dagger
+The archive is `target/zea-tcp-0.8.7-javadoc.jar`. Compilation generates the Dagger
 component types needed by JavaDoc. Documentation uses English, UTF-8 and strict
 doclint checks; generated Dagger sources are excluded.
 

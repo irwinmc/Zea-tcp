@@ -1,7 +1,7 @@
 # Event Loops, Dispatch and Lifecycle
 
-This guide describes Zea TCP Transport 0.8.5 with Netty 4.2.19.Final and Java 21,
-including application injection, security and resource policies. See
+This guide describes Zea TCP Transport's event and resource policies on Java 21.
+See [dependency versions](../README.md#dependencies) for the pinned Netty version and
 [lifecycle](LIFECYCLE.md) for shutdown and completion contracts.
 See [configuration](CONFIGURATION.md) for consumed properties and wire formats.
 
